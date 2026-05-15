@@ -20,10 +20,9 @@
 ; Con DMASET decidiamo quali canali DMA aprire e quali chiudere
 
 			;5432109876543210
-DMASET	EQU	%1000001111100000	; bltr, copper, bitplane, SPRITE DMA (BLTPRI OFF)
-								; bit 5 SPREN = 1 per attivare sprite hardware
-;DMASET	EQU	%1000010111100000	; alt con BLTPRI=1
-;								; bit 10 BLTPRI = 1: bltr ha priorita' su CPU
+DMASET	EQU	%1000001111000000	; bltr, copper, bitplane (SPRITE OFF - test flash)
+;DMASET	EQU	%1000001111100000	; con SPRITE DMA
+
 *****************************************************************************
 * COSTANTI
 *****************************************************************************
@@ -93,10 +92,9 @@ START:
 	MOVE.L	#CopperList,$80(A6)		; Puntiamo la nostra COP
 	MOVE.W	d0,$88(A6)				; Facciamo partire la COP
 
-;	MOVE.W	#$f,$1fc(A6)			; FMODE = $0F (AGA fetch 64-bit per BPL e SPR)
 	MOVE.W	#$3,$1fc(A6)			; FMODE = $03 (AGA fetch 64-bit per BPL, sprite OCS-style)
 	MOVE.W	#$c00,$106(A6)			; BPLCON3 = LOCT=0, BANK=0, BRDRBLNK
-	MOVE.W	#$11,$10c(A6)			; BPLCON4 = sprite/playfield mask standard
+	MOVE.W	#$0,$10c(A6)			; BPLCON4 = 0 (sprite a colori OCS standard 16-31)
 
 	BSR.W   InitPlayer				; <-- INIZIALIZZA IL PLAYER
 	BSR.W   InitEnemies				; <-- INIZIALIZZA I NEMICI
@@ -1816,7 +1814,7 @@ UpdateEnemies:
 InitSprites:
 	MOVEM.L	D0-D2/A0/A1,-(SP)
 
-	; Inizializza header BulletSprite OFF
+	; Inizializza header BulletSprite OFF (sprite non visualizzato)
 	LEA		BulletSprite,A0
 	MOVE.W	#0,(A0)
 	MOVE.W	#0,2(A0)
@@ -1826,21 +1824,32 @@ InitSprites:
 
 	; SPR0 -> BulletSprite
 	MOVE.L	#BulletSprite,D0
-	MOVE.W	D0,6(A0)						; SPR0PTL valore (offset 6)
+	MOVE.W	D0,6(A0)
 	SWAP	D0
-	MOVE.W	D0,2(A0)						; SPR0PTH valore (offset 2)
+	MOVE.W	D0,2(A0)
 
 	; SPR1..SPR7 -> EmptySprite
 	MOVE.L	#EmptySprite,D1
-	LEA		8(A0),A1						; A1 punta a SPR1 entry
+	LEA		8(A0),A1
 	MOVEQ	#7-1,D2
 .spr_loop:
 	MOVE.L	D1,D0
-	MOVE.W	D0,6(A1)						; SPRxPTL valore
+	MOVE.W	D0,6(A1)
 	SWAP	D0
-	MOVE.W	D0,2(A1)						; SPRxPTH valore
+	MOVE.W	D0,2(A1)
 	ADDA.L	#8,A1
 	DBRA	D2,.spr_loop
+
+	; Scrivi anche direttamente nei registri custom (per il primo frame)
+	LEA		$dff000,A0
+	MOVE.L	#BulletSprite,$120(A0)
+	MOVE.L	#EmptySprite,$124(A0)
+	MOVE.L	#EmptySprite,$128(A0)
+	MOVE.L	#EmptySprite,$12c(A0)
+	MOVE.L	#EmptySprite,$130(A0)
+	MOVE.L	#EmptySprite,$134(A0)
+	MOVE.L	#EmptySprite,$138(A0)
+	MOVE.L	#EmptySprite,$13c(A0)
 
 	MOVEM.L	(SP)+,D0-D2/A0/A1
 	RTS
@@ -1993,6 +2002,7 @@ Proiettile:
 *   Aggiorna SPRPOS/SPRCTL dello sprite hardware del proiettile.
 *****************************************************************************
 AggiornaProiettile:
+
 	MOVEM.L	D0-D3/A0,-(SP)
 
 	LEA		BulletSprite,A0
@@ -2336,7 +2346,7 @@ ApplyKnockback:
 	; Carica delta dalla DirectionDeltas[attacker.Direzione]
 	MOVE.W	bob_Direzione(A1),D2
 	AND.W	#7,D2					; sicurezza: clamp 0..7
-	LSL.W	#2,D2					; *4 (4 byte per entry: dx + dy word)
+	LSL.W	#2,D2					; *2 (2 byte per entry: dx + dy word)
 	LEA		DirectionDeltas,A2
 	MOVE.W	(A2,D2.W),D3			; D3 = dx normalizzato (-1, 0, 1)
 	MOVE.W	2(A2,D2.W),D4			; D4 = dy normalizzato
@@ -2536,10 +2546,13 @@ DisegnaBarraVita:
 	BMI.W	.skip						; safety check
 
 	; ----- Calcolo bitmask 32-bit shiftata -----
-	; D1 = bitmask 16-bit (N bit alti a 1). Vogliamo posizionarla a pixel bob_X.
+	; D1.w = bitmask 16-bit (N bit alti a 1). Vogliamo posizionarla a pixel bob_X.
 	; Strategia: estendi a 32 bit (bitmask << 16), poi shifta a destra di (bob_X mod 16).
 	; Risultato: D1.long = pattern 32-bit dove i bit della barra sono a posizione (bob_X mod 16).
 	;
+	; IMPORTANTE: la word ALTA di D1 puo' contenere garbage (resto di DIVU.W sopra).
+	; Devo PULIRLA prima dello SWAP, altrimenti si presenta come "barra fantasma".
+	ANDI.L	#$0000FFFF,D1				; pulisco la word alta (era il resto di DIVU)
 	; D2 = bob_X (gia' caricato sopra)
 	; shift = bob_X & 15
 	MOVE.W	D2,D4						; D4 = bob_X
@@ -3369,10 +3382,14 @@ BitPlaneTiles:
 	dc.w 	$f0,$0000,$f2,$0000	;quarto  bitplane - BPL3PT
 
 Sprites:
-	dc.w	$120,$0000,$122,$0000,$124,$0000,$126,$0000,$128,$0000
-	dc.w	$12a,$0000,$12c,$0000,$12e,$0000,$130,$0000,$132,$0000
-	dc.w	$134,$0000,$136,$0000,$138,$0000,$13a,$0000,$13c,$0000
-	dc.w	$13e,$0000
+	dc.w	$120,0,$122,0			; SPR0PT (InitSprites scrive l'indirizzo)
+	dc.w	$124,0,$126,0			; SPR1PT
+	dc.w	$128,0,$12a,0			; SPR2PT
+	dc.w	$12c,0,$12e,0			; SPR3PT
+	dc.w	$130,0,$132,0			; SPR4PT
+	dc.w	$134,0,$136,0			; SPR5PT
+	dc.w	$138,0,$13a,0			; SPR6PT
+	dc.w	$13c,0,$13e,0			; SPR7PT
 
 ; ============================================================================
 ; PALETTE AGA (24-bit, 32 colori)
@@ -3512,9 +3529,9 @@ OMINO_MASK:
 ;   header (2 word) + dati (4 righe x 2 word) + terminator (2 word) = 12 word
 ; SPRPOS, SPRCTL vengono settate runtime; i dati graphici inizializzati al boot.
 BulletSprite:
-	dc.w	0,0				; SPRPOS, SPRCTL (runtime)
-	dc.w	$3C00,$0000		; riga 0: 4 pixel centrali, plane 0=1, plane 1=0 -> colore 1
-	dc.w	$7E00,$7E00		; riga 1: 6 pixel centrali, plane 0=1 plane 1=1 -> colore 3
+	dc.w	0,0				; SPRPOS, SPRCTL (settati a runtime da AggiornaProiettile)
+	dc.w	$3C00,$0000		; riga 0: 4 pixel centrali, colore 1
+	dc.w	$7E00,$7E00		; riga 1: 6 pixel centrali, colore 3
 	dc.w	$7E00,$7E00		; riga 2: idem
 	dc.w	$3C00,$0000		; riga 3: 4 pixel centrali, colore 1
 	dc.w	0,0				; terminator
