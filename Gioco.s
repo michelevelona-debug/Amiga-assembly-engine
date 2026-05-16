@@ -1,4 +1,4 @@
-*****************************************************************************
+****************************************************************************
 *				   MEGA GAME												*
 *																			*
 *   Gestire collisioni														*
@@ -26,6 +26,7 @@ DMASET	EQU	%1000001111000000	; bltr, copper, bitplane (SPRITE OFF - test flash)
 *****************************************************************************
 * COSTANTI
 *****************************************************************************
+NUM_PLANES		EQU		6				; numero di bitplane (5 + 1 per EHB notte)
 PLANE_SIZE      EQU     40*256          ; 10240 byte = un singolo bitplane
 SFONDO_PITCH	EQU		48				; pitch riga di SFONDOGRANDE in byte
 										; (era 44, ora 48 per allineamento AGA FMODE=3,
@@ -64,6 +65,7 @@ RAWKEY_DOWN		EQU $4D
 RAWKEY_RIGHT	EQU $4E
 RAWKEY_LEFT	 	EQU $4F
 RAWKEY_SPACE	EQU $40
+RAWKEY_N		EQU $36			; rawkey del tasto N (toggle giorno/notte)
 
 KEY_RELEASE_BIT EQU 7	   ; bit 7 del keycode decodificato
 ANIM_DELAY		EQU 3
@@ -79,12 +81,18 @@ BULLET_COOLDOWN		EQU	10				; frame di cooldown tra due spari
 BULLET_DAMAGE		EQU	2				; danno inflitto al nemico
 BULLET_HEIGHT		EQU	4				; altezza dello sprite proiettile
 
+; ----- Illuminazione (EHB) -----
+TILE_LUCE		EQU	19					; numero tile = sorgente di luce
+RAGGIO_LUCE		EQU	64					; raggio in pixel della luce (tile 19)
+
 START:
 *****************************************************************************
 *	PUNTIAMO I BITPLANES DELLE TILES
 *****************************************************************************
 
 	MOVE.L	CurrentDisplay,D0		; in d0 l'indirizzo della memoria per la mappa,
+	MOVE.L	#DARKPLANE_A,D2			; dark plane iniziale = A
+
 	BSR.W	AggiornaCopperBPL
 
 	LEA		$dff000,A6
@@ -121,6 +129,7 @@ START:
 	BSR.W	GestisciShiftPixel		; Esegue lo scrolling fine
 	BSR.W	AggiornaTiles			; Gestisce l'agggiunta di tiles dalla mappa
 									; al buffer	
+	BSR.W	UpdateDarkPlane			; fill dark plane + lampioni (sempre ogni frame)
 	BSR.W	CopiaVideo				; Disegna lo schermo
 	BSR.W	UpdatePlayerScreenPos	; Calcola bob_X/Y dalle coord. mondo 
 	BSR.W	UpdateEnemies			; AI dei nemici (movimento)
@@ -160,18 +169,26 @@ AspettaVBL:
 *****************************************************************************
 *****************************************************************************
 SwapBuffers:
-	MOVEM.L D0-D1,-(SP)
+	MOVEM.L D0-D2,-(SP)
 ; Scambia CurrentDisplay e CurrentDraw
 	MOVE.L  CurrentDisplay,D0
 	MOVE.L  CurrentDraw,D1
 	MOVE.L  D1,CurrentDisplay
 	MOVE.L  D0,CurrentDraw
 
-; Aggiorna copperlist con il nuovo CurrentDisplay (= D1)
+; Scambia anche CurrentDarkDisplay e CurrentDarkDraw
+	MOVE.L  CurrentDarkDisplay,D0
+	MOVE.L  CurrentDarkDraw,D2
+	MOVE.L  D2,CurrentDarkDisplay
+	MOVE.L  D0,CurrentDarkDraw
+	; D2 = nuovo CurrentDarkDisplay (= il valore vecchio di CurrentDarkDraw)
+	; D1 = nuovo CurrentDisplay
+
+; Aggiorna copperlist con i nuovi puntatori
 	MOVE.L  D1,D0
 	BSR.S   AggiornaCopperBPL
 
-	movem.l (SP)+,D0-D1
+	movem.l (SP)+,D0-D2
 	RTS
 
 *****************************************************************************
@@ -183,7 +200,9 @@ SwapBuffers:
 AggiornaCopperBPL:
 	MOVEM.L D1/A1,-(SP)
 	LEA	 BitPlaneTiles,A1
-	MOVEQ   #5-1,D1				; 5 bitplane
+
+	; --- Primi 5 plane: standard BPSFONDO ---
+	MOVEQ   #5-1,D1
 .loop:
 	MOVE.W	D0,6(A1)			; word bassa
 	SWAP	D0
@@ -192,10 +211,15 @@ AggiornaCopperBPL:
 	ADD.L	#40*256,D0			; prossimo bitplane
 	ADDQ.W	#8,A1				; prossimi 4 dc.w nella copperlist
 	DBRA	D1,.loop
+
+	; --- 6° plane: DARK plane (gestito separatamente) ---
+	; A1 punta ora a $f4,0,$f6,0 (BPL5PT entry)
+	MOVE.W	D2,6(A1)			; BPL5PTL word bassa
+	SWAP	D2
+	MOVE.W	D2,2(A1)			; BPL5PTH word alta
 	
 	MOVEM.L	(SP)+,D1/A1
-	RTS
- 
+	RTS 
 *****************************************************************************
 * ROUTINE DI ATTESA TASTO DI SX DEL MOUSE 
 *****************************************************************************
@@ -419,9 +443,24 @@ ProcessArrowKey:
 
 .k_space:
 	cmp.b	#RAWKEY_SPACE,D2
-	bne.s	.done
+	bne.s	.k_night
 	move.b	D1,key_space
- 
+	bra.s	.done
+
+.k_night:
+	cmp.b	#RAWKEY_N,D2
+	bne.s	.done
+	; D1 = 1 (premuto) o 0 (rilasciato)
+	; Toggle solo al "press" (edge): se NightKeyPrev=0 e D1=1, toggle
+	tst.b	D1
+	beq.s	.n_release				; rilasciato -> aggiorna prev e basta
+	tst.b	NightKeyPrev
+	bne.s	.n_release				; era gia' premuto -> no edge
+	; Edge press: toggle NightMode
+	eori.b	#1,NightMode
+.n_release:
+	move.b	D1,NightKeyPrev
+
 .done:
 
 	movem.l	(SP)+,D1-D2
@@ -521,59 +560,6 @@ AggiornaTiles:
 	MOVEM.L	(SP)+,D0-D1
 	RTS
  
-AggiornaTiles_old:
-	MOVEM.L	D0-D1,-(SP)
-; ---------- DESTRA ----------
-; Non aspetta nulla: AddColonnaDestra gestisce internamente lo split Y.
-	MOVE.W	PdngAddRx,D0
-	TST.W   D0
-	BEQ.S   .NoRight
-	BSR.W   AddColonnaDestra
-	CLR.W   PdngAddRx
-.NoRight:
-
-; ---------- SINISTRA ----------
-; Aspetta PixelOffX=0 (16 shift dx cumulativi dopo il boundary, bug #1).
-; Lo split Y in AddColonnaSinistra gestisce PixelOffY qualunque.
-	MOVE.W	PdngAddSx,D0
-	TST.W   D0
-	BEQ.S   .NoLeft
-	MOVE.W	PixelOffX,D1
-	TST.W   D1
-	BNE.S   .NoLeft
-	BSR.W   AddColonnaSinistra
-	CLR.W   PdngAddSx
-.NoLeft:
-
-; ---------- BASSO ----------
-; Aspetta PixelOffX=0 (griglia X allineata, bug #2 asse Y non splittato).
-	MOVE.W	PdngAddBot,D0
-	TST.W   D0
-	BEQ.S   .NoBot
-	MOVE.W	PixelOffX,D1
-	TST.W   D1
-	BNE.S   .NoBot
-	BSR.W   AddRigaBasso
-	CLR.W   PdngAddBot
-.NoBot:
-
-; ---------- ALTO ----------
-; Aspetta PixelOffY=0 (bug #1) AND PixelOffX=0 (bug #2 asse Y non splittato).
-	MOVE.W	PdngAddTop,D0
-	TST.W   D0
-	BEQ.S   .NoTop
-	MOVE.W	PixelOffX,D1
-	TST.W   D1
-	BNE.S   .NoTop
-	MOVE.W	PixelOffY,D1
-	TST.W   D1
-	BNE.S   .NoTop
-	BSR.W   AddRigaAlto
-	CLR.W   PdngAddTop
-.NoTop:
-	MOVEM.L	(SP)+,D0-D1
-	RTS
-
 *****************************************************************************
 * 		ROUTINE DI CONTROLLO DEI BORDI
 * TILE BOUNDARY - SHIFT BUFFER
@@ -702,7 +688,7 @@ ShiftPixelSinistra:
 	MOVE.L  #SFONDOGRANDE+287*SFONDO_PITCH+42,A1  
 										; in-place: src = dst = fine buffer
 
-	MOVEQ   #5-1,D4
+	MOVEQ	#5-1,D4
 .loop:
 	BSR.W   AspettaBlitter
 
@@ -736,7 +722,7 @@ ShiftPixelDestra:
 	MOVE.L  #SFONDOGRANDE,A2
 	MOVE.L  #SFONDOGRANDE,A1
 
-	MOVEQ   #5-1,D4
+	MOVEQ	#5-1,D4
 .loop:
 	BSR.W   AspettaBlitter
 
@@ -769,7 +755,7 @@ ShiftPixelAlto:
 	MOVE.L  #SFONDOGRANDE+SFONDO_PITCH,A2
 	MOVE.L  #SFONDOGRANDE,A1
 
-	MOVEQ   #5-1,D4
+	MOVEQ	#5-1,D4
 .loop:
 	BSR.W   AspettaBlitter
 
@@ -800,7 +786,7 @@ ShiftPixelBasso:
 	MOVE.L  #SFONDOGRANDE+286*SFONDO_PITCH+42,A2
 	MOVE.L  #SFONDOGRANDE+287*SFONDO_PITCH+42,A1
 
-	MOVEQ   #5-1,D4
+	MOVEQ	#5-1,D4
 .loop:
 	BSR.W   AspettaBlitter
 
@@ -889,7 +875,7 @@ AddColonnaDestra:
 
 	MOVE.L	A3,A1			; A1 = dest plane 0 (buffer col 21 row 0)
 
-	MOVEQ	#5-1,D4			; 5 planes
+	MOVEQ	#5-1,D4
 .sliceP:
 	BSR.W	AspettaBlitter
 ;	MOVE.L	#$ffffffff,$44(A6)
@@ -1319,7 +1305,7 @@ DisegnaSfondo:
 	MOVE.L	PuntaSfondoGr,A1	; destinazione in a1
 	ADDQ.L	#2,PuntaSfondoGr 	; avanziamo di 16 bit (PROSSIMA TILE)
 
-	MOVEQ	#5-1,D4				; Numero blittate = 5 per 5 planes
+	MOVEQ	#5-1,D4
 .BlittaLoopSfondo:
 	BSR.W	AspettaBlitter
 	MOVE.L	#$ffffffff,$44(A6)	; BLTAFWM e BLTALWM
@@ -1366,7 +1352,7 @@ CopiaVideo:
 	MOVE.W	#8,$64(A6)				; BLTAMOD = 48-40 (sorgente pitch 48)
 	MOVE.W	#0,$66(A6)				; BLTDMOD = 40-40 (dest pitch 40)
 
-	MOVEQ	#5-1,D4					; Numero blittate = 5 per 5 planes
+	MOVEQ	#5-1,D4
 .BlittaLoopVideo:
 	BSR.W	AspettaBlitter			; Aspetta che il blit precedente finisca
 	MOVE.L	A2,$50(A6)				; BLTAPT
@@ -2164,10 +2150,6 @@ Combattimento:
 	MOVE.W	bob_InvulnMax(A0),bob_Invuln(A0)
 	; Cambia AI nemico a Hunt (allarme!)
 	MOVE.W	#2,bob_AI(A0)
-	; Knockback nemico nella direzione del player
-	; A0 = nemico (target), A1 = player (attacker) — ordine giusto
-	BSR.W	ApplyKnockback
-	; Se PF nemico = 0 -> disattiva
 	TST.W	bob_PF(A0)
 	BNE.S	.player_no_hit
 	MOVE.W	#0,bob_Active(A0)
@@ -2195,16 +2177,6 @@ Combattimento:
 .player_alive:
 	MOVE.W	D2,bob_PF(A1)
 	MOVE.W	bob_InvulnMax(A1),bob_Invuln(A1)
-	; Knockback player nella direzione del nemico
-	; Per ApplyKnockback serve A0=target, A1=attacker
-	; Qui A0=nemico, A1=player -> dobbiamo SCAMBIARLI
-	EXG		A0,A1					; A0=player (target), A1=nemico (attacker)
-	BSR.W	ApplyKnockback
-	EXG		A0,A1					; ripristina A0=nemico, A1=player
-	; Sync bob_WorldX/Y del Player con PlayerWorldX/Y (se il player e' stato spostato)
-	MOVE.W	bob_WorldX(A1),PlayerWorldX
-	MOVE.W	bob_WorldY(A1),PlayerWorldY
-
 .next:
 	LEA		bob_Length(A0),A0			; prossimo nemico
 	DBRA	D0,.loop
@@ -2329,104 +2301,280 @@ OctantsClose:
 	MOVEM.L	(SP)+,D0
 	RTS
 *****************************************************************************
-* ApplyKnockback
-*   Applica una spinta al BOB "target" nella direzione dell'attaccante.
-*   Il movimento e' di (attacker.*2) pixel nella direzione attacker.Direzione.
-*   Se la nuova posizione e' bloccata (muro/fuori mappa), prova step piu' piccoli.
+* UpdateDarkPlane
+*   Aggiorna il dark plane (DARKPLANE_*) ad ogni frame, in 2 step:
 *
-*   INPUT:
-*     A0 = target (BOB che riceve il knockback)
-*     A1 = attacker (BOB che lo infligge)
-*   USA: D0-D5 (scratch, non preserva)
-*   PRESERVA: A0, A1
+*   STEP 1: Fill del DARKPLANE_corrente (= CurrentDarkDraw)
+*     - NightMode=0 (giorno): tutto $00 -> nessun pixel half-bright
+*     - NightMode=1 (notte): tutto $FF -> tutto half-bright (scuro)
+*
+*   STEP 2: Disegna sorgenti luminose (solo se notte)
+*     Scansiona le 22x18 tile del buffer visibile. Per ogni tile=TILE_LUCE
+*     disegna un cerchio di "luce" (= pixel a 0 sul dark plane) centrato sulla
+*     tile, raggio = RAGGIO_LUCE.
+*
+*   Il cerchio è disegnato con una tabella di "mezza-larghezza per riga"
+*   (LightHalfWidthTable) per evitare sqrt a runtime.
 *****************************************************************************
-ApplyKnockback:
-	MOVEM.L	D0-D5/A0-A2,-(SP)
+UpdateDarkPlane:
+	MOVEM.L	D0-D7/A0-A4,-(SP)
 
-	; Carica delta dalla DirectionDeltas[attacker.Direzione]
-	MOVE.W	bob_Direzione(A1),D2
-	AND.W	#7,D2					; sicurezza: clamp 0..7
-	LSL.W	#2,D2					; *2 (2 byte per entry: dx + dy word)
-	LEA		DirectionDeltas,A2
-	MOVE.W	(A2,D2.W),D3			; D3 = dx normalizzato (-1, 0, 1)
-	MOVE.W	2(A2,D2.W),D4			; D4 = dy normalizzato
+	; ----- STEP 1: Fill del DARKPLANE_corrente -----
+	; Aspetta blitter (per non corrompere se ci sono blit in corso)
+	BSR.W	AspettaBlitter
 
-	; Moltiplica per attacker.Speed
-	MOVE.W	bob_Speed(A1),D5
-	MULS.W	D5,D3					; D3 = dx_totale
-	MULS.W	D5,D4					; D4 = dy_totale
+	MOVE.L	CurrentDarkDraw,A0
+	; Determina valore di fill: 0 = giorno, $FFFFFFFF = notte
+	MOVEQ	#0,D1
+	TST.B	NightMode
+	BEQ.S	.do_fill
+	MOVE.L	#$FFFFFFFF,D1
+.do_fill:
+	MOVE.W	#(40*256/4)-1,D2
+.fill_loop:
+	MOVE.L	D1,(A0)+
+	DBRA	D2,.fill_loop
 
-	; Provo a muovere il target di (D3, D4)
-	; Strategia: provo a step interi, riducendo fino a 0 se bloccato.
-	; Loop: provo (D3, D4), se bloccato provo (D3/2, D4/2), ecc.
-	; Approccio semplice: tentativo singolo, se bloccato accorciamo step
-	;
-	; In realta' poiche' DirectionDeltas restituisce sempre valori in {-1,0,1}
-	; e Speed e' tipicamente piccolo (1-3), facciamo step-by-step di 1 pixel
-	; finche' non siamo bloccati.
+	; ----- STEP 2: Lampioni (solo se notte) -----
+	TST.B	NightMode
+	BEQ.W	.done					; giorno: niente lampioni da disegnare
 
-	; Determino unitDX/unitDY (segno di D3/D4)
-	MOVE.W	D3,D0					; segno di dx
-	BEQ.S	.unitdx_zero
-	BPL.S	.unitdx_pos
-	MOVEQ	#-1,D0
-	BRA.S	.unitdx_done
-.unitdx_pos:
-	MOVEQ	#1,D0
-.unitdx_done:
-	; D0 = unitDX (-1, 0, 1)
-.unitdx_zero:
-	MOVE.W	D4,D1					; segno di dy
-	BEQ.S	.unitdy_zero
-	BPL.S	.unitdy_pos
-	MOVEQ	#-1,D1
-	BRA.S	.unitdy_done
-.unitdy_pos:
-	MOVEQ	#1,D1
-.unitdy_done:
-.unitdy_zero:
-	; D0 = unitDX, D1 = unitDY
+	; Scansione viewport: BUFFER_COLS x BUFFER_ROWS tile
+	; map_col_start = TileX, map_row_start = TileY
+	; Per ogni tile (row, col): se MAPPA[map_row][map_col] == TILE_LUCE,
+	;   center_screen_x = col*16 + 8 - PixelOffX
+	;   center_screen_y = row*16 + 8 - PixelOffY
+	;   disegna cerchio
 
-	; Numero di step da provare = |Speed| * 2 (knockback raddoppiato per impatto piu' evidente)
-	MOVE.W	bob_Speed(A1),D5
-	LSL.W	#4,D5					; D5 *= 4
-;	ADD.W	D5,D5					; D5 *= 2
-	BEQ.S	.kb_done				; speed 0, niente knockback
+	MOVE.W	TileY,D6				; D6 = row corrente nella mappa
+	MOVEQ	#0,D7					; D7 = row buffer corrente (0..BUFFER_ROWS-1)
+.row_loop:
+	; Calcola center_screen_y = D7*16 + 8 - PixelOffY
+	MOVE.W	D7,D5
+	LSL.W	#4,D5					; D5 = D7*16
+	ADDQ.W	#8,D5					; +8 (centro)
+	SUB.W	PixelOffY,D5			; D5 = center_screen_y
+	; Cull: se y fuori da [-RAGGIO_LUCE, 256+RAGGIO_LUCE], skip
+	CMP.W	#-RAGGIO_LUCE,D5
+	BLT.W	.next_row
+	CMP.W	#256+RAGGIO_LUCE,D5
+	BGE.W	.next_row
 
-	; Loop step
-.kb_loop:
-	; Prossima posizione candidata
-	MOVE.W	bob_WorldX(A0),D2
-	ADD.W	D0,D2					; D2 = X candidato
-	MOVE.W	bob_WorldY(A0),D3
-	ADD.W	D1,D3					; D3 = Y candidato
+	; Loop colonne
+	MOVE.W	TileX,D4				; D4 = col corrente nella mappa
+	MOVEQ	#0,D3					; D3 = col buffer (0..BUFFER_COLS-1)
+.col_loop:
+	; Bounds check su MAPPA
+	CMP.W	#MAPPA_COLS,D4
+	BGE.S	.next_col
+	CMP.W	#MAPPA_ROWS,D6
+	BGE.W	.next_row_full
 
-	; Test IsBoxBlocked(D0=X, D1=Y) -> ma D0/D1 sono gia' i deltas.
-	; Devo salvare D0/D1 e passare i candidati.
-	MOVEM.L	D0/D1,-(SP)
-	MOVE.W	D2,D0
-	MOVE.W	D3,D1
-	BSR.W	IsBoxBlocked
-	; D2 = 0 libero, 1 bloccato
-	MOVEM.L	(SP)+,D0/D1
+	; Leggi MAPPA[D6][D4]
+	; offset = (D6 * MAPPA_COLS + D4) * 2
+	MOVE.W	D6,D2
+	MULU.W	#MAPPA_COLS,D2
+	ADD.W	D4,D2
+	ADD.W	D2,D2					; * 2 (word)
+	LEA		MAPPA,A0
+	MOVE.W	(A0,D2.W),D2			; D2 = numero tile
+	CMP.W	#TILE_LUCE,D2
+	BNE.S	.next_col
 
-	TST.B	D2
-	BNE.S	.kb_done				; bloccato -> stop, niente piu' step
+	; LUCE TROVATA!
+	; center_screen_x = D3*16 + 8 - PixelOffX
+	MOVE.W	D3,D0
+	LSL.W	#4,D0
+	ADDQ.W	#8,D0
+	SUB.W	PixelOffX,D0			; D0 = center_screen_x
+	; center_screen_y = D7*16 + 8 - PixelOffY
+	MOVE.W	D7,D1
+	LSL.W	#4,D1
+	ADDQ.W	#8,D1					; +16 (offset) +8 (centro)
+	SUB.W	PixelOffY,D1			; D1 = center_screen_y
+	BSR.W	DisegnaCerchioLuce		; INPUT: D0=cx, D1=cy
 
-	; Step accettato: aggiorna posizione
-	MOVE.W	bob_WorldX(A0),D2
-	ADD.W	D0,D2
-	MOVE.W	D2,bob_WorldX(A0)
-	MOVE.W	bob_WorldY(A0),D3
-	ADD.W	D1,D3
-	MOVE.W	D3,bob_WorldY(A0)
+.next_col:
+	ADDQ.W	#1,D3					; col buffer +1
+	ADDQ.W	#1,D4					; col mappa +1
+	CMP.W	#BUFFER_COLS,D3
+	BLT.W	.col_loop
 
-	SUBQ.W	#1,D5
-	BNE.S	.kb_loop
+.next_row:
+	ADDQ.W	#1,D7					; row buffer +1
+	ADDQ.W	#1,D6					; row mappa +1
+	CMP.W	#BUFFER_ROWS,D7
+	BLT.W	.row_loop
+	BRA.S	.done
 
-.kb_done:
-	MOVEM.L	(SP)+,D0-D5/A0-A2
+.next_row_full:
+	; Saltiamo direttamente alla prossima riga (= fine col_loop forzata)
+	ADDQ.W	#1,D7
+	ADDQ.W	#1,D6
+	CMP.W	#BUFFER_ROWS,D7
+	BLT.W	.row_loop
+
+.done:
+	MOVEM.L	(SP)+,D0-D7/A0-A4
 	RTS
+
+*****************************************************************************
+* DisegnaCerchioLuce
+*   Disegna un cerchio di "luce" (= bit a 0) sul dark plane corrente.
+*   INPUT:
+*     D0.w = center X schermo (puo' essere negativo)
+*     D1.w = center Y schermo (idem)
+*   Raggio = RAGGIO_LUCE.
+*
+*   Strategia: per ogni riga dy, calcola span [x_left..x_right] e fa
+*   AND-NOT con la maschera sul dark plane (= spegne i pixel = luce).
+*****************************************************************************
+DisegnaCerchioLuce:
+	MOVEM.L	D0-D7/A0-A3,-(SP)
+
+	; Salvo cx, cy in registri "stabili" usando A2, A3 (.w)
+	MOVE.W	D0,A2					; A2 = cx
+	MOVE.W	D1,A3					; A3 = cy
+
+	; Loop esterno: dy da -RAGGIO_LUCE a +RAGGIO_LUCE
+	; Uso D7 come dy (preservato attraverso il loop interno con la stack)
+	MOVE.W	#-RAGGIO_LUCE,D7
+.dy_loop:
+	; Salvo D7 (dy) sullo stack durante il loop interno
+	MOVE.W	D7,-(SP)
+
+	; y_riga = cy + dy
+	MOVE.W	A3,D3
+	ADD.W	D7,D3					; D3 = y_riga
+	; Cull verticale
+	BMI.W	.skip_row
+	CMP.W	#256,D3
+	BGE.W	.skip_row
+
+	; half = LightHalfWidthTable[|dy|]
+	MOVE.W	D7,D4
+	BPL.S	.abs_ok
+	NEG.W	D4
+.abs_ok:
+	LEA		LightHalfWidthTable,A0
+	MOVE.B	(A0,D4.W),D5
+	EXT.W	D5						; D5 = half
+	TST.W	D5
+	BEQ.W	.skip_row				; half=0
+
+	; x_left = cx - half, x_right = cx + half - 1
+	MOVE.W	A2,D0
+	SUB.W	D5,D0					; D0 = x_left
+	MOVE.W	A2,D1
+	ADD.W	D5,D1
+	SUBQ.W	#1,D1					; D1 = x_right
+
+	; Cull orizzontale
+	TST.W	D1
+	BMI.W	.skip_row
+	CMP.W	#320,D0
+	BGE.W	.skip_row
+	; Clip
+	TST.W	D0
+	BPL.S	.lc_ok
+	MOVEQ	#0,D0
+.lc_ok:
+	CMP.W	#319,D1
+	BLE.S	.rc_ok
+	MOVE.W	#319,D1
+.rc_ok:
+	; D0 = x_left clippato, D1 = x_right clippato
+
+	; A1 = base riga sul dark plane
+	MOVE.L	CurrentDarkDraw,A1
+	MOVE.W	D3,D4
+	MULU.W	#40,D4
+	ADDA.L	D4,A1
+
+	; byte_left = D0 >> 3, byte_right = D1 >> 3
+	; bit_left = D0 & 7, bit_right = D1 & 7
+	MOVE.W	D0,D2					; D2 = byte_left
+	LSR.W	#3,D2
+	MOVE.W	D1,D3					; D3 = byte_right
+	LSR.W	#3,D3
+	MOVE.W	D0,D4
+	ANDI.W	#7,D4					; D4 = bit_left
+	MOVE.W	D1,D5
+	ANDI.W	#7,D5					; D5 = bit_right
+
+	; A1 += byte_left
+	ADDA.W	D2,A1
+
+	; Costruisco maschere PER LATO:
+	; left_mask  = $FF >> bit_left   (bit da spegnere nel byte sinistro)
+	; right_mask = $FF << (7 - bit_right), poi & $FF
+	MOVE.W	#$FF,D6
+	LSR.W	D4,D6					; D6 = left_mask
+	MOVEQ	#7,D0
+	SUB.W	D5,D0					; D0 = 7 - bit_right
+	MOVE.W	#$FF,D5
+	LSL.W	D0,D5
+	ANDI.W	#$FF,D5					; D5 = right_mask
+
+	; Confronto byte_left vs byte_right
+	CMP.W	D2,D3
+	BNE.S	.multi_byte
+
+	; SINGLE BYTE: mask = left_mask AND right_mask
+	AND.B	D5,D6					; D6 = mask combinata
+	NOT.B	D6
+	AND.B	D6,(A1)
+	BRA.S	.skip_row
+
+.multi_byte:
+	; Primo byte: AND con NOT left_mask
+	MOVE.B	D6,D0
+	NOT.B	D0
+	AND.B	D0,(A1)+
+	; Byte intermedi: tutti a 0
+	MOVE.W	D3,D0
+	SUB.W	D2,D0					; D0 = byte_right - byte_left
+	SUBQ.W	#1,D0					; D0 = numero intermedi (= byte_right - byte_left - 1)
+	BLE.S	.middle_done			; <=0: nessun intermedio
+	SUBQ.W	#1,D0
+	BMI.S	.middle_done
+.middle_loop:
+	CLR.B	(A1)+
+	DBRA	D0,.middle_loop
+.middle_done:
+	; Ultimo byte: AND con NOT right_mask
+	MOVE.B	D5,D0
+	NOT.B	D0
+	AND.B	D0,(A1)
+
+.skip_row:
+	; Ripristina dy dallo stack
+	MOVE.W	(SP)+,D7
+	ADDQ.W	#1,D7
+	CMP.W	#RAGGIO_LUCE+1,D7
+	BLT.W	.dy_loop
+
+	MOVEM.L	(SP)+,D0-D7/A0-A3
+	RTS
+
+*****************************************************************************
+* LightHalfWidthTable
+*   Tabella di "mezza-larghezza" per cerchio raggio LIGHT_RADIUS=64.
+*   Indicizzata da |dy| (0..64).
+*   half[dy] = sqrt(64² - dy²)
+*****************************************************************************
+LightHalfWidthTable:
+	dc.b	64,63,63,63,63,63,63,63		; dy  0.. 7
+	dc.b	63,63,63,63,62,62,62,62		; dy  8..15
+	dc.b	61,61,61,61,60,60,60,59		; dy 16..23
+	dc.b	59,58,58,58,57,57,56,55		; dy 24..31
+	dc.b	55,54,54,53,52,52,51,50		; dy 32..39
+	dc.b	49,49,48,47,46,45,44,43		; dy 40..47
+	dc.b	42,41,39,38,37,35,34,32		; dy 48..55
+	dc.b	30,29,27,24,22,19,15,11		; dy 56..63
+	dc.b	 0							; dy 64
+
+	EVEN
 
 *****************************************************************************
 * DisegnaHealthBars
@@ -2873,6 +3021,7 @@ UpdatePlayerWorldPos:
 
 	MOVEM.L	(SP)+,D0-D2/A2
 	RTS
+
 *****************************************************************************
 * UpdatePlayerScreenPos
 *   Calcola bob_X/bob_Y (coordinate schermo del player) come differenza
@@ -3168,6 +3317,13 @@ CurrentDisplay:
 CurrentDraw:	
 	dc.l	BPSFONDO_B	; bitplane su cui disegnare
 
+; Dark plane (6° bitplane EHB): paralleli a CurrentDisplay/Draw
+CurrentDarkDisplay:
+	dc.l	DARKPLANE_A
+CurrentDarkDraw:
+	dc.l	DARKPLANE_B
+
+
 
 *****************************************************************************
 * TileFlags
@@ -3208,8 +3364,8 @@ MAPPA:
 	dc.w	 0, 6, 1,11,12, 1, 1, 1, 1, 1, 1, 1, 1, 1,10,13, 1, 1, 1, 1, 1, 1, 7, 0	;12
 	dc.w	 0, 6, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,10, 5, 3, 9,13, 1, 1, 1, 1, 7, 0	;13
 	dc.w	 0, 6, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 7,14,14,14, 6, 1, 1, 1, 1, 7, 0	;14
-	dc.w	 0, 6, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,11, 8, 8, 8,12, 1, 1, 1, 1, 7, 0	;15
-	dc.w	 0, 6, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 7, 0	;16
+	dc.w	 0, 6, 1, 1, 1,19, 1, 1, 1, 1, 1, 1, 1,11, 8, 8, 8,12, 1, 1, 1, 1, 7, 0	;15
+	dc.w	 0, 6, 1, 1, 1,	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 7, 0	;16
 	dc.w	 0, 6, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 7, 0	;17
 	dc.w	 0, 6, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 7, 0	;18
 	dc.w	 0, 6, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 7, 0	;19
@@ -3240,6 +3396,7 @@ PlayerWorldY:	dc.w	0
 ; PlayerWorldX += IntentX sempre; ScrllX = IntentX solo se player al centro.
 IntentX:		dc.w	0
 IntentY:		dc.w	0
+
 ; Variabili di clipping per DisegnaBOB:
 ;   BobClipSkipRows: numero di righe da saltare all'inizio del frame (clip top)
 ;   BobClipNumRows:  numero di righe totali da blittare
@@ -3258,6 +3415,9 @@ arrow_dn:	dc.b 	0
 arrow_sx:	dc.b 	0
 arrow_rx:	dc.b 	0
 key_space:	dc.b 	0			; 1 se SPACE premuta, 0 altrimenti
+NightMode:	dc.b 	0			; 0 = giorno, 1 = notte (toggle col tasto N)
+NightKeyPrev:	dc.b 	0			; stato precedente del tasto N (per edge detect)
+NightModePrev:	dc.b	0			; ultimo valore "applicato" di NightMode (per rilevare cambi)
 
 	EVEN
 
@@ -3353,7 +3513,7 @@ DirectionDeltas:
 	Section	ChipStuff,data_c
 
 CopperList:
-	dc.w	$0100,%0101001000000001		; BPLCON0 (ECSENA on per AGA palette)
+	dc.w	$0100,%0110001010000001		; BPLCON0: 6 bitplane, EHB on, ECSENA on
 				  ;5432109876543210	
 ; bit 15		HiRes
 ; bit 14-12		Numero di Bitplanes
@@ -3361,11 +3521,12 @@ CopperList:
 ; bit 10 		Dual Playfield
 ; bit 9			Color burst
 ; bit 8			GENLOCK AUDIO
-; bit 7-4		non utilizzati
+; bit 7			EHB (Extra Half-Brite) — il 6° plane dimezza luminosita'
+; bit 6-4		non utilizzati
 ; bit 3			Light Pen
 ; bit 2			LACE
 ; bit 1			External Resync
-; bit 0 		non utilizzato
+; bit 0 		non utilizzato (ECSENA per AGA palette)
 
 	dc.w	$102,0			; BplCon1
 	dc.w	$104,0			; BplCon1
@@ -3379,7 +3540,8 @@ BitPlaneTiles:
 	dc.w 	$e4,$0000,$e6,$0000	;secondo bitplane - BPL1PT
 	dc.w 	$e8,$0000,$ea,$0000	;terzo   bitplane - BPL2PT
 	dc.w 	$ec,$0000,$ee,$0000	;quarto  bitplane - BPL3PT
-	dc.w 	$f0,$0000,$f2,$0000	;quarto  bitplane - BPL3PT
+	dc.w 	$f0,$0000,$f2,$0000	;quinto  bitplane - BPL4PT
+	dc.w 	$f4,$0000,$f6,$0000	;sesto   bitplane - BPL5PT (EHB dark mask)
 
 Sprites:
 	dc.w	$120,0,$122,0			; SPR0PT (InitSprites scrive l'indirizzo)
@@ -3505,7 +3667,7 @@ OMINO_MASK_FIXED:
 
 	cnop	0,8				; allinea a 8 byte per AGA FMODE=3
 BPSFONDO_A:
-	ds.b	5*40*256		; bitplanes  
+	ds.b	5*40*256		; bitplanes (5 plane standard, no dark plane)
 
 	cnop	0,8				; allinea a 8 byte per AGA FMODE=3
 BPSFONDO_B:
@@ -3515,6 +3677,19 @@ BPSFONDO_B:
 SFONDOGRANDE:
 	ds.b	5*SFONDO_PLANE_SIZE	; 5 plane * 48 byte/riga * 288 righe = 69120 byte
 
+	cnop	0,8
+
+; Dark plane sui buffer di display (= cosa viene effettivamente mostrato).
+; Double-buffered come BPSFONDO_A/B. Riempito ad ogni frame da UpdateDarkPlane:
+; 1. Fill con $00 (giorno) o $FF (notte)
+; 2. Scansione viewport: per ogni tile=TILE_LAMPIONE, disegna cerchio di luce
+
+DARKPLANE_A:
+	ds.b	40*256			; 1 plane = 10240 byte
+
+	cnop	0,8
+DARKPLANE_B:
+	ds.b	40*256
 
 ; Maschera dell'OMINO: 1 bitplane (10240 byte = 40*256) calcolata al boot
 ; come OR dei 5 bitplane dello spritesheet originale.
