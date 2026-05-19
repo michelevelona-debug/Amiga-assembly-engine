@@ -1,8 +1,13 @@
 ****************************************************************************
 *				   MEGA GAME												*
 *																			*
+*   Gestire collisioni														*
+*   Aggiungere nemico Bob													*
+*   Muovere omino in tutte le direzioni con una sua AI						*
+*   Gestire collisioni con sfondo e sprite									*
 *   Inserire grafiche 														*
 *   Aggiungere effetti audio												*
+*   Aggiungere musica														*
 *   Inserire logica di gioco (PF, punti, game over)							*
 *																			*
 *****************************************************************************
@@ -15,7 +20,7 @@
 ; Con DMASET decidiamo quali canali DMA aprire e quali chiudere
 
 			;5432109876543210
-DMASET	EQU	%1000001111100000	; bltr, copper, bitplane, SPRITE ON
+DMASET	EQU	%1000001111000000	; bltr, copper, bitplane (SPRITE OFF - test flash)
 ;DMASET	EQU	%1000001111100000	; con SPRITE DMA
 
 *****************************************************************************
@@ -61,7 +66,6 @@ RAWKEY_RIGHT	EQU $4E
 RAWKEY_LEFT	 	EQU $4F
 RAWKEY_SPACE	EQU $40
 RAWKEY_N		EQU $36			; rawkey del tasto N (toggle giorno/notte)
-RAWKEY_M		EQU $37			; rawkey del tasto M (toggle musica)
 
 KEY_RELEASE_BIT EQU 7	   ; bit 7 del keycode decodificato
 ANIM_DELAY		EQU 3
@@ -81,45 +85,29 @@ BULLET_HEIGHT		EQU	4				; altezza dello sprite proiettile
 TILE_LUCE		EQU	19					; numero tile = sorgente di luce
 RAGGIO_LUCE		EQU	64					; raggio in pixel della luce (tile 19)
 
-FaloAnimSpeed	EQU		5			; ogni N frame avanza animazione
-ENEMY_COUNT		EQU		4		; numero massimo di nemici
-VBLANK_MUSIC	equ	1
-
 START:
 *****************************************************************************
 *	PUNTIAMO I BITPLANES DELLE TILES
 *****************************************************************************
 
-	MOVE.L	CurrentDisplay,D0		; in D0 l'indirizzo della memoria per la mappa,
+	MOVE.L	CurrentDisplay,D0		; in d0 l'indirizzo della memoria per la mappa,
 	MOVE.L	#DARKPLANE_A,D2			; dark plane iniziale = A
 
-	BSR.W	AggiornaCopperBPL 		; aggiorna i puntatori bitplane nella copperlist
-
-	BSR.W	AggiornaCopperSPR 		; aggiorna anche i puntatori sprite nella copperlist
+	BSR.W	AggiornaCopperBPL
 
 	LEA		$dff000,A6
 	MOVE.W	#DMASET,$96(A6)			; DMACON - abilita dma
 	MOVE.L	#CopperList,$80(A6)		; Puntiamo la nostra COP
-	MOVE.W	D0,$88(A6)				; Facciamo partire la COP
+	MOVE.W	d0,$88(A6)				; Facciamo partire la COP
 
 	MOVE.W	#$3,$1fc(A6)			; FMODE = $03 (AGA fetch 64-bit per BPL, sprite OCS-style)
 	MOVE.W	#$c00,$106(A6)			; BPLCON3 = LOCT=0, BANK=0, BRDRBLNK
 	MOVE.W	#$0,$10c(A6)			; BPLCON4 = 0 (sprite a colori OCS standard 16-31)
-	; ----- DEBUG: scrivi SPR0PT direttamente nei registri custom -----
-	; In caso la copperlist non riesca ad aggiornare i puntatori sprite,
-	; settiamo manualmente SPR0PT su FuocoFrame_0 e SPR1..7 su EmptySprite.
-	MOVE.L	#FuocoFrame_0,$120(A6)	; SPR0PT (scrittura long su $120 = high+low)
-	MOVE.L	#EmptySprite,$124(A6)	; SPR1PT
-	MOVE.L	#EmptySprite,$128(A6)	; SPR2PT
-	MOVE.L	#EmptySprite,$12c(A6)	; SPR3PT
-	MOVE.L	#EmptySprite,$130(A6)	; SPR4PT
-	MOVE.L	#EmptySprite,$134(A6)	; SPR5PT
-	MOVE.L	#EmptySprite,$138(A6)	; SPR6PT
-	MOVE.L	#EmptySprite,$13c(A6)	; SPR7PT
 
 	BSR.W   InitPlayer				; <-- INIZIALIZZA IL PLAYER
 	BSR.W   InitEnemies				; <-- INIZIALIZZA I NEMICI
 	BSR.W	BuildOminoMask			; Genera la maschera dell'OMINO al boot
+	BSR.W	InitSprites				; <-- INIZIALIZZA SPRITE HARDWARE
 
 	BSR.W	DisegnaSfondo			; Routine che disegna lo sfondo
 
@@ -130,6 +118,7 @@ START:
 	BSR.W	CopiaVideo				; copia anche su A
 ;	BSR.W	AspettaBlitter
 	; (al primo giro del loop il display è B, e disegnamo su A — entrambi pronti)
+ 
 .mainloop:
 *****************************************************************************
 	BSR.W	ReadKeyboard			; Routine che legge la tastiera
@@ -141,7 +130,6 @@ START:
 	BSR.W	AggiornaTiles			; Gestisce l'agggiunta di tiles dalla mappa
 									; al buffer	
 	BSR.W	UpdateDarkPlane			; fill dark plane + lampioni (sempre ogni frame)
-	BSR.W	AnimaFalo				; anima sprite falò e lo posiziona su tile 19
 	BSR.W	CopiaVideo				; Disegna lo schermo
 	BSR.W	UpdatePlayerScreenPos	; Calcola bob_X/Y dalle coord. mondo 
 	BSR.W	UpdateEnemies			; AI dei nemici (movimento)
@@ -155,14 +143,30 @@ START:
 ; --- Sincronizzazione e swap ---
 	BSR.W	AspettaBlitter
 	BSR.S	AspettaVBL
-	BSR.W	GestisciMusica			; start/stop + tick PT Player (chiama _mt_music ogni VBL)
 	BSR.S	SwapBuffers				; aggiorna BPL pointers in copperlist + scambia variabili
 
 	BTST.B	#6,$bfe001				; tasto sx del mouse premuto?
 	BNE.S	.mainloop
 	RTS
 *****************************************************************************
+* ASPETTA VBL
+*****************************************************************************
+AspettaVBL:
+	MOVEM.L D0-D2,-(SP)
+
+	MOVE.L  #$1ff00,D1
+	MOVE.L  #$10800,D2		  ; linea $108
+.wait:
+	MOVE.L  $dff004,D0		  ; VPOSR
+	AND.L   D1,D0
+	CMP.L   D2,D0
+	BNE.S   .wait
+	movem.l (SP)+,D0-D2
+	RTS
+
+*****************************************************************************
 * ROUTINE DI SWAP DEL BUFFER
+*****************************************************************************
 *****************************************************************************
 SwapBuffers:
 	MOVEM.L D0-D2,-(SP)
@@ -187,21 +191,6 @@ SwapBuffers:
 	movem.l (SP)+,D0-D2
 	RTS
 
-*****************************************************************************
-* ASPETTA VBL
-*****************************************************************************
-AspettaVBL:
-	MOVEM.L D0-D2,-(SP)
-
-	MOVE.L  #$1ff00,D1
-	MOVE.L  #$10800,D2		  ; linea $108
-.wait:
-	MOVE.L  $dff004,D0		  ; VPOSR
-	AND.L   D1,D0
-	CMP.L   D2,D0
-	BNE.S   .wait
-	movem.l (SP)+,D0-D2
-	RTS
 *****************************************************************************
 * AGGIORNA I BPL POINTER NELLA COPPERLIST
 * INPUT:  D0 = indirizzo del primo bitplane
@@ -231,120 +220,6 @@ AggiornaCopperBPL:
 	
 	MOVEM.L	(SP)+,D1/A1
 	RTS 
-*****************************************************************************
-* GestisciMusica
-*   Chiamata ogni frame dopo AspettaVBL.
-*   - Se MusicOn cambia da 0 a 1: inizializza player (mt_init) se mai inizializzato,
-*     e di fatto fa "ripartire" la riproduzione.
-*   - Se MusicOn cambia da 1 a 0: ferma il player (mt_end) -> spegne canali audio.
-*   - Se MusicOn = 1: chiama mt_music (= tick del player ogni VBL = 50Hz).
-*
-*   NOTA: PT Player di Frank Wille distrugge molti registri durante mt_music.
-*   Salviamo tutto per sicurezza.
-*****************************************************************************
-GestisciMusica:
-	MOVEM.L	D0-D7/A0-A6,-(SP)
-
-	; A6 = CUSTOM = $DFF000 (PT Player vuole sempre A6 settato cosi')
-	LEA		$DFF000,A6
-
-	; ===== Detect cambio di stato =====
-	MOVE.B	MusicOn,D0
-	CMP.B	MusicOnPrev,D0
-	BEQ.S	.no_change
-	MOVE.B	D0,MusicOnPrev
-
-	TST.B	D0
-	BEQ.S	.do_stop
-
-	; ===== Music ON: start playing =====
-	TST.B	MusicPlayerInit
-	BNE.S	.skip_init
-	; Prima volta: _mt_init(a6=CUSTOM, a0=Module, a1=Samples|NULL, d0=SongPos.b)
-	; A1 = NULL -> samples sono dopo i pattern nel modulo standard
-	LEA		ANTIRIAD_MOD,A0
-	SUBA.L	A1,A1					; A1 = NULL
-	MOVEQ	#0,D0					; SongPos = 0
-	JSR		_mt_init
-	MOVE.B	#1,MusicPlayerInit
-.skip_init:
-	; Abilita riproduzione: _mt_Enable e' BYTE
-	MOVE.B	#1,_mt_Enable
-	BRA.S	.tick
-
-.do_stop:
-	; ===== Music OFF: stop player =====
-	; _mt_end(a6=CUSTOM) -> ferma music e spegne canali audio
-	MOVE.B	#0,_mt_Enable
-	JSR		_mt_end
-	BRA.S	.done
-
-.no_change:
-	; Stato invariato: se music attiva, fai solo il tick
-	TST.B	MusicOn
-	BEQ.S	.done
-
-.tick:
-	; ===== Tick del player =====
-	; _mt_music(a6=CUSTOM) - da chiamare ogni VBL in modalita' VBLANK_MUSIC
-	JSR		_mt_music
-
-.done:
-	MOVEM.L	(SP)+,D0-D7/A0-A6
-	RTS
-
-*****************************************************************************
-* AggiornaCopperSPR
-*   Aggiorna gli sprite pointer nella copperlist (entry "Sprites").
-*   - SPR0 -> frame corrente del falò (FuocoFrame_N, secondo FaloAnimFrame)
-*   - SPR1..SPR7 -> EmptySprite (= disattivati)
-* DISTRUGGE: D0/D1/A0/A1 (preserva tramite stack)
-*****************************************************************************
-AggiornaCopperSPR:
-	MOVEM.L D0-D1/A0-A1,-(SP)
-
-	; --- SPR0: punta al frame corrente del falò ---
-	LEA		FaloFrameTable,A0
-	MOVE.W	FaloAnimFrame,D0
-	ANDI.W	#7,D0					; sicurezza: 0..7
-	LSL.W	#2,D0					; *4 (long per entry)
-	MOVE.L	(A0,D0.W),D0			; D0 = indirizzo FuocoFrame_N
-	LEA		Sprites,A1
-	; SPR0PT: i registri sono (reg_high, val_high, reg_low, val_low)
-	; A1+2 = val_high (parte alta), A1+6 = val_low (parte bassa)
-	MOVE.W	D0,6(A1)				; word bassa
-	SWAP	D0
-	MOVE.W	D0,2(A1)				; word alta
-
-	; --- SPR1..SPR7: tutti puntano a EmptySprite ---
-	MOVE.L	#EmptySprite,D0
-	LEA		Sprites+8,A1			; SPR1PT entry
-	MOVEQ	#7-1,D1					; 7 sprite da disattivare
-.loop:
-	MOVE.W	D0,6(A1)
-	SWAP	D0
-	MOVE.W	D0,2(A1)
-	SWAP	D0
-	ADDQ.W	#8,A1					; prossima entry sprite nella copperlist
-	DBRA	D1,.loop
-
-	MOVEM.L	(SP)+,D0-D1/A0-A1
-	RTS 
-
-*****************************************************************************
-* FaloFrameTable
-*   Indirizzi dei 6 frame del falò (per indicizzazione veloce).
-*****************************************************************************
-FaloFrameTable:
-	dc.l	FuocoFrame_0
-	dc.l	FuocoFrame_1
-	dc.l	FuocoFrame_2
-	dc.l	FuocoFrame_3
-	dc.l	FuocoFrame_4
-	dc.l	FuocoFrame_5
-	dc.l	FuocoFrame_0			; padding per ANDI #7 sicurezza
-	dc.l	FuocoFrame_0
-
 *****************************************************************************
 * ROUTINE DI ATTESA TASTO DI SX DEL MOUSE 
 *****************************************************************************
@@ -574,7 +449,7 @@ ProcessArrowKey:
 
 .k_night:
 	cmp.b	#RAWKEY_N,D2
-	bne.s	.k_music
+	bne.s	.done
 	; D1 = 1 (premuto) o 0 (rilasciato)
 	; Toggle solo al "press" (edge): se NightKeyPrev=0 e D1=1, toggle
 	tst.b	D1
@@ -585,22 +460,6 @@ ProcessArrowKey:
 	eori.b	#1,NightMode
 .n_release:
 	move.b	D1,NightKeyPrev
-
-.k_music:
-	cmp.b	#RAWKEY_M,D2
-	bne.s	.done
-	; D1 = 1 (premuto) o 0 (rilasciato)
-	; Toggle solo al "press" (edge): se MusicKeyPrev=0 e D1=1, toggle
-	tst.b	D1
-	beq.s	.m_release				; rilasciato -> aggiorna prev e basta
-	tst.b	MusicKeyPrev
-	bne.s	.m_release				; era gia' premuto -> no edge
-	; Edge press: toggle MusicOn
-	eori.b	#1,MusicOn
-	; Se MusicOn appena cambiato, dovremo gestirlo nel main loop
-	; (= start/stop player). Per ora basta cambiare il flag.
-.m_release:
-	move.b	D1,MusicKeyPrev
 
 .done:
 
@@ -646,7 +505,6 @@ GestisciShiftPixel:
 	MOVEM.L	(SP)+,D0-D1
 
 	RTS
-
 *****************************************************************************
 * AGGIORNA TILES
 *
@@ -1934,6 +1792,53 @@ UpdateEnemies:
 
 	MOVEM.L	(SP)+,D0/A0
 	RTS
+* InitSprites
+*   Setup degli sprite hardware:
+*   - SPR0 punta a BulletSprite
+*   - SPR1..SPR7 puntano a EmptySprite
+*****************************************************************************
+InitSprites:
+	MOVEM.L	D0-D2/A0/A1,-(SP)
+
+	; Inizializza header BulletSprite OFF (sprite non visualizzato)
+	LEA		BulletSprite,A0
+	MOVE.W	#0,(A0)
+	MOVE.W	#0,2(A0)
+
+	; A0 = inizio Sprites nella copperlist
+	LEA		Sprites,A0
+
+	; SPR0 -> BulletSprite
+	MOVE.L	#BulletSprite,D0
+	MOVE.W	D0,6(A0)
+	SWAP	D0
+	MOVE.W	D0,2(A0)
+
+	; SPR1..SPR7 -> EmptySprite
+	MOVE.L	#EmptySprite,D1
+	LEA		8(A0),A1
+	MOVEQ	#7-1,D2
+.spr_loop:
+	MOVE.L	D1,D0
+	MOVE.W	D0,6(A1)
+	SWAP	D0
+	MOVE.W	D0,2(A1)
+	ADDA.L	#8,A1
+	DBRA	D2,.spr_loop
+
+	; Scrivi anche direttamente nei registri custom (per il primo frame)
+	LEA		$dff000,A0
+	MOVE.L	#BulletSprite,$120(A0)
+	MOVE.L	#EmptySprite,$124(A0)
+	MOVE.L	#EmptySprite,$128(A0)
+	MOVE.L	#EmptySprite,$12c(A0)
+	MOVE.L	#EmptySprite,$130(A0)
+	MOVE.L	#EmptySprite,$134(A0)
+	MOVE.L	#EmptySprite,$138(A0)
+	MOVE.L	#EmptySprite,$13c(A0)
+
+	MOVEM.L	(SP)+,D0-D2/A0/A1
+	RTS
 
 *****************************************************************************
 * ProcessBullet
@@ -2076,6 +1981,90 @@ Proiettile:
 	MOVE.W	D1,FirePrev
 
 	MOVEM.L	(SP)+,D0-D5/A0
+	RTS
+
+*****************************************************************************
+* UpdateBulletSprite
+*   Aggiorna SPRPOS/SPRCTL dello sprite hardware del proiettile.
+*****************************************************************************
+AggiornaProiettile:
+
+	MOVEM.L	D0-D3/A0,-(SP)
+
+	LEA		BulletSprite,A0
+
+	TST.W	Bullet_Active
+	BNE.S	.spr_on
+	MOVE.W	#0,(A0)
+	MOVE.W	#0,2(A0)
+	BRA.W	.done
+
+.spr_on:
+	; screenX = Bullet_X - CameraX
+	MOVE.W	TileX,D0
+	LSL.W	#4,D0
+	ADD.W	PixelOffX,D0
+	MOVE.W	Bullet_X,D2
+	SUB.W	D0,D2
+
+	; screenY = Bullet_Y - CameraY
+	MOVE.W	TileY,D0
+	LSL.W	#4,D0
+	ADD.W	PixelOffY,D0
+	MOVE.W	Bullet_Y,D3
+	SUB.W	D0,D3
+
+	; Cull
+	TST.W	D2
+	BMI.S	.spr_off
+	CMP.W	#320,D2
+	BGE.S	.spr_off
+	TST.W	D3
+	BMI.S	.spr_off
+	CMP.W	#256-BULLET_HEIGHT,D3
+	BGE.S	.spr_off
+
+	; VSTART = screenY + $2C, HSTART = screenX + $81
+	ADDI.W	#$2C,D3
+	ADDI.W	#$81,D2
+
+	; SPRPOS = (VSTART low << 8) | (HSTART >> 1)
+	MOVE.W	D3,D0
+	ANDI.W	#$FF,D0
+	LSL.W	#8,D0
+	MOVE.W	D2,D1
+	LSR.W	#1,D1
+	ANDI.W	#$FF,D1
+	OR.W	D1,D0
+	MOVE.W	D0,(A0)
+
+	; SPRCTL = (VSTOP low << 8) | bits estensione
+	MOVE.W	D3,D0
+	ADDI.W	#BULLET_HEIGHT,D0
+	ANDI.W	#$FF,D0
+	LSL.W	#8,D0
+	BTST	#8,D3
+	BEQ.S	.no_vs8
+	BSET	#2,D0
+.no_vs8:
+	MOVE.W	D3,D1
+	ADDI.W	#BULLET_HEIGHT,D1
+	BTST	#8,D1
+	BEQ.S	.no_vp8
+	BSET	#1,D0
+.no_vp8:
+	BTST	#0,D2
+	BEQ.S	.no_h0
+	BSET	#0,D0
+.no_h0:
+	MOVE.W	D0,2(A0)
+	BRA.S	.done
+
+.spr_off:
+	MOVE.W	#0,(A0)
+	MOVE.W	#0,2(A0)
+.done:
+	MOVEM.L	(SP)+,D0-D3/A0
 	RTS
 
 *****************************************************************************
@@ -2311,275 +2300,6 @@ OctantsClose:
 .done:
 	MOVEM.L	(SP)+,D0
 	RTS
-
-*****************************************************************************
-* AnimaFalo
-*   Gestisce l'animazione del falò (sprite hardware SPR0):
-*   - Avanza FaloAnimFrame ogni FaloAnimSpeed frame
-*   - Trova la prima tile 19 nella viewport e calcola posizione schermo
-*   - Costruisce SPRPOS/SPRCTL per quel frame
-*   - Aggiorna SPR0PT nella copperlist (Sprites entry)
-*   Se nessuna tile 19 visibile: SPR0PT -> EmptySprite (invisibile).
-*****************************************************************************
-AnimaFalo:
-	MOVEM.L	D0-D7/A0-A4,-(SP)
-	
-	; ----- Di giorno (NightMode=0): sprite invisibile, esci subito -----
-	TST.B	NightMode
-	BNE.S	.is_night
-	; Giorno: SPR0 -> EmptySprite
-	MOVE.L	#EmptySprite,D0
-	LEA		Sprites,A1
-	MOVE.W	D0,6(A1)
-	SWAP	D0
-	MOVE.W	D0,2(A1)
-	BRA.W	.done
-.is_night:
-	; ----- Avanza il frame di animazione ogni FaloAnimSpeed frame -----
-	ADDQ.W	#1,FaloAnimDelay
-	CMP.W	#FaloAnimSpeed,FaloAnimDelay
-	BLT.S	.no_advance
-	CLR.W	FaloAnimDelay
-	ADDQ.W	#1,FaloAnimFrame
-	CMP.W	#6,FaloAnimFrame
-	BLT.S	.no_advance
-	CLR.W	FaloAnimFrame
-.no_advance:
-
-	; ===== DEBUG: posizione fissa basata su tile 19 in MAPPA[15][5] =====
-	; Sottraggo TileX/TileY per compensare lo scroll
-	; D3 = 5 - TileX, D7 = 15 - TileY
-	MOVE.W	#5,D3
-	SUB.W	TileX,D3				; D3 = col buffer della tile 19
-	MOVE.W	#15,D7
-	SUB.W	TileY,D7				; D7 = row buffer della tile 19
-
-	; Cull: se fuori dal buffer visibile, sprite invisibile
-	TST.W	D3
-	BMI.W	.no_falo
-	CMP.W	#BUFFER_COLS,D3
-	BGE.W	.no_falo
-	TST.W	D7
-	BMI.W	.no_falo
-	CMP.W	#BUFFER_ROWS,D7
-	BGE.W	.no_falo
-
-	BRA.W	.found_falo
-
-.no_falo:
-	; Sprite invisibile (fuori viewport)
-	MOVE.L	#EmptySprite,D0
-	LEA		Sprites,A1
-	MOVE.W	D0,6(A1)
-	SWAP	D0
-	MOVE.W	D0,2(A1)
-	BRA.W	.done
-
-.found_falo:
-	; D3 = col buffer, D7 = row buffer
-	; Il rendering visualizza le tile sfasate di 1 tile: la tile buffer (D3,D7)
-	; appare a screen ((D3-1)*16 - PixelOffX, (D7-1)*16 - PixelOffY).
-	; Per uno sprite 16x16 sovrapposto alla tile:
-	;   topleft_x = (D3-1)*16 - PixelOffX = D3*16 - 16 - PixelOffX
-	;   topleft_y = (D7-1)*16 - PixelOffY = D7*16 - 16 - PixelOffY
-	MOVE.W	D3,D0
-	LSL.W	#4,D0					; D0 = D3*16
-	SUBI.W	#16,D0					; -16 (fix sfasamento rendering)
-	SUB.W	PixelOffX,D0			; D0 = topleft_x
-
-	MOVE.W	D7,D1
-	LSL.W	#4,D1
-	SUBI.W	#16,D1
-	SUB.W	PixelOffY,D1			; D1 = topleft_y
-
-	; ----- Costruisco SPRPOS/SPRCTL -----
-	; VSTART_reg = $2C + screen_y
-	; VSTOP_reg  = VSTART_reg + 16
-	; HSTART_reg = $81 + screen_x  (pixel lores 1-to-1)
-	ADDI.W	#$2C,D1					; D1 = VSTART
-	MOVE.W	D1,D2
-	ADDI.W	#16,D2					; D2 = VSTOP
-
-	ADDI.W	#$81,D0					; D0 = HSTART
-
-	; ----- Costruisco SPRPOS/SPRCTL -----
-	; SPRPOS: bit 15-8 = SV7-SV0 (= VSTART[7:0])
-	;         bit 7-0  = SH8-SH1 (= HSTART[8:1])  <- importante!
-	; SPRCTL: bit 15-8 = EV7-EV0 (= VSTOP[7:0])
-	;         bit 7    = ATT
-	;         bit 2    = SV8 (= VSTART[8])
-	;         bit 1    = EV8 (= VSTOP[8])
-	;         bit 0    = SH0 (= HSTART[0])
-
-	; D3 = SPRPOS (build): (VSTART[7:0] << 8) | (HSTART[8:1])
-	MOVE.W	D1,D3
-	ANDI.W	#$FF,D3
-	LSL.W	#8,D3					; bit 15-8 = VSTART[7:0]
-	MOVE.W	D0,D4
-	LSR.W	#1,D4					; D4 = HSTART >> 1
-	ANDI.W	#$FF,D4
-	OR.W	D4,D3					; D3 = SPRPOS
-
-	; D5 = SPRCTL (build): (VSTOP[7:0] << 8) | flags
-	MOVE.W	D2,D5
-	ANDI.W	#$FF,D5
-	LSL.W	#8,D5					; bit 15-8 = VSTOP[7:0]
-	BTST	#8,D1
-	BEQ.S	.no_v8a
-	BSET	#2,D5					; VSTART[8] (SV8)
-.no_v8a:
-	BTST	#8,D2
-	BEQ.S	.no_v8b
-	BSET	#1,D5					; VSTOP[8] (EV8)
-.no_v8b:
-	BTST	#0,D0
-	BEQ.S	.no_h0
-	BSET	#0,D5					; HSTART[0] (SH0)
-.no_h0:
-
-	; ----- Scrivo SPRPOS/SPRCTL in TUTTI i 6 frame -----
-	; Cosi' qualunque sia il frame corrente, la posizione e' sempre corretta.
-	LEA		FaloFrameTable,A0
-	MOVEQ	#6-1,D7					; 6 frame
-.write_pos_loop:
-	MOVE.L	(A0)+,A2				; A2 = FuocoFrame_N
-	MOVE.W	D3,(A2)					; SPRPOS
-	MOVE.W	D5,2(A2)				; SPRCTL
-	DBRA	D7,.write_pos_loop
-
-	; ----- Aggiorno SPR0PT nella copperlist (Sprites entry) -----
-	LEA		FaloFrameTable,A0
-	MOVE.W	FaloAnimFrame,D4
-	LSL.W	#2,D4
-	MOVE.L	(A0,D4.W),D0			; D0 = FuocoFrame_N corrente
-	LEA		Sprites,A1
-	MOVE.W	D0,6(A1)
-	SWAP	D0
-	MOVE.W	D0,2(A1)
-
-.done:
-	MOVEM.L	(SP)+,D0-D7/A0-A4
-	RTS
-
-*****************************************************************************
-* AggiornaProiettile
-*   Aggiorna sprite SPR1 (BulletSprite) in base allo stato del proiettile:
-*   - Bullet_Active=0 -> SPR1PT punta a EmptySprite (= invisibile)
-*   - Bullet_Active=1 -> calcola SPRPOS/SPRCTL da Bullet_X/Y (world coords),
-*                        converte a screen coords e aggiorna BulletSprite
-*
-*   Camera world->screen:
-*     screen_x = Bullet_X - (TileX*16 + PixelOffX)
-*     screen_y = Bullet_Y - (TileY*16 + PixelOffY)
-*   Top-left sprite (16x16, fix sfasamento rendering -8 -8):
-*     topleft_x = screen_x - 8 - 8 = screen_x - 16
-*     topleft_y = screen_y - 8 - 8 = screen_y - 16
-*   (= stesso fix usato per AnimaFalo, sprite hardware ha coord native DIW)
-*
-*   SPRPOS/SPRCTL: stessa logica di AnimaFalo (bit mapping HSTART corretto).
-*****************************************************************************
-AggiornaProiettile:
-	MOVEM.L	D0-D5/A0-A2,-(SP)
-
-	; ----- Se proiettile inattivo: SPR1PT -> EmptySprite, esci -----
-	TST.W	Bullet_Active
-	BNE.S	.is_active
-	MOVE.L	#EmptySprite,D0
-	LEA		Sprites+8,A1			; Sprites+8 = SPR1PT entry
-	MOVE.W	D0,6(A1)
-	SWAP	D0
-	MOVE.W	D0,2(A1)
-	BRA.W	.done
-
-.is_active:
-	; ----- Calcola screen_x = Bullet_X - CameraX -----
-	MOVE.W	TileX,D2
-	LSL.W	#4,D2					; D2 = TileX*16
-	ADD.W	PixelOffX,D2			; D2 = CameraX
-	MOVE.W	Bullet_X,D0
-	SUB.W	D2,D0					; D0 = screen_x
-
-	; ----- Calcola screen_y = Bullet_Y - CameraY -----
-	MOVE.W	TileY,D2
-	LSL.W	#4,D2
-	ADD.W	PixelOffY,D2			; D2 = CameraY
-	MOVE.W	Bullet_Y,D1
-	SUB.W	D2,D1					; D1 = screen_y
-
-	; ----- Cull: se fuori schermo, sprite invisibile -----
-	CMP.W	#-16,D0
-	BLT.S	.cull
-	CMP.W	#320,D0
-	BGE.S	.cull
-	CMP.W	#-16,D1
-	BLT.S	.cull
-	CMP.W	#256,D1
-	BLT.S	.in_screen
-.cull:
-	MOVE.L	#EmptySprite,D0
-	LEA		Sprites+8,A1
-	MOVE.W	D0,6(A1)
-	SWAP	D0
-	MOVE.W	D0,2(A1)
-	BRA.W	.done
-
-.in_screen:
-	; ----- Top-left sprite: applichiamo il fix -16/-16 per rendering sfasato -----
-	SUBI.W	#16,D0					; D0 = topleft_x
-	SUBI.W	#16,D1					; D1 = topleft_y
-
-	; ----- Costruisci SPRPOS/SPRCTL (stessa logica di AnimaFalo) -----
-	; VSTART_reg = $2C + screen_y
-	; VSTOP_reg  = VSTART_reg + 16
-	; HSTART_reg = $81 + screen_x (NO divisione - bit mapping in SPRPOS gestisce)
-	ADDI.W	#$2C,D1					; D1 = VSTART
-	MOVE.W	D1,D2
-	ADDI.W	#16,D2					; D2 = VSTOP
-
-	ADDI.W	#$81,D0					; D0 = HSTART (9 bit possibili)
-
-	; SPRPOS: bit 15-8 = SV7-SV0 (VSTART[7:0]), bit 7-0 = SH8-SH1 (HSTART[8:1])
-	MOVE.W	D1,D3
-	ANDI.W	#$FF,D3
-	LSL.W	#8,D3
-	MOVE.W	D0,D4
-	LSR.W	#1,D4					; HSTART >> 1
-	ANDI.W	#$FF,D4
-	OR.W	D4,D3					; D3 = SPRPOS
-
-	; SPRCTL: bit 15-8 = EV7-EV0, bit 2 = SV8, bit 1 = EV8, bit 0 = SH0
-	MOVE.W	D2,D5
-	ANDI.W	#$FF,D5
-	LSL.W	#8,D5
-	BTST	#8,D1
-	BEQ.S	.no_v8a
-	BSET	#2,D5
-.no_v8a:
-	BTST	#8,D2
-	BEQ.S	.no_v8b
-	BSET	#1,D5
-.no_v8b:
-	BTST	#0,D0
-	BEQ.S	.no_h0
-	BSET	#0,D5
-.no_h0:
-
-	; ----- Scrivi SPRPOS/SPRCTL nel BulletSprite -----
-	LEA		BulletSprite,A2
-	MOVE.W	D3,(A2)					; SPRPOS
-	MOVE.W	D5,2(A2)				; SPRCTL
-
-	; ----- SPR1PT -> BulletSprite nella copperlist -----
-	MOVE.L	A2,D0
-	LEA		Sprites+8,A1			; SPR1PT entry (Sprites+0 = SPR0PT)
-	MOVE.W	D0,6(A1)
-	SWAP	D0
-	MOVE.W	D0,2(A1)
-
-.done:
-	MOVEM.L	(SP)+,D0-D5/A0-A2
-	RTS
-
 *****************************************************************************
 * UpdateDarkPlane
 *   Aggiorna il dark plane (DARKPLANE_*) ad ogni frame, in 2 step:
@@ -3698,15 +3418,6 @@ key_space:	dc.b 	0			; 1 se SPACE premuta, 0 altrimenti
 NightMode:	dc.b 	0			; 0 = giorno, 1 = notte (toggle col tasto N)
 NightKeyPrev:	dc.b 	0			; stato precedente del tasto N (per edge detect)
 NightModePrev:	dc.b	0			; ultimo valore "applicato" di NightMode (per rilevare cambi)
-MusicOn:		dc.b	0			; 0 = music off, 1 = music on (toggle col tasto M)
-MusicKeyPrev:	dc.b	0			; stato precedente del tasto M (per edge detect)
-MusicPlayerInit:dc.b	0			; 1 = _mt_init e' gia' stato chiamato
-MusicOnPrev:	dc.b	0			; ultimo valore "applicato" di MusicOn
-
-	EVEN
-; ----- Falò sprite hardware -----
-FaloAnimFrame:	dc.w	0			; frame corrente (0..5)
-FaloAnimDelay:	dc.w	0			; contatore frame per animazione (incrementa ogni VBL)
 
 	EVEN
 
@@ -3818,8 +3529,7 @@ CopperList:
 ; bit 0 		non utilizzato (ECSENA per AGA palette)
 
 	dc.w	$102,0			; BplCon1
-	dc.w	$104,$0024		; BPLCON2 = PF2P=4, PF1P=4 (sprite 0-3 davanti al playfield)
-							; bit 5-3 = PF2P, bit 2-0 = PF1P (4 = primi 4 sprite davanti)
+	dc.w	$104,0			; BplCon1
 	dc.w	$108,0			; BPL1BTH
 	dc.w	$10A,0			; BPL1PTL
 	dc.w 	$0092,$0038,$0094,$00d0 ; DdfStrt - DdfStop
@@ -3873,7 +3583,7 @@ PALETTE:
 	dc.w 	$0188,$00c0,$018a,$0410,$018c,$0621,$018e,$0880	
 	dc.w 	$0190,$00b6,$0192,$00dd,$0194,$00af,$0196,$007c
 	dc.w 	$0198,$000f,$019a,$070f,$019c,$0c0e,$019e,$0c08
-	dc.w 	$01a0,$0d00,$01a2,$0f70,$01a4,$0ff0,$01a6,$0fca	
+	dc.w 	$01a0,$0620,$01a2,$0e52,$01a4,$0a52,$01a6,$0fca	
 	dc.w 	$01a8,$0333,$01aa,$0444,$01ac,$0555,$01ae,$0666
 	dc.w 	$01b0,$0777,$01b2,$0888,$01b4,$0999,$01b6,$0aaa
 	dc.w 	$01b8,$0ccc,$01ba,$0ddd,$01bc,$0eee,$01be,$0fff
@@ -3987,60 +3697,19 @@ DARKPLANE_B:
 OMINO_MASK:
 	ds.b	40*256			; 1 plane mask (stesso pitch di OMINO)
 
-	SECTION	SpritesData,data_c
+	SECTION	BulletSpr,data_c
 	cnop	0,8				; allineamento sprite
-;----------------------------------------------------------------------------
-; MOD ProTracker - DEVE essere in chip RAM (data_c) per Paula DMA
-;----------------------------------------------------------------------------
-	cnop	0,4
-ANTIRIAD_MOD:
-	incbin	"antiriad.amiga.mod"
 
-	cnop	0,8
-; ============================================================================
-; Sprite hardware FUOCO - 6 frame di animazione
-; Ogni frame e' una struttura sprite indipendente:
-;   - 2 word header (SPRPOS, SPRCTL) settati a runtime
-;   - 16 righe x 2 word interleaved (plane0, plane1) = 32 word = 64 byte dati
-;   - 2 word terminator (0, 0)
-; Totale per frame: 2 + 32 + 2 = 36 word = 72 byte
-;
-; A runtime, SPR0PT puntera' a uno dei FuocoFrame_X in base a FaloAnimFrame.
-; ============================================================================
-FuocoFrame_0:
-	dc.w	$0000,$0000				; SPRPOS, SPRCTL (runtime)
-	incbin	"Fuoco_Data.raw",0,64	; offset 0, 64 byte (frame 0)
-	dc.w	0,0						; terminator
-
-	cnop	0,4
-FuocoFrame_1:
-	dc.w	$0000,$0000
-	incbin	"Fuoco_Data.raw",64,64
-	dc.w	0,0
-
-	cnop	0,4
-FuocoFrame_2:
-	dc.w	$0000,$0000
-	incbin	"Fuoco_Data.raw",128,64
-	dc.w	0,0
-
-	cnop	0,4
-FuocoFrame_3:
-	dc.w	$0000,$0000
-	incbin	"Fuoco_Data.raw",192,64
-	dc.w	0,0
-
-	cnop	0,4
-FuocoFrame_4:
-	dc.w	$0000,$0000
-	incbin	"Fuoco_Data.raw",256,64
-	dc.w	0,0
-
-	cnop	0,4
-FuocoFrame_5:
-	dc.w	$0000,$0000
-	incbin	"Fuoco_Data.raw",320,64
-	dc.w	0,0
+; Sprite hardware del proiettile:
+;   header (2 word) + dati (4 righe x 2 word) + terminator (2 word) = 12 word
+; SPRPOS, SPRCTL vengono settate runtime; i dati graphici inizializzati al boot.
+BulletSprite:
+	dc.w	0,0				; SPRPOS, SPRCTL (settati a runtime da AggiornaProiettile)
+	dc.w	$3C00,$0000		; riga 0: 4 pixel centrali, colore 1
+	dc.w	$7E00,$7E00		; riga 1: 6 pixel centrali, colore 3
+	dc.w	$7E00,$7E00		; riga 2: idem
+	dc.w	$3C00,$0000		; riga 3: 4 pixel centrali, colore 1
+	dc.w	0,0				; terminator
 
 	cnop	0,8
 ; Sprite vuoto per disattivare gli sprite non usati (SPR1..SPR7)
@@ -4048,61 +3717,15 @@ EmptySprite:
 	dc.w	0,0				; SPRPOS, SPRCTL
 	dc.w	0,0				; terminator
 
-	cnop	0,8
-; ============================================================================
-; Sprite hardware PROIETTILE (BulletSprite, usa SPR1)
-; Struttura: 2 word header + 16 righe x 2 word interleaved + 2 word terminator
-; Colori: usa SPR1 -> stessa palette di SPR0 (COLOR17/18/19)
-;
-; PLACEHOLDER: piccolo "+" 4x4 con bordo, da sostituire con il tuo sprite.
-; Layout dati per riga: plane0_word, plane1_word
-;   plane0=bit basso (colore 1, 2)
-;   plane1=bit alto (colore 2, 3)
-;   colore 0 = trasparente
-;
-; Frame placeholder corrente: un piccolo cerchio luminoso 4x4 al centro.
-;   bit 6,7,8,9 attivi sulle righe 6,7,8,9 = posizione (6,6)-(9,9) del 16x16
-;   = 4 colore 3 (giallo brillante)
-; ============================================================================
-BulletSprite:
-	dc.w	$0000,$0000				; SPRPOS, SPRCTL (runtime)
-	; 16 righe di dati interleaved (plane0, plane1)
-	; Pattern placeholder: piccolo "+" giallo al centro (colore 3)
-	dc.w	$0000,$0000				; riga 0
-	dc.w	$0000,$0000				; riga 1
-	dc.w	$0000,$0000				; riga 2
-	dc.w	$0000,$0000				; riga 3
-	dc.w	$0000,$0180				; riga 4 - pixel 7,8 (colore 2)
-	dc.w	$0000,$03C0				; riga 5 - pixel 6,7,8,9 (colore 2)
-	dc.w	$0180,$07E0				; riga 6 - 7,8 col 1 + 5-A col 3
-	dc.w	$03C0,$0FF0				; riga 7 - 6-9 col 1 + 4-B col 3
-	dc.w	$03C0,$0FF0				; riga 8 - simmetrica
-	dc.w	$0180,$07E0				; riga 9
-	dc.w	$0000,$03C0				; riga A
-	dc.w	$0000,$0180				; riga B
-	dc.w	$0000,$0000				; riga C
-	dc.w	$0000,$0000				; riga D
-	dc.w	$0000,$0000				; riga E
-	dc.w	$0000,$0000				; riga F
-	dc.w	$0000,$0000				; terminator
-
 	SECTION	Entities,BSS
+ENEMY_COUNT		EQU		4		; numero massimo di nemici
 
 	EVEN
 Player:
 	ds.b	bob_Length		  		; alloca la struct player
 Enemies:
 	ds.b	bob_Length*ENEMY_COUNT	; arrey di nemici
-;----------------------------------------------------------------------------
-; PT PLAYER di Frank Wille (rinominato ptplayer.i per evitare la
-; compilazione automatica dell'extension vscode-amiga-assembly).
-; Incluso ALLA FINE: dichiara una propria SECTION e quindi
-; deve stare dopo tutto il resto.
-;
-; VBLANK_MUSIC=1: il player gira chiamando _mt_music ogni VBL da noi
-; (= GestisciMusica). Niente interrupt CIA, niente _mt_install/_mt_remove.
-;----------------------------------------------------------------------------
-	include	"ptplayer.i"
+
 	end
 
 *****************************************************************************
