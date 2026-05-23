@@ -83,7 +83,27 @@ RAGGIO_LUCE		EQU	64					; raggio in pixel della luce (tile 19)
 
 FaloAnimSpeed	EQU		5			; ogni N frame avanza animazione
 ENEMY_COUNT		EQU		4		; numero massimo di nemici
-VBLANK_MUSIC	equ	1
+
+; PT Player: modalita' standard (VBLANK_MUSIC=0, default).
+; Timer A gestisce il tick musicale automaticamente via interrupt CIA-B.
+; Timer B gestisce il DMA delay automaticamente.
+; Gli SFX funzionano sempre, anche a musica spenta.
+
+; ----- Sound effects (PT Player _mt_playfx) -----
+; sfx_per: period Paula. Valori indicativi:
+;   124  -> ~28.8 kHz (sample HQ)
+;   214  -> ~16.6 kHz
+;   280  -> ~12.7 kHz (default tutti gli SFX qui)
+;   428  -> ~8.3  kHz (C-3 PT standard)
+; sfx_vol: 0..64 (64 = max). Indipendente dal master volume musica.
+; sfx_cha: -1 = scelta automatica del canale meno usato.
+; sfx_pri: 1..127. Priorita' piu' alta vince se il canale e' occupato.
+SFX_PER_DEFAULT		EQU	280
+SFX_VOL_DEFAULT		EQU	64
+SFX_PRI_SPARO		EQU	64
+SFX_PRI_HITENEMY	EQU	90
+SFX_PRI_HITPLAYER	EQU	100
+SFX_PRI_DEATH		EQU	110
 
 START:
 *****************************************************************************
@@ -121,6 +141,26 @@ START:
 	BSR.W   InitEnemies				; <-- INIZIALIZZA I NEMICI
 	BSR.W	BuildOminoMask			; Genera la maschera dell'OMINO al boot
 
+	; ----- PT Player: installa interrupt CIA-B (Timer A + B) -----
+	; _mt_install(a6=CUSTOM, a0=VectorBase, d0=PALflag.b)
+	LEA		$DFF000,A6
+	SUBA.L	A0,A0				; VectorBase = 0 (68000)
+	MOVEQ	#1,D0				; PAL flag = 1
+	JSR		_mt_install
+
+	; Abilita interrupt level 6 (EXTER) + master enable.
+	MOVE.W	#$E000,$DFF09A
+
+	; ----- PT Player: carica e avvia il modulo -----
+	; _mt_init(a6=CUSTOM, a0=Module, a1=Samples|NULL, d0=InitialSongPos.b)
+	LEA		ANTIRIAD_MOD,A0
+	SUBA.L	A1,A1				; A1 = NULL: campioni embedded nel modulo
+	MOVEQ	#0,D0				; SongPos = 0
+	JSR		_mt_init
+	MOVE.B	#1,_mt_Enable		; avvia riproduzione
+	MOVE.B	#1,MusicOn			; flag coerente con stato player
+	MOVE.B	#1,MusicOnPrev		; evita spurious change al primo frame
+
 	BSR.W	DisegnaSfondo			; Routine che disegna lo sfondo
 
 	; Pre-render su entrambi i buffer per evitare il primo frame nero
@@ -128,7 +168,6 @@ START:
 	BSR.W	AspettaBlitter
 	BSR.S	SwapBuffers				; ora display = B, draw = A
 	BSR.W	CopiaVideo				; copia anche su A
-;	BSR.W	AspettaBlitter
 	; (al primo giro del loop il display è B, e disegnamo su A — entrambi pronti)
 .mainloop:
 *****************************************************************************
@@ -160,6 +199,11 @@ START:
 
 	BTST.B	#6,$bfe001				; tasto sx del mouse premuto?
 	BNE.S	.mainloop
+
+	; ----- Cleanup PT Player prima di tornare all'OS -----
+	LEA		$DFF000,A6
+	JSR		_mt_end					; ferma replay + azzera canali audio
+	JSR		_mt_remove				; rimuove handler CIA-B, ripristina timer
 	RTS
 *****************************************************************************
 * ROUTINE DI SWAP DEL BUFFER
@@ -233,64 +277,23 @@ AggiornaCopperBPL:
 	RTS 
 *****************************************************************************
 * GestisciMusica
-*   Chiamata ogni frame dopo AspettaVBL.
-*   - Se MusicOn cambia da 0 a 1: inizializza player (mt_init) se mai inizializzato,
-*     e di fatto fa "ripartire" la riproduzione.
-*   - Se MusicOn cambia da 1 a 0: ferma il player (mt_end) -> spegne canali audio.
-*   - Se MusicOn = 1: chiama mt_music (= tick del player ogni VBL = 50Hz).
-*
-*   NOTA: PT Player di Frank Wille distrugge molti registri durante mt_music.
-*   Salviamo tutto per sicurezza.
+*   Chiamata ogni frame nel main loop.
+*   In modalita' standard Timer-A gestisce il tick automaticamente:
+*   qui ci limitiamo a propagare MusicOn -> _mt_Enable.
+*   - MusicOn=1 -> _mt_Enable=1: Timer-A chiama il player automaticamente.
+*   - MusicOn=0 -> _mt_Enable=0: Timer-A chiama solo mt_sfxonly (SFX ok).
 *****************************************************************************
 GestisciMusica:
-	MOVEM.L	D0-D7/A0-A6,-(SP)
+	MOVEM.L	D0/A6,-(SP)
 
-	; A6 = CUSTOM = $DFF000 (PT Player vuole sempre A6 settato cosi')
-	LEA		$DFF000,A6
-
-	; ===== Detect cambio di stato =====
 	MOVE.B	MusicOn,D0
 	CMP.B	MusicOnPrev,D0
-	BEQ.S	.no_change
-	MOVE.B	D0,MusicOnPrev
-
-	TST.B	D0
-	BEQ.S	.do_stop
-
-	; ===== Music ON: start playing =====
-	TST.B	MusicPlayerInit
-	BNE.S	.skip_init
-	; Prima volta: _mt_init(a6=CUSTOM, a0=Module, a1=Samples|NULL, d0=SongPos.b)
-	; A1 = NULL -> samples sono dopo i pattern nel modulo standard
-	LEA		ANTIRIAD_MOD,A0
-	SUBA.L	A1,A1					; A1 = NULL
-	MOVEQ	#0,D0					; SongPos = 0
-	JSR		_mt_init
-	MOVE.B	#1,MusicPlayerInit
-.skip_init:
-	; Abilita riproduzione: _mt_Enable e' BYTE
-	MOVE.B	#1,_mt_Enable
-	BRA.S	.tick
-
-.do_stop:
-	; ===== Music OFF: stop player =====
-	; _mt_end(a6=CUSTOM) -> ferma music e spegne canali audio
-	MOVE.B	#0,_mt_Enable
-	JSR		_mt_end
-	BRA.S	.done
-
-.no_change:
-	; Stato invariato: se music attiva, fai solo il tick
-	TST.B	MusicOn
 	BEQ.S	.done
-
-.tick:
-	; ===== Tick del player =====
-	; _mt_music(a6=CUSTOM) - da chiamare ogni VBL in modalita' VBLANK_MUSIC
-	JSR		_mt_music
+	MOVE.B	D0,MusicOnPrev
+	MOVE.B	D0,_mt_Enable		; 1 = play, 0 = pausa (SFX restano attivi)
 
 .done:
-	MOVEM.L	(SP)+,D0-D7/A0-A6
+	MOVEM.L	(SP)+,D0/A6
 	RTS
 
 *****************************************************************************
@@ -1936,6 +1939,20 @@ UpdateEnemies:
 	RTS
 
 *****************************************************************************
+* PlaySfx
+*   Suona un sound effect via PT Player.
+*   INPUT:  A0 = puntatore SfxStructure (sfx_ptr/len/per/vol/cha/pri)
+*   OUTPUT: nessuno (lo status del canale ritornato da _mt_playfx e' ignorato)
+*   Preserva tutti i registri. Non richiede A6 settato dal chiamante.
+*****************************************************************************
+PlaySfx:
+	MOVEM.L	D0-D7/A0-A6,-(SP)
+	LEA		$DFF000,A6
+	JSR		_mt_playfx			; A0 = SfxStructure
+	MOVEM.L	(SP)+,D0-D7/A0-A6
+	RTS
+
+*****************************************************************************
 * ProcessBullet
 *   Gestisce il proiettile (1 alla volta).
 *****************************************************************************
@@ -1995,6 +2012,8 @@ Proiettile:
 	MOVE.W	#1,Bullet_Active
 	MOVE.W	#BULLET_TTL,Bullet_TTL
 	MOVE.W	#BULLET_COOLDOWN,Bullet_Cooldown
+	LEA		SfxSparo,A0
+	BSR.W	PlaySfx
 	BRA.W	.save_fire
 
 .update_bullet:
@@ -2064,8 +2083,14 @@ Proiettile:
 	MOVE.W	bob_InvulnMax(A0),bob_Invuln(A0)
 	MOVE.W	#0,Bullet_Active
 	TST.W	bob_PF(A0)
-	BNE.S	.save_fire
+	BNE.S	.sfx_hit_alive
 	MOVE.W	#0,bob_Active(A0)
+	LEA		SfxEnemyDeath,A0
+	BSR.W	PlaySfx
+	BRA.S	.save_fire
+.sfx_hit_alive:
+	LEA		SfxHitEnemy,A0
+	BSR.W	PlaySfx
 	BRA.S	.save_fire
 
 .coll_next:
@@ -2188,6 +2213,8 @@ Combattimento:
 .player_alive:
 	MOVE.W	D2,bob_PF(A1)
 	MOVE.W	bob_InvulnMax(A1),bob_Invuln(A1)
+	LEA		SfxHitPlayer,A0
+	BSR.W	PlaySfx
 .next:
 	LEA		bob_Length(A0),A0			; prossimo nemico
 	DBRA	D0,.loop
@@ -3700,7 +3727,6 @@ NightKeyPrev:	dc.b 	0			; stato precedente del tasto N (per edge detect)
 NightModePrev:	dc.b	0			; ultimo valore "applicato" di NightMode (per rilevare cambi)
 MusicOn:		dc.b	0			; 0 = music off, 1 = music on (toggle col tasto M)
 MusicKeyPrev:	dc.b	0			; stato precedente del tasto M (per edge detect)
-MusicPlayerInit:dc.b	0			; 1 = _mt_init e' gia' stato chiamato
 MusicOnPrev:	dc.b	0			; ultimo valore "applicato" di MusicOn
 
 	EVEN
@@ -3719,6 +3745,47 @@ Bullet_DirY:	dc.w	0		; vettore mov Y (-1, 0, +1)
 Bullet_TTL:		dc.w	0		; frame restanti
 Bullet_Cooldown: dc.w	0		; cooldown corrente (0 = pronto a sparare)
 FirePrev:		dc.w	0		; stato fire al frame precedente (per edge-detect)
+
+	EVEN
+; ----- SfxStructure per i 4 effetti sonori (passate a _mt_playfx) -----
+; Layout (vedi ptplayer.i):
+;   dc.l sfx_ptr   ; puntatore campione in CHIP RAM (etichetta in SpritesData)
+;   dc.w sfx_len   ; lunghezza in WORD (= byte/2)
+;   dc.w sfx_per   ; period Paula (vedi costanti SFX_PER_*)
+;   dc.w sfx_vol   ; volume 0..64
+;   dc.b sfx_cha   ; canale 0..3, oppure -1 = auto
+;   dc.b sfx_pri   ; priorita' 1..127
+SfxSparo:
+	dc.l	SparoSample
+	dc.w	(SparoSampleEnd-SparoSample)/2
+	dc.w	SFX_PER_DEFAULT
+	dc.w	SFX_VOL_DEFAULT
+	dc.b	-1
+	dc.b	SFX_PRI_SPARO
+
+SfxHitEnemy:
+	dc.l	HitEnemySample
+	dc.w	(HitEnemySampleEnd-HitEnemySample)/2
+	dc.w	SFX_PER_DEFAULT
+	dc.w	SFX_VOL_DEFAULT
+	dc.b	-1
+	dc.b	SFX_PRI_HITENEMY
+
+SfxHitPlayer:
+	dc.l	HitPlayerSample
+	dc.w	(HitPlayerSampleEnd-HitPlayerSample)/2
+	dc.w	SFX_PER_DEFAULT
+	dc.w	SFX_VOL_DEFAULT
+	dc.b	-1
+	dc.b	SFX_PRI_HITPLAYER
+
+SfxEnemyDeath:
+	dc.l	EnemyDeathSample
+	dc.w	(EnemyDeathSampleEnd-EnemyDeathSample)/2
+	dc.w	SFX_PER_DEFAULT
+	dc.w	SFX_VOL_DEFAULT
+	dc.b	-1
+	dc.b	SFX_PRI_DEATH
 
 ;------------------------------------------------------------
 ; Tabella di lookup direzione: 9 byte indicizzati da
@@ -3996,6 +4063,33 @@ OMINO_MASK:
 ANTIRIAD_MOD:
 	incbin	"antiriad.amiga.mod"
 
+;----------------------------------------------------------------------------
+; Sound effects samples (8-bit signed PCM raw mono).
+; DEVONO essere in CHIP RAM per il DMA audio Paula.
+; Lunghezza calcolata a compile-time da (End-Start)/2 nelle SfxStructure,
+; quindi puoi sostituire i .raw con sample di lunghezza diversa senza
+; toccare il sorgente: basta che il file abbia un numero pari di byte.
+;----------------------------------------------------------------------------
+	cnop	0,4
+SparoSample:
+	incbin	"Sparo.raw"
+SparoSampleEnd:
+
+	cnop	0,4
+HitEnemySample:
+	incbin	"HitEnemy.raw"
+HitEnemySampleEnd:
+
+	cnop	0,4
+HitPlayerSample:
+	incbin	"HitPlayer.raw"
+HitPlayerSampleEnd:
+
+	cnop	0,4
+EnemyDeathSample:
+	incbin	"EnemyDeath.raw"
+EnemyDeathSampleEnd:
+
 	cnop	0,8
 ; ============================================================================
 ; Sprite hardware FUOCO - 6 frame di animazione
@@ -4096,14 +4190,16 @@ Enemies:
 ;----------------------------------------------------------------------------
 ; PT PLAYER di Frank Wille (rinominato ptplayer.i per evitare la
 ; compilazione automatica dell'extension vscode-amiga-assembly).
-; Incluso ALLA FINE: dichiara una propria SECTION e quindi
-; deve stare dopo tutto il resto.
 ;
-; VBLANK_MUSIC=1: il player gira chiamando _mt_music ogni VBL da noi
-; (= GestisciMusica). Niente interrupt CIA, niente _mt_install/_mt_remove.
+; IMPORTANTE: ptplayer.i NON dichiara una propria SECTION code, quindi
+; eredita la SECTION corrente. Bisogna riportare la SECTION corrente in
+; CODE prima dell'include, altrimenti il codice del player finisce
+; in BSS e crasha appena chiamato.
 ;----------------------------------------------------------------------------
+	SECTION	PTPlayerCode,CODE
+
 	include	"ptplayer.i"
+
 	end
 
 *****************************************************************************
-
