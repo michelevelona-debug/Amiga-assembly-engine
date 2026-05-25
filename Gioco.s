@@ -1,16 +1,16 @@
 ****************************************************************************
 *				   MEGA GAME												*
 *																			*
-*   Inserire grafiche 														*
-*   Aggiungere effetti audio												*
 *   Inserire logica di gioco (PF, punti, game over)							*
 *																			*
 *****************************************************************************
 
 	SECTION	MegaGame,CODE
 
+	include	"title.i"			; Costanti title screen (TITLE_WIDTH, ...)
+
 *****************************************************************************
-	include	"startup1.i"		; Salva Copperlist Etc.
+	include	"startup2.i"		; Startup completo AGA + VBR + cache clear
 *****************************************************************************
 ; Con DMASET decidiamo quali canali DMA aprire e quali chiudere
 
@@ -105,7 +105,47 @@ SFX_PRI_HITENEMY	EQU	90
 SFX_PRI_HITPLAYER	EQU	100
 SFX_PRI_DEATH		EQU	110
 
+WaitDisk EQU 30 ; 50-150 al salvataggio (secondo i casi)
 START:
+*****************************************************************************
+* TITLE SCREEN
+*   Setup AGA + PT Player, avvia musica, mostra title.raw, attende SPACE
+*   o tasto fire del joystick. Poi ferma la musica e procede col gioco.
+*****************************************************************************
+	LEA		$DFF000,A6
+	MOVE.W	#$3,$1fc(A6)			; FMODE = $03 (AGA fetch 64-bit)
+	MOVE.W	#$0c00,$106(A6)			; BPLCON3 default (LOCT=0, BANK=0, BRDRBLNK)
+	MOVE.W	#$0000,$10c(A6)			; BPLCON4 default
+
+	; ----- PT Player: installa interrupt CIA-B -----
+	SUBA.L	A0,A0					; VectorBase = 0 (68000)
+	MOVEQ	#1,D0					; PAL flag = 1
+	JSR		_mt_install
+	MOVE.W	#$E000,$DFF09A			; abilita INT level 6 (EXTER) + master enable
+	MOVE.W	#$8200,$96(A6)			; DMACON: master DMA on (per audio Paula)
+
+	; Riserva 3 canali alla musica: gli SFX (sfx_cha=-1) potranno usare
+	; solo il 4o canale. Evita che uno sparo "buchi" un canale musicale.
+	MOVE.B	#3,_mt_MusicChannels
+
+	; ----- Carica modulo e avvia musica -----
+	LEA		ANTIRIAD_MOD,A0
+	SUBA.L	A1,A1					; campioni embedded
+	MOVEQ	#0,D0					; SongPos = 0
+	JSR		_mt_init
+	MOVE.B	#1,_mt_Enable			; play
+
+	; ----- Mostra title screen e attende input -----
+	BSR.W	ShowTitle				; setup 8 BPL AGA + palette + copper
+	BSR.W	WaitTitleInput			; busy-loop fino a SPACE o fire
+
+	; ----- Click: ferma la musica della title -----
+	MOVE.B	#0,_mt_Enable
+
+	; ----- Spegne BPL+COP DMA prima di riconfigurare per il gioco -----
+	; (audio DMA preservato per il restart musica successivo)
+	MOVE.W	#$0180,$96(A6)			; CLR BPLEN+COPEN
+
 *****************************************************************************
 *	PUNTIAMO I BITPLANES DELLE TILES
 *****************************************************************************
@@ -122,9 +162,11 @@ START:
 	MOVE.L	#CopperList,$80(A6)		; Puntiamo la nostra COP
 	MOVE.W	D0,$88(A6)				; Facciamo partire la COP
 
-	MOVE.W	#$3,$1fc(A6)			; FMODE = $03 (AGA fetch 64-bit per BPL, sprite OCS-style)
-	MOVE.W	#$c00,$106(A6)			; BPLCON3 = LOCT=0, BANK=0, BRDRBLNK
-	MOVE.W	#$0,$10c(A6)			; BPLCON4 = 0 (sprite a colori OCS standard 16-31)
+	; Ripristina FMODE/BPLCON3/BPLCON4 per il gioco (la title li aveva
+	; impostati ma per sicurezza li riscriviamo, in caso siano cambiati).
+	MOVE.W	#$3,$1fc(A6)			; FMODE = $03 (AGA fetch 64-bit)
+	MOVE.W	#$0c00,$106(A6)			; BPLCON3 default
+	MOVE.W	#$0000,$10c(A6)			; BPLCON4 default
 	; ----- DEBUG: scrivi SPR0PT direttamente nei registri custom -----
 	; In caso la copperlist non riesca ad aggiornare i puntatori sprite,
 	; settiamo manualmente SPR0PT su FuocoFrame_0 e SPR1..7 su EmptySprite.
@@ -141,25 +183,11 @@ START:
 	BSR.W   InitEnemies				; <-- INIZIALIZZA I NEMICI
 	BSR.W	BuildOminoMask			; Genera la maschera dell'OMINO al boot
 
-	; ----- PT Player: installa interrupt CIA-B (Timer A + B) -----
-	; _mt_install(a6=CUSTOM, a0=VectorBase, d0=PALflag.b)
-	LEA		$DFF000,A6
-	SUBA.L	A0,A0				; VectorBase = 0 (68000)
-	MOVEQ	#1,D0				; PAL flag = 1
-	JSR		_mt_install
-
-	; Abilita interrupt level 6 (EXTER) + master enable.
-	MOVE.W	#$E000,$DFF09A
-
-	; ----- PT Player: carica e avvia il modulo -----
-	; _mt_init(a6=CUSTOM, a0=Module, a1=Samples|NULL, d0=InitialSongPos.b)
-	LEA		ANTIRIAD_MOD,A0
-	SUBA.L	A1,A1				; A1 = NULL: campioni embedded nel modulo
-	MOVEQ	#0,D0				; SongPos = 0
-	JSR		_mt_init
-	MOVE.B	#1,_mt_Enable		; avvia riproduzione
-	MOVE.B	#1,MusicOn			; flag coerente con stato player
-	MOVE.B	#1,MusicOnPrev		; evita spurious change al primo frame
+	; ----- Musica: resta in pausa dopo il click sulla title.
+	; L'utente la riattiva con M (toggle MusicOn -> _mt_Enable via GestisciMusica).
+	; MusicOn=0/MusicOnPrev=0 -> nessun cambio rilevato, _mt_Enable resta 0.
+	MOVE.B	#0,MusicOn
+	MOVE.B	#0,MusicOnPrev
 
 	BSR.W	DisegnaSfondo			; Routine che disegna lo sfondo
 
@@ -1939,6 +1967,175 @@ UpdateEnemies:
 	RTS
 
 *****************************************************************************
+* LoadAGAPalette256
+*   Carica una palette AGA a 256 colori dal buffer title_pal (256 long
+*   $00RRGGBB) nei registri COLOR00..COLOR31, attraverso le 8 banche di
+*   BPLCON3. Per ogni banca esegue due pass:
+*     - LOCT=0: scrive i nibble ALTI di ogni componente RGB
+*     - LOCT=1: scrive i nibble BASSI
+*   Al termine ripristina BPLCON3 = $0c00 (banca 0, LOCT=0).
+*****************************************************************************
+LoadAGAPalette256:
+	MOVEM.L	D0-D5/A0-A2/A6,-(SP)
+	LEA		$DFF000,A6
+	LEA		title_pal,A0			; sorgente: 256 long $00RRGGBB
+	MOVE.W	#0,D4					; bank index 0..7
+	MOVEQ	#8-1,D5
+.bank_loop:
+	MOVE.L	A0,A2					; salva inizio banca per il low pass
+
+	; ----- HIGH NIBBLES PASS (LOCT=0) -----
+	MOVE.W	D4,D0
+	LSL.W	#5,D0
+	LSL.W	#8,D0					; D0 = bank << 13
+	OR.W	#$0c00,D0				; LOCT=0, BRDRBLNK=1
+	MOVE.W	D0,$106(A6)				; BPLCON3
+	LEA		$180(A6),A1				; COLOR00
+	MOVEQ	#32-1,D1
+.hi_loop:
+	MOVE.L	(A0)+,D2				; D2 = $00RRGGBB
+	MOVE.L	D2,D3
+	LSR.L	#4,D3
+	AND.W	#$000F,D3				; B high
+	MOVE.L	D2,D0
+	LSR.L	#8,D0
+	AND.W	#$00F0,D0				; G high << 4
+	OR.W	D0,D3
+	MOVE.L	D2,D0
+	LSR.L	#8,D0
+	LSR.L	#4,D0					; shift totale 12 (immediato max 8)
+	AND.W	#$0F00,D0				; R high << 8
+	OR.W	D0,D3
+	MOVE.W	D3,(A1)+				; COLORn
+	DBRA	D1,.hi_loop
+
+	; ----- LOW NIBBLES PASS (LOCT=1) -----
+	MOVE.L	A2,A0					; rewind A0 a inizio banca
+	MOVE.W	D4,D0
+	LSL.W	#5,D0
+	LSL.W	#8,D0
+	OR.W	#$0e00,D0				; LOCT=1, BRDRBLNK=1
+	MOVE.W	D0,$106(A6)
+	LEA		$180(A6),A1
+	MOVEQ	#32-1,D1
+.lo_loop:
+	MOVE.L	(A0)+,D2
+	MOVE.W	D2,D3
+	AND.W	#$000F,D3				; B low
+	MOVE.W	D2,D0
+	LSR.W	#4,D0
+	AND.W	#$00F0,D0				; G low << 4
+	OR.W	D0,D3
+	MOVE.L	D2,D0
+	LSR.L	#8,D0
+	AND.W	#$0F00,D0				; R low << 8
+	OR.W	D0,D3
+	MOVE.W	D3,(A1)+
+	DBRA	D1,.lo_loop
+
+	ADDQ.W	#1,D4
+	DBRA	D5,.bank_loop
+
+	MOVE.W	#$0000,$106(A6)			; ripristina BPLCON3 (banca 0, LOCT=0, no offset)
+	MOVEM.L	(SP)+,D0-D5/A0-A2/A6
+	RTS
+
+*****************************************************************************
+* ShowTitle
+*   1) Patcha i puntatori BPL1..8PT della TitleCopperList su title_bpl.
+*   2) Carica la palette AGA 256 colori via CPU da title_pal.
+*   3) Punta il copper a TitleCopperList e abilita BPL+COPPER DMA.
+*****************************************************************************
+ShowTitle:
+	MOVEM.L	D0-D1/A1/A6,-(SP)
+	LEA		$DFF000,A6
+
+	; --- Setup display via CPU (ridondante con la copperlist ma garantisce
+	;     valori corretti gia' al primo frame, anche se il copper non parte). ---
+	MOVE.W	#$0211,$100(A6)			; BPLCON0: BPU3=1 (=8 BPL) + COLOR + ECSENA (no UHRES)
+	MOVE.W	#$0000,$102(A6)			; BPLCON1
+	MOVE.W	#$0024,$104(A6)			; BPLCON2: PF2P=4, PF1P=4 (come gioco)
+	MOVE.W	#$0000,$106(A6)			; BPLCON3: banca 0, LOCT=0, no offset
+	MOVE.W	#$0000,$10c(A6)			; BPLCON4
+	MOVE.W	#$0000,$108(A6)			; BPL1MOD (sequential layout)
+	MOVE.W	#$0000,$10a(A6)			; BPL2MOD
+	; AGA 8 BPL lores FMODE=3: DDFSTRT/STOP allineati al fetch interval di 32cc.
+	; ($A8 - $28) / 32 = 4 -> esattamente 5 fetch per riga, 5*64px = 320px.
+	MOVE.W	#$0028,$92(A6)			; DDFSTRT
+	MOVE.W	#$00a8,$94(A6)			; DDFSTOP (5 fetch FMODE=3 allineati)
+	MOVE.W	#$2c81,$8e(A6)			; DIWSTRT
+	MOVE.W	#$2cc1,$90(A6)			; DIWSTOP
+
+	; --- Setup BPL pointers via CPU (8 plane SEQUENTIAL, 10240 byte/plane) ---
+	MOVE.L	#title_bpl,$E0(A6)								; BPL1PT
+	MOVE.L	#title_bpl+TITLE_PLANE_SIZE,$E4(A6)				; BPL2PT
+	MOVE.L	#title_bpl+TITLE_PLANE_SIZE*2,$E8(A6)			; BPL3PT
+	MOVE.L	#title_bpl+TITLE_PLANE_SIZE*3,$EC(A6)			; BPL4PT
+	MOVE.L	#title_bpl+TITLE_PLANE_SIZE*4,$F0(A6)			; BPL5PT
+	MOVE.L	#title_bpl+TITLE_PLANE_SIZE*5,$F4(A6)			; BPL6PT
+	MOVE.L	#title_bpl+TITLE_PLANE_SIZE*6,$F8(A6)			; BPL7PT
+	MOVE.L	#title_bpl+TITLE_PLANE_SIZE*7,$FC(A6)			; BPL8PT
+
+	; --- Patch BPL pointers anche nella TitleCopperList (per i frame
+	;     successivi al primo: il copper li resetta a ogni vertical blank). ---
+	LEA		TitleBPL_0,A1
+	MOVE.L	#title_bpl,D0
+	MOVEQ	#8-1,D1
+.bpl_loop:
+	MOVE.W	D0,6(A1)				; word bassa
+	SWAP	D0
+	MOVE.W	D0,2(A1)				; word alta
+	SWAP	D0
+	ADD.L	#TITLE_PLANE_SIZE,D0	; prossimo plane (sequential)
+	ADDQ.L	#8,A1
+	DBRA	D1,.bpl_loop
+
+	; --- Carica palette AGA 256 colori via CPU ---
+	BSR.W	LoadAGAPalette256
+
+	; --- Ordine identico al setup del gioco: DMA on, COP1LC, strobe ---
+	MOVE.W	#$8380,$96(A6)				; SET + DMAEN + BPLEN + COPEN
+	MOVE.L	#TitleCopperList,$80(A6)	; COP1LCH
+	MOVE.W	D0,$88(A6)					; COPJMP1 strobe
+
+	MOVEM.L	(SP)+,D0-D1/A1/A6
+	RTS
+
+*****************************************************************************
+* WaitTitleInput
+*   Attende che venga premuto SPACE o il tasto fire del joystick (port 1).
+*   Aspetta poi il rilascio di entrambi prima di tornare, in modo che il
+*   gioco non veda subito un evento di sparo o un edge "spurio".
+*****************************************************************************
+WaitTitleInput:
+	MOVEM.L	D0,-(SP)
+.wait_press:
+	BSR.W	AspettaVBL
+	BSR.W	ReadKeyboard				; aggiorna key_space
+	TST.B	key_space
+	BNE.S	.pressed
+	MOVE.B	$bfe001,D0					; CIA-A PRA: bit 7 = fire joy1 (active low)
+	NOT.B	D0
+	AND.B	#$80,D0
+	BEQ.S	.wait_press					; D0=0 -> fire NON premuto
+.pressed:
+.wait_release:
+	BSR.W	AspettaVBL
+	BSR.W	ReadKeyboard
+	TST.B	key_space
+	BNE.S	.wait_release
+	MOVE.B	$bfe001,D0
+	NOT.B	D0
+	AND.B	#$80,D0
+	BNE.S	.wait_release				; D0!=0 -> fire ANCORA premuto
+
+	; Reset stato fire per il gioco
+	MOVE.W	#0,FirePrev
+	MOVE.B	#0,key_space
+	MOVEM.L	(SP)+,D0
+	RTS
+
+*****************************************************************************
 * PlaySfx
 *   Suona un sound effect via PT Player.
 *   INPUT:  A0 = puntatore SfxStructure (sfx_ptr/len/per/vol/cha/pri)
@@ -3619,7 +3816,12 @@ AspettaBlitter:
 
 	SECTION	DATI,DATA
 
-CurrentDisplay:	
+; Palette AGA del title screen (256 colori, format $00RRGGBB long).
+; Caricata via CPU in LoadAGAPalette256 prima di mostrare la title.
+title_pal:
+	incbin	"title.pal"
+
+CurrentDisplay:
 	dc.l	BPSFONDO_A	; bitplane attualmente visibili
 CurrentDraw:	
 	dc.l	BPSFONDO_B	; bitplane su cui disegnare
@@ -3868,7 +4070,46 @@ DirectionDeltas:
 		
 	Section	ChipStuff,data_c
 
+; ============================================================================
+; TITLE COPPERLIST - 8 bitplane AGA, lores 320x256, palette caricata via CPU.
+; I puntatori BPL1..8PT (etichette TitleBPL_*) vengono patchati a runtime
+; in ShowTitle a partire da title_bpl (10240 byte per plane, layout SEQUENTIAL).
+; ============================================================================
+	cnop	0,4
+TitleCopperList:
+	; Forza FMODE = $03 (BPL32+BPAGEM) all'inizio del frame, in caso qualcuno
+	; (PT Player IRQ, OS, ecc.) lo abbia resettato. FMODE va impostato PRIMA
+	; di abilitare BPL DMA per garantire il fetch a 64-bit allineato.
+	dc.w	$01fc,$0003			; FMODE = BPL32 + BPAGEM (64-bit fetch)
+	dc.w	$0100,$0211			; BPLCON0: BPU3=1 (8 BPL) + COLOR + ECSENA (no UHRES)
+	dc.w	$0102,$0000			; BPLCON1
+	dc.w	$0104,$0024			; BPLCON2: PF2P=4, PF1P=4 (come gioco)
+	dc.w	$0106,$0000			; BPLCON3: banca 0, LOCT=0, no offset
+	dc.w	$010c,$0000			; BPLCON4 = 0 (sprite a colori OCS standard 16-31)
+	dc.w	$0108,$0000			; BPL1MOD (sequential layout)
+	dc.w	$010a,$0000			; BPL2MOD
+	dc.w	$0092,$0028			; DDFSTRT lores 8 BPL AGA FMODE=3
+	dc.w	$0094,$00a8			; DDFSTOP (5 fetch FMODE=3 allineati)
+	dc.w	$008e,$2c81			; DIWSTRT
+	dc.w	$0090,$2cc1			; DIWSTOP
+TitleBPL_0:	dc.w	$00e0,$0000,$00e2,$0000	; BPL1PT (high, low)
+TitleBPL_1:	dc.w	$00e4,$0000,$00e6,$0000	; BPL2PT
+TitleBPL_2:	dc.w	$00e8,$0000,$00ea,$0000	; BPL3PT
+TitleBPL_3:	dc.w	$00ec,$0000,$00ee,$0000	; BPL4PT
+TitleBPL_4:	dc.w	$00f0,$0000,$00f2,$0000	; BPL5PT
+TitleBPL_5:	dc.w	$00f4,$0000,$00f6,$0000	; BPL6PT
+TitleBPL_6:	dc.w	$00f8,$0000,$00fa,$0000	; BPL7PT
+TitleBPL_7:	dc.w	$00fc,$0000,$00fe,$0000	; BPL8PT
+	; Past line 255 + wait V=300, poi spegne i bitplane
+	dc.w	$FFDF,$FFFE
+	dc.w	$2C01,$FF00
+	dc.w	$0100,$0201			; BPLCON0 = 0 BPL + ECSENA
+	dc.w	$FFFF,$FFFE			; FINE COPPERLIST
+
 CopperList:
+	; Forza FMODE = $03 (BPL32+BPAGEM) all'inizio del frame, in caso qualcuno
+	; (PT Player IRQ, OS, ecc.) lo abbia resettato. Necessario per AGA cycle-exact.
+	dc.w	$01fc,$0003			; FMODE = BPL32 + BPAGEM (64-bit fetch)
 	dc.w	$0100,%0110001010000001		; BPLCON0: 6 bitplane, EHB on, ECSENA on
 				  ;5432109876543210	
 ; bit 15		HiRes
@@ -3887,9 +4128,14 @@ CopperList:
 	dc.w	$102,0			; BplCon1
 	dc.w	$104,$0024		; BPLCON2 = PF2P=4, PF1P=4 (sprite 0-3 davanti al playfield)
 							; bit 5-3 = PF2P, bit 2-0 = PF1P (4 = primi 4 sprite davanti)
-	dc.w	$108,0			; BPL1BTH
-	dc.w	$10A,0			; BPL1PTL
-	dc.w 	$0092,$0038,$0094,$00d0 ; DdfStrt - DdfStop
+	; Nota: BPLCON3 e BPLCON4 NON sono qui perche' la PALETTE section piu' avanti
+	; gia' imposta BPLCON3 (con LOCT alternato) e nessuno modifica BPLCON4 a runtime.
+	; Settarli qui rompe la palette degli sprite hardware (es. falo' diventa verde).
+;	dc.w	$0106,$0c00		; BPLCON3: banca 0, LOCT=0, PF2OF=3 (innocuo in single-PF)
+;	dc.w	$010c,$0000		; BPLCON4: sprite palette base 0 (OCS standard)
+	dc.w	$108,0			; BPL1MOD
+	dc.w	$10A,0			; BPL2MOD
+	dc.w 	$0092,$0038,$0094,$00b8 ; DdfStrt - DdfStop (5 fetch FMODE=3 allineati)
 	dc.w	$008e,$2c81,$0090,$2cc1	; DiwStrt - DiwStop
 
 BitPlaneTiles:
@@ -4062,6 +4308,14 @@ OMINO_MASK:
 	cnop	0,4
 ANTIRIAD_MOD:
 	incbin	"antiriad.amiga.mod"
+
+;----------------------------------------------------------------------------
+; Title screen image: 8 bitplane AGA, 320x256, sequential layout.
+; DEVE essere in CHIP RAM per la display DMA.
+;----------------------------------------------------------------------------
+	cnop	0,8					; allineamento AGA FMODE=3
+title_bpl:
+	incbin	"title.raw"
 
 ;----------------------------------------------------------------------------
 ; Sound effects samples (8-bit signed PCM raw mono).

@@ -11,6 +11,8 @@
             "remoteProgram": "SYS:Gioco",
             "emulatorType": "winuae",
             "emulatorArgs": [
+                "-f",
+                "${workspaceFolder}/uae/MegaGame.uae",
                 "-s",
                 "filesystem=rw,dh0:${workspaceFolder}/uae/dh0",
             ],
