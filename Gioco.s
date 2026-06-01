@@ -10,7 +10,7 @@
 	include	"title.i"			; Costanti title screen (TITLE_WIDTH, ...)
 
 *****************************************************************************
-	include	"startup2.i"		; Startup completo AGA + VBR + cache clear
+	include	"Startup2.i"		; Startup completo AGA + VBR + cache clear
 *****************************************************************************
 ; Con DMASET decidiamo quali canali DMA aprire e quali chiudere
 
@@ -21,25 +21,25 @@ DMASET	EQU	%1000001111100000	; bltr, copper, bitplane, SPRITE ON
 *****************************************************************************
 * COSTANTI
 *****************************************************************************
-NUM_PLANES		EQU		6				; numero di bitplane (5 + 1 per EHB notte)
-PLANE_SIZE      EQU     40*256          ; 10240 byte = un singolo bitplane
-SFONDO_PITCH	EQU		48				; pitch riga di SFONDOGRANDE in byte
+NUM_PLANES			EQU		6				; numero di bitplane (5 + 1 per EHB notte)
+PLANE_SIZE      	EQU     40*256          ; 10240 byte = un singolo bitplane
+SFONDO_PITCH		EQU		48				; pitch riga di SFONDOGRANDE in byte
 										; (era 44, ora 48 per allineamento AGA FMODE=3,
 										; multiplo di 8). Larghezza utile = 22 word = 44 byte
 										; (= 352 pixel come prima); i 4 byte extra
 										; (= ultimi 32 pixel di ogni riga) sono inutilizzati.
-SFONDO_HEIGHT	EQU		288				; altezza SFONDOGRANDE in righe
-SFONDO_PLANE_SIZE EQU	SFONDO_PITCH*SFONDO_HEIGHT	; 13824 byte/plane
+SFONDO_HEIGHT		EQU		288				; altezza SFONDOGRANDE in righe
+SFONDO_PLANE_SIZE 	EQU		SFONDO_PITCH*SFONDO_HEIGHT	; 13824 byte/plane
 
-XTiles			EQU	16
-YTiles			EQU 16
+XTiles				EQU		16
+YTiles				EQU 	16	
 
-MAPPA_COLS 		EQU	24
-MAPPA_ROWS		EQU	22
-BUFFER_COLS		EQU	22
-BUFFER_ROWS		EQU	18
-VIS_COLS		EQU	20
-VIS_ROWS		EQU	16
+MAPPA_COLS 			EQU		24
+MAPPA_ROWS			EQU		22
+BUFFER_COLS			EQU		22
+BUFFER_ROWS			EQU		18
+VIS_COLS			EQU		20
+VIS_ROWS			EQU		16
 
 ; TILEXMAX / TILEYMAX = numero massimo che TileX/TileY puo' raggiungere.
 ; Il buffer carica MAPPA[TileY..TileY+BUFFER_ROWS-1][TileX..TileX+BUFFER_COLS-1],
@@ -47,42 +47,42 @@ VIS_ROWS		EQU	16
 ; Con mappa 18x24 e buffer 18x22 => TILEXMAX=2, TILEYMAX=0 (no scroll Y di tile).
 ; Per abilitare lo scroll Y di tile: estendi MAPPA a >=20 righe e aggiorna MAPPA_ROWS.
 
-TILEXMAX		EQU	MAPPA_COLS-BUFFER_COLS
-TILEYMAX		EQU	MAPPA_ROWS-BUFFER_ROWS
-PLAYER_MAX_X    EQU	(MAPPA_COLS*16)-16-32   ; 344 (bob_X max 288 = 320-32 viewport)
-PLAYER_MAX_Y    EQU	(MAPPA_ROWS*16)-16-32   ; 304 (bob_Y max 240 = 256-16 viewport)
+TILEXMAX			EQU		MAPPA_COLS-BUFFER_COLS
+TILEYMAX			EQU		MAPPA_ROWS-BUFFER_ROWS
+PLAYER_MAX_X    	EQU		(MAPPA_COLS*16)-16-32   ; 344 (bob_X max 288 = 320-32 viewport)
+PLAYER_MAX_Y    	EQU		(MAPPA_ROWS*16)-16-32   ; 304 (bob_Y max 240 = 256-16 viewport)
 
 ;------------------------------------------------------------
 ; Costanti tasti freccia (identici ai rawkey Intuition)
 ;------------------------------------------------------------
-RAWKEY_UP		EQU $4C
-RAWKEY_DOWN		EQU $4D
-RAWKEY_RIGHT	EQU $4E
-RAWKEY_LEFT	 	EQU $4F
-RAWKEY_SPACE	EQU $40
-RAWKEY_N		EQU $36			; rawkey del tasto N (toggle giorno/notte)
-RAWKEY_M		EQU $37			; rawkey del tasto M (toggle musica)
+RAWKEY_UP			EQU 	$4C
+RAWKEY_DOWN			EQU 	$4D
+RAWKEY_RIGHT		EQU 	$4E
+RAWKEY_LEFT		 	EQU 	$4F
+RAWKEY_SPACE		EQU 	$40
+RAWKEY_N			EQU 	$36			; rawkey del tasto N (toggle giorno/notte)
+RAWKEY_M			EQU 	$37			; rawkey del tasto M (toggle musica)
 
-KEY_RELEASE_BIT EQU 7	   ; bit 7 del keycode decodificato
-ANIM_DELAY		EQU 3
+KEY_RELEASE_BIT 	EQU 	7	   		; bit 7 del keycode decodificato
+ANIM_DELAY			EQU 	3
 
-HEALTHBAR_COLOR	EQU	14					; colore 14 = rosso/rosa nella palette
-HEALTHBAR_YOFFSET EQU 3					; pixel sopra il BOB
-INVULN_FRAMES	EQU	50					; frame di invulnerabilita' dopo un hit
+HEALTHBAR_COLOR		EQU		14			; colore 14 = rosso/rosa nella palette
+HEALTHBAR_YOFFSET 	EQU 	3			; pixel sopra il BOB
+INVULN_FRAMES		EQU		50			; frame di invulnerabilita' dopo un hit
 
 ; ----- Bullet (proiettile sprite hardware) -----
-BULLET_SPEED		EQU	4				; pixel per frame del proiettile
-BULLET_TTL			EQU	60				; frame di vita massima
-BULLET_COOLDOWN		EQU	10				; frame di cooldown tra due spari
-BULLET_DAMAGE		EQU	2				; danno inflitto al nemico
-BULLET_HEIGHT		EQU	4				; altezza dello sprite proiettile
+BULLET_SPEED		EQU		4			; pixel per frame del proiettile
+BULLET_TTLC			EQU		60			; frame di vita massima
+BULLET_COOLDOWNC	EQU		10			; frame di cooldown tra due spari
+BULLET_DAMAGE		EQU		2			; danno inflitto al nemico
+BULLET_HEIGHT		EQU		4			; altezza dello sprite proiettile
 
 ; ----- Illuminazione (EHB) -----
-TILE_LUCE		EQU	19					; numero tile = sorgente di luce
-RAGGIO_LUCE		EQU	64					; raggio in pixel della luce (tile 19)
+TILE_LUCE			EQU		19			; numero tile = sorgente di luce
+RAGGIO_LUCE			EQU		64			; raggio in pixel della luce (tile 19)
 
-FaloAnimSpeed	EQU		5			; ogni N frame avanza animazione
-ENEMY_COUNT		EQU		4		; numero massimo di nemici
+FaloAnimSpeed		EQU		5			; ogni N frame avanza animazione
+ENEMY_COUNT			EQU		4			; numero massimo di nemici
 
 ; PT Player: modalita' standard (VBLANK_MUSIC=0, default).
 ; Timer A gestisce il tick musicale automaticamente via interrupt CIA-B.
@@ -98,12 +98,12 @@ ENEMY_COUNT		EQU		4		; numero massimo di nemici
 ; sfx_vol: 0..64 (64 = max). Indipendente dal master volume musica.
 ; sfx_cha: -1 = scelta automatica del canale meno usato.
 ; sfx_pri: 1..127. Priorita' piu' alta vince se il canale e' occupato.
-SFX_PER_DEFAULT		EQU	280
-SFX_VOL_DEFAULT		EQU	64
-SFX_PRI_SPARO		EQU	64
-SFX_PRI_HITENEMY	EQU	90
-SFX_PRI_HITPLAYER	EQU	100
-SFX_PRI_DEATH		EQU	110
+SFX_PER_DEFAULT			EQU		280
+SFX_VOL_DEFAULT			EQU		64
+SFX_PRI_SPARO			EQU		64
+SFX_PRI_HITENEMY		EQU		90
+SFX_PRI_HITPLAYER		EQU		100
+SFX_PRI_DEATH			EQU		110
 
 WaitDisk EQU 30 ; 50-150 al salvataggio (secondo i casi)
 START:
@@ -114,7 +114,7 @@ START:
 *****************************************************************************
 	LEA		$DFF000,A6
 	MOVE.W	#$3,$1fc(A6)			; FMODE = $03 (AGA fetch 64-bit)
-	MOVE.W	#$0c00,$106(A6)			; BPLCON3 default (LOCT=0, BANK=0, BRDRBLNK)
+	MOVE.W	#$0c00,$106(A6)			; BPLCON3 default
 	MOVE.W	#$0000,$10c(A6)			; BPLCON4 default
 
 	; ----- PT Player: installa interrupt CIA-B -----
@@ -141,6 +141,15 @@ START:
 
 	; ----- Click: ferma la musica della title -----
 	MOVE.B	#0,_mt_Enable
+	; _mt_Enable=0 mette in pausa il PT Player, ma Paula continua a
+	; ripetere in loop l'ultimo sample caricato (= ultima nota infinita).
+	; Azzero i 4 volumi audio: in pausa il PT Player non li sovrascrive,
+	; quando la musica viene riattivata (tasto M) il player ricarica
+	; automaticamente i volumi al primo tick.
+	MOVE.W	#0,$a8(A6)				; AUD0VOL = 0
+	MOVE.W	#0,$b8(A6)				; AUD1VOL = 0
+	MOVE.W	#0,$c8(A6)				; AUD2VOL = 0
+	MOVE.W	#0,$d8(A6)				; AUD3VOL = 0
 
 	; ----- Spegne BPL+COP DMA prima di riconfigurare per il gioco -----
 	; (audio DMA preservato per il restart musica successivo)
@@ -166,7 +175,8 @@ START:
 	; impostati ma per sicurezza li riscriviamo, in caso siano cambiati).
 	MOVE.W	#$3,$1fc(A6)			; FMODE = $03 (AGA fetch 64-bit)
 	MOVE.W	#$0c00,$106(A6)			; BPLCON3 default
-	MOVE.W	#$0000,$10c(A6)			; BPLCON4 default
+	MOVE.W	#$0011,$10c(A6)			; BPLCON4: BPLAM=0, ESPRM=$1, OSPRM=$1 (entrambi sprite a COLOR17-19 arancione)
+;	MOVE.W	#$1000,$10c(A6)			; BPLCON4: ESPRM=$10 (SPR0 falo' a COLOR17-19 arancione), OSPRM/BPLAM=$00
 	; ----- DEBUG: scrivi SPR0PT direttamente nei registri custom -----
 	; In caso la copperlist non riesca ad aggiornare i puntatori sprite,
 	; settiamo manualmente SPR0PT su FuocoFrame_0 e SPR1..7 su EmptySprite.
@@ -194,7 +204,7 @@ START:
 	; Pre-render su entrambi i buffer per evitare il primo frame nero
 	BSR.W	CopiaVideo				; copia su CurrentDraw = BPSFONDO_B
 	BSR.W	AspettaBlitter
-	BSR.S	SwapBuffers				; ora display = B, draw = A
+	BSR.W	SwapBuffers				; ora display = B, draw = A
 	BSR.W	CopiaVideo				; copia anche su A
 	; (al primo giro del loop il display è B, e disegnamo su A — entrambi pronti)
 .mainloop:
@@ -208,6 +218,21 @@ START:
 	BSR.W	AggiornaTiles			; Gestisce l'agggiunta di tiles dalla mappa
 									; al buffer	
 	BSR.W	UpdateDarkPlane			; fill dark plane + lampioni (sempre ogni frame)
+
+	; ===== DIAGNOSTICA SFARFALLIO =====
+	; Copia CurrentDarkDraw -> CurrentDarkDisplay per rendere A e B identici.
+	; Se questo fa scomparire lo sfarfallio, il bug e' nel double-buffer del dark plane
+	; (qualcosa scrive in modo non-deterministico tra i due frame).
+	; Costo: ~3-4 ms (10240 byte di copia CPU).
+	MOVEM.L	D0/A0/A1,-(SP)
+	MOVE.L	CurrentDarkDraw,A0
+	MOVE.L	CurrentDarkDisplay,A1
+	MOVE.W	#(40*256/4)-1,D0
+.dbg_copy_dark:
+	MOVE.L	(A0)+,(A1)+
+	DBRA	D0,.dbg_copy_dark
+	MOVEM.L	(SP)+,D0/A0/A1
+	; ===== FINE DIAGNOSTICA =====
 	BSR.W	AnimaFalo				; anima sprite falò e lo posiziona su tile 19
 	BSR.W	CopiaVideo				; Disegna lo schermo
 	BSR.W	UpdatePlayerScreenPos	; Calcola bob_X/Y dalle coord. mondo 
@@ -2207,8 +2232,8 @@ Proiettile:
 	MOVE.W	2(A0,D2.W),Bullet_DirY
 
 	MOVE.W	#1,Bullet_Active
-	MOVE.W	#BULLET_TTL,Bullet_TTL
-	MOVE.W	#BULLET_COOLDOWN,Bullet_Cooldown
+	MOVE.W	#BULLET_TTLC,Bullet_TTL
+	MOVE.W	#BULLET_COOLDOWNC,Bullet_Cooldown
 	LEA		SfxSparo,A0
 	BSR.W	PlaySfx
 	BRA.W	.save_fire
@@ -3959,7 +3984,7 @@ FirePrev:		dc.w	0		; stato fire al frame precedente (per edge-detect)
 ;   dc.b sfx_pri   ; priorita' 1..127
 SfxSparo:
 	dc.l	SparoSample
-	dc.w	(SparoSampleEnd-SparoSample)/2
+	dc.w	SPARO_LEN			; (SparoSampleEnd-SparoSample)/2
 	dc.w	SFX_PER_DEFAULT
 	dc.w	SFX_VOL_DEFAULT
 	dc.b	-1
@@ -3967,7 +3992,7 @@ SfxSparo:
 
 SfxHitEnemy:
 	dc.l	HitEnemySample
-	dc.w	(HitEnemySampleEnd-HitEnemySample)/2
+	dc.w	HITENEMY_LEN 		; (HitEnemySampleEnd-HitEnemySample)/2
 	dc.w	SFX_PER_DEFAULT
 	dc.w	SFX_VOL_DEFAULT
 	dc.b	-1
@@ -3975,7 +4000,7 @@ SfxHitEnemy:
 
 SfxHitPlayer:
 	dc.l	HitPlayerSample
-	dc.w	(HitPlayerSampleEnd-HitPlayerSample)/2
+	dc.w	HITPLAYER_LEN 		; (HitPlayerSampleEnd-HitPlayerSample)/2	
 	dc.w	SFX_PER_DEFAULT
 	dc.w	SFX_VOL_DEFAULT
 	dc.b	-1
@@ -3983,7 +4008,7 @@ SfxHitPlayer:
 
 SfxEnemyDeath:
 	dc.l	EnemyDeathSample
-	dc.w	(EnemyDeathSampleEnd-EnemyDeathSample)/2
+	dc.w	ENEMYDEATH_LEN 		; (EnemyDeathSampleEnd-EnemyDeathSample)/2
 	dc.w	SFX_PER_DEFAULT
 	dc.w	SFX_VOL_DEFAULT
 	dc.b	-1
@@ -4131,8 +4156,6 @@ CopperList:
 	; Nota: BPLCON3 e BPLCON4 NON sono qui perche' la PALETTE section piu' avanti
 	; gia' imposta BPLCON3 (con LOCT alternato) e nessuno modifica BPLCON4 a runtime.
 	; Settarli qui rompe la palette degli sprite hardware (es. falo' diventa verde).
-;	dc.w	$0106,$0c00		; BPLCON3: banca 0, LOCT=0, PF2OF=3 (innocuo in single-PF)
-;	dc.w	$010c,$0000		; BPLCON4: sprite palette base 0 (OCS standard)
 	dc.w	$108,0			; BPL1MOD
 	dc.w	$10A,0			; BPL2MOD
 	dc.w 	$0092,$0038,$0094,$00b8 ; DdfStrt - DdfStop (5 fetch FMODE=3 allineati)
@@ -4179,6 +4202,22 @@ Sprites:
 ; Valore $0e00 = LOCT=1, banca 0, bordo blank
 ; ============================================================================
 PALETTE:
+	; AGA BPLCON4:
+	;   bit 15-8 = BPLAM (XOR sul bitplane color index, 8 bit)
+	;   bit 7-4  = ESPRM (XOR sprite EVEN, 4 bit alti)
+	;   bit 3-0  = OSPRM (XOR sprite ODD,  4 bit alti)
+	; Servono sprite a COLOR17-19 (arancione): ESPRM=$1, OSPRM=$1.
+	; BPLAM=$00 lascia il bitplane invariato.
+	dc.w	$010c,$0011			; BPLCON4: BPLAM=0, ESPRM=$1, OSPRM=$1
+	; AGA single-PF: BPLCON4 bit 7-0 sono CONDIVISI tra OSPRM (sprite ODD) e
+	; BPLAM (bitplane). Quindi non si puo' avere sprite ODD a COLOR16-31
+	; E bitplane normale contemporaneamente.
+	; Compromesso scelto:
+	;   ESPRM=$10 -> sprite EVEN (SPR0 falo') a COLOR17-19 (arancione)
+	;   OSPRM=$00 -> sprite ODD (SPR1 proiettile) resta a COLOR1-3 (verdino)
+	;   BPLAM=$00 -> bitplane normale (tile colors OK)
+;	dc.w	$010c,$1000			; BPLCON4 = ESPRM=$10, OSPRM=$00
+
 	; ----- Blocco 1: nibble ALTI (LOCT=0) -----
 	dc.w	$0106,$0c00			; BPLCON3 = LOCT=0
 
@@ -4328,21 +4367,25 @@ title_bpl:
 SparoSample:
 	incbin	"Sparo.raw"
 SparoSampleEnd:
+SPARO_LEN		EQU	(SparoSampleEnd-SparoSample)/2
 
 	cnop	0,4
 HitEnemySample:
 	incbin	"HitEnemy.raw"
 HitEnemySampleEnd:
+HITENEMY_LEN	EQU	(HitEnemySampleEnd-HitEnemySample)/2
 
 	cnop	0,4
 HitPlayerSample:
 	incbin	"HitPlayer.raw"
 HitPlayerSampleEnd:
+HITPLAYER_LEN	EQU	(HitPlayerSampleEnd-HitPlayerSample)/2
 
 	cnop	0,4
 EnemyDeathSample:
 	incbin	"EnemyDeath.raw"
 EnemyDeathSampleEnd:
+ENEMYDEATH_LEN	EQU	(EnemyDeathSampleEnd-EnemyDeathSample)/2
 
 	cnop	0,8
 ; ============================================================================
