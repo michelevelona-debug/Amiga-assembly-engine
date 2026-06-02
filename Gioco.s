@@ -24,10 +24,11 @@ DMASET	EQU	%1000001111100000	; bltr, copper, bitplane, SPRITE ON
 NUM_PLANES			EQU		6				; numero di bitplane (5 + 1 per EHB notte)
 PLANE_SIZE      	EQU     40*256          ; 10240 byte = un singolo bitplane
 SFONDO_PITCH		EQU		48				; pitch riga di SFONDOGRANDE in byte
-										; (era 44, ora 48 per allineamento AGA FMODE=3,
-										; multiplo di 8). Larghezza utile = 22 word = 44 byte
-										; (= 352 pixel come prima); i 4 byte extra
-										; (= ultimi 32 pixel di ogni riga) sono inutilizzati.
+											; (era 44, ora 48 per allineamento AGA FMODE=3,
+											; multiplo di 8). Larghezza utile = 22 word = 44 byte
+											; (= 352 pixel come prima); i 4 byte extra
+											; (= ultimi 32 pixel di ogni riga) sono inutilizzati.
+BPSF_PITCH			EQU		48
 SFONDO_HEIGHT		EQU		288				; altezza SFONDOGRANDE in righe
 SFONDO_PLANE_SIZE 	EQU		SFONDO_PITCH*SFONDO_HEIGHT	; 13824 byte/plane
 
@@ -52,6 +53,13 @@ TILEYMAX			EQU		MAPPA_ROWS-BUFFER_ROWS
 PLAYER_MAX_X    	EQU		(MAPPA_COLS*16)-16-32   ; 344 (bob_X max 288 = 320-32 viewport)
 PLAYER_MAX_Y    	EQU		(MAPPA_ROWS*16)-16-32   ; 304 (bob_Y max 240 = 256-16 viewport)
 
+; --- Fisica platform (visto di lato) ---
+GRAVITY			EQU		1		; px/frame aggiunti a PlayerVelY (accelerazione di gravita')
+MAX_FALL		EQU		8		; velocita' di caduta massima (terminale)
+JUMP_VEL		EQU		-8		; velocita' iniziale del salto (negativa = verso l'alto)
+CAM_STEP_Y		EQU		8		; passo scroll verticale camera (px/frame, DEVE dividere 16: 1/2/4/8)
+CAM_DEADZONE_Y	EQU		8		; tolleranza verticale camera (>= CAM_STEP_Y per evitare oscillazione)
+
 ;------------------------------------------------------------
 ; Costanti tasti freccia (identici ai rawkey Intuition)
 ;------------------------------------------------------------
@@ -62,6 +70,7 @@ RAWKEY_LEFT		 	EQU 	$4F
 RAWKEY_SPACE		EQU 	$40
 RAWKEY_N			EQU 	$36			; rawkey del tasto N (toggle giorno/notte)
 RAWKEY_M			EQU 	$37			; rawkey del tasto M (toggle musica)
+RAWKEY_G			EQU 	$24			; rawkey del tasto G (toggle gravita' / 8-direzioni)
 
 KEY_RELEASE_BIT 	EQU 	7	   		; bit 7 del keycode decodificato
 ANIM_DELAY			EQU 	3
@@ -80,6 +89,55 @@ BULLET_HEIGHT		EQU		4			; altezza dello sprite proiettile
 ; ----- Illuminazione (EHB) -----
 TILE_LUCE			EQU		19			; numero tile = sorgente di luce
 RAGGIO_LUCE			EQU		64			; raggio in pixel della luce (tile 19)
+
+; Maschera statica del disco di luce per il blit del cerchio (vedi
+; BuildLightMask / DisegnaCerchioLuceBlitter). Larga 8 word (128px) + 1 word
+; di "spillover" per lo shift orizzontale = 9 word. Alta 128 righe (dy -64..63).
+; Bit=1 dentro il cerchio. Costruita una volta al boot riusando LightHalfWidthTable.
+LIGHT_MASK_W		EQU		9			; word per riga (8 disco + 1 per lo shift)
+LIGHT_MASK_H		EQU		128			; righe
+LIGHT_MASK_STRIDE	EQU		LIGHT_MASK_W*2	; 18 byte per riga
+
+; ----- DIAGNOSTICA SFARFALLIO (mettere a 1 per testare) -----
+; Se =1, UpdateDarkPlane disegna il cerchio in posizione FISSA al centro
+; schermo, ignorando camera/scan. Serve a capire la causa del flicker:
+;   - flicker SPARISCE  -> la causa e' l'instabilita' di cx/cy (camera/scan)
+;   - flicker RESTA      -> la causa e' display/DMA/double-buffer (non il contenuto)
+DBG_FIXLIGHT		EQU		0
+
+; Righe di "padding" extra sotto le 256 visibili nel dark plane: assorbono
+; un eventuale over-fetch di 1+ righe in fondo, evitando che la DMA legga
+; nel buffer adiacente (contenuto diverso tra A e B -> sfarfallio in basso).
+DARK_PAD_ROWS		EQU		16
+DARK_ROWS			EQU		256+DARK_PAD_ROWS
+
+; Righe di "padding" tra un piano e l'altro di BPSFONDO. Con FMODE=3 (fetch
+; AGA a 64 bit) il prefetch in fondo allo schermo legge righe oltre 255 di
+; ciascun piano. Con i 5 piani contigui (passo = 40*256), il piano N pesca
+; nei dati del piano N+1 -> mosaico "a trattini" sull'ultima riga, visibile
+; solo dove la luce notturna lo illumina (assente in OCS perche' senza
+; FMODE non c'e' prefetch). Distanziando i piani con BG_PAD_ROWS righe
+; blank (mai scritte da CopiaVideo/BOB, restano a 0 = colore 0 del bordo),
+; il prefetch legge righe nere consistenti invece dei dati del piano dopo.
+; 16 righe coprono anche eventuali BOB sul fondo che debordano oltre 255.
+BG_PAD_ROWS			EQU		16
+BG_PLANE_STRIDE		EQU		BPSF_PITCH*(256+BG_PAD_ROWS)	; 13056 byte = passo di piano BPSFONDO (pitch 48)
+
+; Numero di righe in fondo allo schermo da NON disegnare (border invisibile).
+;
+; STORIA: era un cerotto (=12) contro lo sfarfallio AGA sulle ultime ~12
+; scanline. Causa vera individuata: il fill del dark plane su CPU (~2.5ms di
+; MOVE.L) ritardava i blit dei BOB, che finivano mentre il pennello era gia'
+; sul fondo schermo -> contesa DMA blitter/bitplane -> sfarfallio. Spostato il
+; fill sul blitter (vedi UpdateDarkPlane STEP 1), tutto finisce ~2ms prima e
+; la contesa sparisce. Quindi ora dovrebbe bastare 0 (schermo pieno 256 righe).
+;
+; >>> Se reimpostando 0 lo sfarfallio NON torna, lascialo a 0 (recuperi 12px).
+; >>> Se dovesse tornare un filo, alza al minimo che lo elimina (prova 4, 8...).
+;
+; Muove insieme: BLTSIZE in CopiaVideo, cull cerchio in DisegnaCerchioLuce,
+; DIWSTOP nella copperlist di gioco.
+CUT_BOTTOM_ROWS		EQU		0
 
 FaloAnimSpeed		EQU		5			; ogni N frame avanza animazione
 ENEMY_COUNT			EQU		4			; numero massimo di nemici
@@ -173,7 +231,7 @@ START:
 
 	; Ripristina FMODE/BPLCON3/BPLCON4 per il gioco (la title li aveva
 	; impostati ma per sicurezza li riscriviamo, in caso siano cambiati).
-	MOVE.W	#$3,$1fc(A6)			; FMODE = $03 (AGA fetch 64-bit)
+	MOVE.W	#$3,$1fc(A6)			; FMODE = $03 (fetch 64-bit AGA)
 	MOVE.W	#$0c00,$106(A6)			; BPLCON3 default
 	MOVE.W	#$0011,$10c(A6)			; BPLCON4: BPLAM=0, ESPRM=$1, OSPRM=$1 (entrambi sprite a COLOR17-19 arancione)
 ;	MOVE.W	#$1000,$10c(A6)			; BPLCON4: ESPRM=$10 (SPR0 falo' a COLOR17-19 arancione), OSPRM/BPLAM=$00
@@ -207,32 +265,27 @@ START:
 	BSR.W	SwapBuffers				; ora display = B, draw = A
 	BSR.W	CopiaVideo				; copia anche su A
 	; (al primo giro del loop il display è B, e disegnamo su A — entrambi pronti)
+
+	BSR.W	BuildLightMask			; costruisce una volta la maschera del disco di luce
 .mainloop:
 *****************************************************************************
 	BSR.W	ReadKeyboard			; Routine che legge la tastiera
 	BSR.W	LeggiJoystick			; Routine che legge il Joystick	
 	BSR.W	GateScrollByCenter		; Se bob NON al centro, azzera ScrllX/Y
+	BSR.W	UpdatePlayerPhysics		; gravita' + salto -> IntentY
 	BSR.W	UpdatePlayerWorldPos	; Aggiorna PlayerWorldX/Y (Fase 2)
+	BSR.W	ComputeCameraFollowY	; camera insegue il player in verticale -> ScrllY
 	BSR.W	ControllaBordi			; Controllo dei bordi
 	BSR.W	GestisciShiftPixel		; Esegue lo scrolling fine
 	BSR.W	AggiornaTiles			; Gestisce l'agggiunta di tiles dalla mappa
 									; al buffer	
 	BSR.W	UpdateDarkPlane			; fill dark plane + lampioni (sempre ogni frame)
+	; NOTA: il dark plane e' gia' double-buffered correttamente.
+	; UpdateDarkPlane scrive SOLO CurrentDarkDraw (mai il buffer in display);
+	; SwapBuffers alterna A/B e aggiorna BPL5PT. Nessuna copia extra serve qui:
+	; copiare in CurrentDarkDisplay = scrivere nel piano EHB mentre il pennello
+	; lo legge -> tearing visibile sul bordo del cerchio (lo "sfarfallio in basso").
 
-	; ===== DIAGNOSTICA SFARFALLIO =====
-	; Copia CurrentDarkDraw -> CurrentDarkDisplay per rendere A e B identici.
-	; Se questo fa scomparire lo sfarfallio, il bug e' nel double-buffer del dark plane
-	; (qualcosa scrive in modo non-deterministico tra i due frame).
-	; Costo: ~3-4 ms (10240 byte di copia CPU).
-	MOVEM.L	D0/A0/A1,-(SP)
-	MOVE.L	CurrentDarkDraw,A0
-	MOVE.L	CurrentDarkDisplay,A1
-	MOVE.W	#(40*256/4)-1,D0
-.dbg_copy_dark:
-	MOVE.L	(A0)+,(A1)+
-	DBRA	D0,.dbg_copy_dark
-	MOVEM.L	(SP)+,D0/A0/A1
-	; ===== FINE DIAGNOSTICA =====
 	BSR.W	AnimaFalo				; anima sprite falò e lo posiziona su tile 19
 	BSR.W	CopiaVideo				; Disegna lo schermo
 	BSR.W	UpdatePlayerScreenPos	; Calcola bob_X/Y dalle coord. mondo 
@@ -316,7 +369,7 @@ AggiornaCopperBPL:
 	SWAP	D0
 	MOVE.W	D0,2(A1)			; word alta
 	SWAP	D0
-	ADD.L	#40*256,D0			; prossimo bitplane
+	ADD.L	#BG_PLANE_STRIDE,D0	; prossimo bitplane (passo con padding anti over-fetch FMODE=3)
 	ADDQ.W	#8,A1				; prossimi 4 dc.w nella copperlist
 	DBRA	D1,.loop
 
@@ -433,6 +486,7 @@ LeggiJoystick:
 
 	MOVE.W	#0,ScrllX	; inizializzo lo spostamento orizzontale
 	MOVE.W	#0,ScrllY	; inizializzo lo spostamento verticale
+	MOVE.W	#0,UpNow	; azzero lo stato del tasto salto per questo frame
 						; Mappatura bit dopo NOT:
 						; Bit 0 = Destra
 						; Bit 1 = Sinistra
@@ -453,13 +507,14 @@ LeggiJoystick:
 	LSR.W	#1,D2		; fa scorrere i bit di un posto verso destra 
 	EOR.W	D2,D3		; esegue l'or esclusivo. Ora possiamo testare
 	BTST	#8,D3		; testiamo se va in alto
-	BEQ.S	.NOALTO		; se no controlla se va in basso
-	SUBQ.W	#1,ScrllY	; se si scrolling in basso
+	BEQ.S	.NOALTO		; se no, controlla giu'
+	MOVE.W	#1,UpNow	; su = richiesta salto (platform)
+	SUBQ.W	#1,ScrllY	; su = -1 (usato in 8-direzioni)
 	BRA.S	.ENDJOYST
 .NOALTO:
 	BTST	#0,D3		; testiamo se va in basso
-	BEQ.S	.ENDJOYST	; se no finisci
-	ADDQ.W	#1,ScrllY	; se si scrolling in alto
+	BEQ.S	.ENDJOYST	; se no, finito
+	ADDQ.W	#1,ScrllY	; giu' = +1 (usato in 8-direzioni)
 .ENDJOYST:
 ;--- POLLING TASTIERA --------------------------------------
 ; Le flag arrow_* sono settate da ProcessArrowKey alla pressione
@@ -471,12 +526,14 @@ LeggiJoystick:
 ; valore si limita comunque a +/-1 perche' usiamo flag binarie.
 	TST.b	arrow_up
 	BEQ.s	.no_kup
-	MOVE.w	#-1,ScrllY
+	MOVE.w	#1,UpNow	; freccia su = salto (platform)
+	SUBQ.W	#1,ScrllY	; su = -1 (8-direzioni)
 .no_kup:
 	TST.b	arrow_dn
 	BEQ.s	.no_kdn
-	MOVE.w	#1,ScrllY
+	ADDQ.W	#1,ScrllY	; giu' = +1 (8-direzioni)
 .no_kdn:
+
 	tst.b	arrow_sx
 	beq.s	.no_ksx
 	move.w	#-1,ScrllX
@@ -485,6 +542,14 @@ LeggiJoystick:
 	beq.s	.no_krx
 	move.w	#1,ScrllX
 .no_krx:
+
+	; In platform il movimento verticale viene da gravita'/salto, NON dall'input:
+	; azzera ScrllY cosi' direzione sprite, gate e scroll non vedono su/giu' da input.
+	; In 8-direzioni invece ScrllY resta e muove il player in lockstep.
+	TST.W	GravityOn
+	BEQ.S	.keepInputY
+	CLR.W	ScrllY
+.keepInputY:
 
 ;------------------------------------------------------------
 ; CALCOLO DIREZIONE DEL PLAYER da ScrllX/ScrllY
@@ -521,7 +586,7 @@ LeggiJoystick:
 .no_dir_update:
 
 	MOVE.W	ScrllX,IntentX
-	MOVE.W	ScrllY,IntentY
+	MOVE.W	ScrllY,IntentY	; 8-direzioni: lockstep. In platform ScrllY=0 qui e IntentY lo sovrascrive la fisica.
 
 	MOVEM.l (SP)+,D0-D3/A0-A1
 	RTS
@@ -602,25 +667,25 @@ ProcessArrowKey:
 	cmp.b	#RAWKEY_UP,D2
 	bne.s	.k_down
 	move.b	D1,arrow_up
-	bra.s	.done
+	bra.w	.done
  
 .k_down:
 	cmp.b	#RAWKEY_DOWN,D2
 	bne.s	.k_left
 	move.b	D1,arrow_dn
-	bra.s	.done
+	bra.w	.done
  
 .k_left:
 	cmp.b	#RAWKEY_LEFT,D2
 	bne.s	.k_right
 	move.b	D1,arrow_sx
-	bra.s	.done
+	bra.w	.done
  
 .k_right:
 	cmp.b	#RAWKEY_RIGHT,D2
 	bne.s	.k_space
 	move.b	D1,arrow_rx
-	bra.s	.done
+	bra.w	.done
 
 .k_space:
 	cmp.b	#RAWKEY_SPACE,D2
@@ -644,7 +709,7 @@ ProcessArrowKey:
 
 .k_music:
 	cmp.b	#RAWKEY_M,D2
-	bne.s	.done
+	bne.s	.k_gravity
 	; D1 = 1 (premuto) o 0 (rilasciato)
 	; Toggle solo al "press" (edge): se MusicKeyPrev=0 e D1=1, toggle
 	tst.b	D1
@@ -657,7 +722,22 @@ ProcessArrowKey:
 	; (= start/stop player). Per ora basta cambiare il flag.
 .m_release:
 	move.b	D1,MusicKeyPrev
-
+.k_gravity:
+	cmp.b	#RAWKEY_G,D2
+	bne.s	.done
+	; D1 = 1 (premuto) o 0 (rilasciato); toggle solo sul fronte di pressione
+	tst.b	D1
+	beq.s	.g_release				; rilasciato -> aggiorna prev e basta
+	tst.b	GravKeyPrev
+	bne.s	.g_release				; era gia' premuto -> no edge
+	; Edge press: inverti gravita' (platform <-> 8 direzioni)
+	eori.w	#1,GravityOn
+	move.w	#1,VScrollStep			; default 1px; in platform ComputeCameraFollowY lo rialza a CAM_STEP_Y
+	clr.w	PlayerVelY				; reset stato fisica (rilevante al rientro in platform)
+	clr.w	UpPrev
+	clr.w	PlayerGrounded
+.g_release:
+	move.b	D1,GravKeyPrev
 .done:
 
 	movem.l	(SP)+,D1-D2
@@ -744,14 +824,24 @@ AggiornaTiles:
 .NoBot:
  
 ; ---------- ALTO ----------
-; Aspetta PixelOffY=0 (16 shift basso cumulativi dopo il boundary, bug #1).
+; AddRigaAlto riscrive le righe 0-15 (serbatoio superiore) con MAPPA[TileY].
 ; Lo split X in AddRigaAlto gestisce PixelOffX qualunque.
-	MOVE.W	PdngAddTop,D0
-	TST.W   D0
-	BEQ.S   .NoTop
+;
+; FIX smear: ShiftPixelBasso lascia la riga 0 NON riscritta -> quel pixel-row
+; si propaga verso il basso 1 riga/frame. Va ripulito a OGNI PixelOffY==0
+; mentre si scrolla verso l'alto (ScrllY<0), non solo quando c'e' un boundary
+; pendente (PdngAddTop). Altrimenti, partendo da PixelOffY!=0 (discesa fermata
+; a meta' tile), lo smear accumula prima del boundary + i 16 frame di rinvio,
+; supera le 16 righe del serbatoio e trabocca nell'area visibile.
 	MOVE.W	PixelOffY,D1
 	TST.W   D1
-	BNE.S   .NoTop
+	BNE.S   .NoTop			; non allineato: nessun refill
+	MOVE.W	PdngAddTop,D0
+	TST.W   D0
+	BNE.S   .DoTop			; boundary pendente -> refill
+	MOVE.W	ScrllY,D0
+	BPL.S   .NoTop			; ScrllY>=0 (non si sale) -> nessun refill
+.DoTop:
 	BSR.W   AddRigaAlto
 	CLR.W   PdngAddTop
 .NoTop:
@@ -854,7 +944,7 @@ ControllaBordi:
 	BRA.S   .FineControlli
 .AzzeroYMax:
 	MOVE.W  #0,ScrllY
-	MOVEQ   #15,D1
+	MOVEQ   #16-CAM_STEP_Y,D1	; clamp allineato al passo (15 se step=1, 8 se step=8)
 	BRA.S   .FineControlli
 .ControlloYMin:
 	TST.W   D1
@@ -948,10 +1038,20 @@ ShiftPixelDestra:
 * SCROLLING IN ALTO
 *****************************************************************************
 ShiftPixelAlto:
-	MOVEM.L D4/A1-A2,-(SP)
+	MOVEM.L D0-D1/D4/A1-A2,-(SP)
 
-	MOVE.L  #SFONDOGRANDE+SFONDO_PITCH,A2
+	; sorgente = riga VScrollStep ; dest = riga 0
+	MOVE.W  VScrollStep,D0
+	MULU.W  #SFONDO_PITCH,D0			; D0 = VScrollStep * SFONDO_PITCH
+	MOVE.L  #SFONDOGRANDE,A2
+	ADDA.L  D0,A2
 	MOVE.L  #SFONDOGRANDE,A1
+
+	; BLTSIZE = ((288-VScrollStep)<<6)+22
+	MOVE.W  #288,D1
+	SUB.W   VScrollStep,D1
+	LSL.W   #6,D1
+	ADD.W   #22,D1
 
 	MOVEQ	#5-1,D4
 .loop:
@@ -966,23 +1066,34 @@ ShiftPixelAlto:
 	MOVE.L  A2,$50(A6)
 	MOVE.L  A1,$54(A6)
 
-	MOVE.W  #(287<<6)+22,$58(A6)
+	MOVE.W  D1,$58(A6)		; (288-VScrollStep) righe x 22 word
 
 	ADD.L   #288*SFONDO_PITCH,A2
 	ADD.L   #288*SFONDO_PITCH,A1
 
 	DBRA	D4,.loop
-	MOVEM.L (SP)+,D4/A1-A2
+	MOVEM.L (SP)+,D0-D1/D4/A1-A2
 	RTS
 
 ****************************************************************************
 * SCROLLING IN BASSO
 *****************************************************************************
 ShiftPixelBasso:
-	MOVEM.L D4/A1-A2,-(SP)
+	MOVEM.L D0-D1/D4/A1-A2,-(SP)
 
-	MOVE.L  #SFONDOGRANDE+286*SFONDO_PITCH+42,A2
+	; sorgente DESC = ultima word di riga (287 - VScrollStep) ; dest DESC = ultima word riga 287
+	MOVE.W  #287,D0
+	SUB.W   VScrollStep,D0
+	MULU.W  #SFONDO_PITCH,D0
+	MOVE.L  #SFONDOGRANDE+42,A2
+	ADDA.L  D0,A2
 	MOVE.L  #SFONDOGRANDE+287*SFONDO_PITCH+42,A1
+
+	; BLTSIZE = ((288-VScrollStep)<<6)+22
+	MOVE.W  #288,D1
+	SUB.W   VScrollStep,D1
+	LSL.W   #6,D1
+	ADD.W   #22,D1
 
 	MOVEQ	#5-1,D4
 .loop:
@@ -997,13 +1108,13 @@ ShiftPixelBasso:
 	MOVE.L  A2,$50(A6)
 	MOVE.L  A1,$54(A6)
 
-	MOVE.W  #(287<<6)+22,$58(A6)
+	MOVE.W  D1,$58(A6)		; (288-VScrollStep) righe x 22 word
 
 	ADD.L   #288*SFONDO_PITCH,A2
 	ADD.L   #288*SFONDO_PITCH,A1
 
 	DBRA	D4,.loop
-	MOVEM.L (SP)+,D4/A1-A2
+	MOVEM.L (SP)+,D0-D1/D4/A1-A2
 	RTS
 *****************************************************************************
 * ADD COLONNA DESTRA (con split Y)
@@ -1548,17 +1659,17 @@ CopiaVideo:
 	MOVE.L	#$ffffffff,$44(A6)		; BLTAFWM/BLTALWM = $FFFF/$FFFF
 	MOVE.L	#$09F00000,$40(A6)		; BLTCON0/1 - copia normale
 	MOVE.W	#8,$64(A6)				; BLTAMOD = 48-40 (sorgente pitch 48)
-	MOVE.W	#0,$66(A6)				; BLTDMOD = 40-40 (dest pitch 40)
+	MOVE.W	#BPSF_PITCH-40,$66(A6)	; BLTDMOD = 48-40 (dest BPSFONDO pitch 48, copia 20 word)
 
 	MOVEQ	#5-1,D4
 .BlittaLoopVideo:
 	BSR.W	AspettaBlitter			; Aspetta che il blit precedente finisca
 	MOVE.L	A2,$50(A6)				; BLTAPT
 	MOVE.L	A1,$54(A6)				; BLTDPT
-	MOVE.W	#(256<<6)+20,$58(A6)	; BLTSIZE = 256 righe * 20 word
+	MOVE.W	#((256-CUT_BOTTOM_ROWS)<<6)+20,$58(A6)	; BLTSIZE = (256-CUT) righe * 20 word
 
 	ADD.L	#288*SFONDO_PITCH,A2	; prossimo plane sorgente
-	ADD.L	#256*40,A1				; prossimo plane destinazione
+	ADD.L	#BG_PLANE_STRIDE,A1		; prossimo plane destinazione BPSFONDO
 
 	DBRA	D4,.BlittaLoopVideo
 
@@ -2598,6 +2709,8 @@ AnimaFalo:
 	; ===== DEBUG: posizione fissa basata su tile 19 in MAPPA[15][5] =====
 	; Sottraggo TileX/TileY per compensare lo scroll
 	; D3 = 5 - TileX, D7 = 15 - TileY
+	; (Verificato: lo sprite NON e' la causa dello sfarfallio sulle ultime
+	;  ~12 scanline - quello e' contesa DMA blitter/bitplane su AGA FMODE=3.)
 	MOVE.W	#5,D3
 	SUB.W	TileX,D3				; D3 = col buffer della tile 19
 	MOVE.W	#15,D7
@@ -2848,25 +2961,40 @@ AggiornaProiettile:
 UpdateDarkPlane:
 	MOVEM.L	D0-D7/A0-A4,-(SP)
 
-	; ----- STEP 1: Fill del DARKPLANE_corrente -----
-	; Aspetta blitter (per non corrompere se ci sono blit in corso)
+	; ----- STEP 1: Fill del DARKPLANE_corrente via BLITTER -----
+	; Blit "destination-only": il minterm LF non dipende da A/B/C.
+	;   notte  -> LF=$FF -> D=$FFFF (tutto half-bright = scuro)
+	;   giorno -> LF=$00 -> D=$0000 (nessun pixel half-bright)
+	; Niente canali sorgente, niente BLTADAT: bulletproof. Libera ~2.5ms di CPU.
 	BSR.W	AspettaBlitter
 
-	MOVE.L	CurrentDarkDraw,A0
-	; Determina valore di fill: 0 = giorno, $FFFFFFFF = notte
-	MOVEQ	#0,D1
+	MOVE.W	#$0100,D1				; BLTCON0 base: USED on, LF=$00 (D=0) -> giorno
 	TST.B	NightMode
-	BEQ.S	.do_fill
-	MOVE.L	#$FFFFFFFF,D1
-.do_fill:
-	MOVE.W	#(40*256/4)-1,D2
-.fill_loop:
-	MOVE.L	D1,(A0)+
-	DBRA	D2,.fill_loop
+	BEQ.S	.fillcon_ok
+	MOVE.W	#$01FF,D1				; notte: LF=$FF -> D=$FFFF
+.fillcon_ok:
+	MOVE.W	D1,$40(A6)				; BLTCON0
+	MOVE.W	#0,$42(A6)				; BLTCON1 = 0 (no shift, no fill mode)
+	MOVE.W	#BPSF_PITCH-40,$66(A6)	; BLTDMOD = 48-40 (dest BPSFONDO pitch 48, copia 20 word)
+	MOVE.L	CurrentDarkDraw,$54(A6)	; BLTDPT
+	MOVE.W	#(DARK_ROWS<<6)|20,$58(A6)	; BLTSIZE -> avvia (DARK_ROWS righe * 20 word)
+
+	; Il cerchio luce (CPU) modifichera' il dark plane appena riempito:
+	; deve attendere la fine del fill blit prima di scriverci.
+	BSR.W	AspettaBlitter
 
 	; ----- STEP 2: Lampioni (solo se notte) -----
 	TST.B	NightMode
 	BEQ.W	.done					; giorno: niente lampioni da disegnare
+
+	IFNE	DBG_FIXLIGHT
+	; --- DIAGNOSTICA: cerchio in posizione FISSA, indipendente dalla camera ---
+	; cx=160 (centro X), cy=216 (basso, cosi' il cerchio esce in basso come nel bug)
+	MOVE.W	#160,D0
+	MOVE.W	#216,D1
+	BSR.W	DisegnaCerchioLuceBlitter
+	BRA.W	.done
+	ENDC
 
 	; Scansione viewport: BUFFER_COLS x BUFFER_ROWS tile
 	; map_col_start = TileX, map_row_start = TileY
@@ -2878,10 +3006,11 @@ UpdateDarkPlane:
 	MOVE.W	TileY,D6				; D6 = row corrente nella mappa
 	MOVEQ	#0,D7					; D7 = row buffer corrente (0..BUFFER_ROWS-1)
 .row_loop:
-	; Calcola center_screen_y = D7*16 + 8 - PixelOffY
+	; Calcola center_screen_y = D7*16 - 8 - PixelOffY
+	; (coerente col centro reale passato a DisegnaCerchioLuce piu' sotto)
 	MOVE.W	D7,D5
 	LSL.W	#4,D5					; D5 = D7*16
-	ADDQ.W	#8,D5					; +8 (centro)
+	SUBQ.W	#8,D5					; -8 (centro tile, con sfasamento rendering)
 	SUB.W	PixelOffY,D5			; D5 = center_screen_y
 	; Cull: se y fuori da [-RAGGIO_LUCE, 256+RAGGIO_LUCE], skip
 	CMP.W	#-RAGGIO_LUCE,D5
@@ -2921,7 +3050,7 @@ UpdateDarkPlane:
 	LSL.W	#4,D1
 	SUB.W	#8,D1
 	SUB.W	PixelOffY,D1			; D1 = center_screen_y
-	BSR.W	DisegnaCerchioLuce		; INPUT: D0=cx, D1=cy
+	BSR.W	DisegnaCerchioLuceBlitter	; INPUT: D0=cx, D1=cy
 
 .next_col:
 	ADDQ.W	#1,D3					; col buffer +1
@@ -2975,9 +3104,9 @@ DisegnaCerchioLuce:
 	; y_riga = cy + dy
 	MOVE.W	A3,D3
 	ADD.W	D7,D3					; D3 = y_riga
-	; Cull verticale
+	; Cull verticale (le ultime CUT_BOTTOM_ROWS righe restano "scure", fuori dal display utile)
 	BMI.W	.skip_row
-	CMP.W	#256,D3
+	CMP.W	#(256-CUT_BOTTOM_ROWS),D3
 	BGE.W	.skip_row
 
 	; half = LightHalfWidthTable[|dy|]
@@ -3017,7 +3146,7 @@ DisegnaCerchioLuce:
 	; A1 = base riga sul dark plane
 	MOVE.L	CurrentDarkDraw,A1
 	MOVE.W	D3,D4
-	MULU.W	#40,D4
+	MULU.W	#BPSF_PITCH,D4
 	ADDA.L	D4,A1
 
 	; byte_left = D0 >> 3, byte_right = D1 >> 3
@@ -3104,6 +3233,155 @@ LightHalfWidthTable:
 	dc.b	 0							; dy 64
 
 	EVEN
+*****************************************************************************
+* BuildLightMask  (chiamata UNA volta al boot)
+*   Costruisce LightMask: disco di raggio RAGGIO_LUCE, bit=1 dentro, in un
+*   buffer di LIGHT_MASK_W word x LIGHT_MASK_H righe. Riusa LightHalfWidthTable.
+*   La 9a word di ogni riga resta 0 (spillover per lo shift del blit).
+*****************************************************************************
+BuildLightMask:
+	MOVEM.L	D0-D4/A0-A1,-(SP)
+	LEA		LightMask,A1			; A1 = riga corrente della maschera
+	MOVEQ	#0,D0					; D0 = r (0..LIGHT_MASK_H-1)
+.row:
+	MOVE.W	D0,D1
+	SUB.W	#64,D1					; dy = r - 64
+	TST.W	D1						; |dy|
+	BPL.S	.pos
+	NEG.W	D1
+.pos:
+	LEA		LightHalfWidthTable,A0
+	MOVE.B	(A0,D1.W),D2
+	EXT.W	D2						; D2 = half
+	TST.W	D2
+	BEQ.S	.next					; half=0 -> riga vuota (resta 0)
+	MOVE.W	#64,D3
+	SUB.W	D2,D3					; D3 = x_left  = 64 - half
+	MOVE.W	#64,D4
+	ADD.W	D2,D4
+	SUBQ.W	#1,D4					; D4 = x_right = 64 + half - 1
+	BSR.S	SetBitSpan				; setta bit [D3..D4] nella riga A1
+.next:
+	LEA		LIGHT_MASK_STRIDE(A1),A1	; prossima riga
+	ADDQ.W	#1,D0
+	CMP.W	#LIGHT_MASK_H,D0
+	BLT.S	.row
+	MOVEM.L	(SP)+,D0-D4/A0-A1
+	RTS
+
+*****************************************************************************
+* SetBitSpan  - setta a 1 i bit da D3 a D4 (inclusi) nella riga A1.
+*   Ordine bit MSB-first: pixel 0 = bit 7 del byte 0. Solo per il boot.
+*****************************************************************************
+SetBitSpan:
+	MOVEM.L	D3/D5/D6/A2,-(SP)
+.sb:
+	MOVE.W	D3,D5
+	LSR.W	#3,D5					; byte index = x>>3
+	MOVE.W	D3,D6
+	ANDI.W	#7,D6
+	EORI.W	#7,D6					; bit = 7-(x&7)  (MSB = pixel 0)
+	LEA		(A1,D5.W),A2
+	BSET	D6,(A2)
+	ADDQ.W	#1,D3
+	CMP.W	D4,D3
+	BLE.S	.sb
+	MOVEM.L	(SP)+,D3/D5/D6/A2
+	RTS
+
+*****************************************************************************
+* DisegnaCerchioLuceBlitter
+*   Disegna il cerchio di luce sul dark plane (= spegne i bit dentro) usando
+*   il BLITTER: minterm D = (NOT A) AND C, con A=LightMask, C/D=dark plane.
+*   INPUT: D0.w = cx, D1.w = cy  (centro schermo, come DisegnaCerchioLuce).
+*
+*   - Shift orizzontale sub-word via ASH in BLTCON0.
+*   - Clipping verticale: aggiusta riga di partenza maschera + altezza blit.
+*   - Clipping orizzontale (bordo sx/dx): FALLBACK alla routine CPU esistente
+*     quando word_x e' fuori [0..11] (cerchio a cavallo del bordo laterale).
+*****************************************************************************
+DisegnaCerchioLuceBlitter:
+	MOVEM.L	D0-D7/A0-A1,-(SP)
+
+	; left_px = cx - 64 ; word_x = left_px>>4 (signed) ; shift = left_px & 15
+	MOVE.W	D0,D2
+	SUB.W	#RAGGIO_LUCE,D2			; D2 = left_px (signed)
+	MOVE.W	D2,D3
+	ASR.W	#4,D3					; D3 = word_x (signed)
+	ANDI.W	#15,D2					; D2 = shift (0..15)
+
+	; fallback CPU se il cerchio tocca i bordi sx/dx
+	TST.W	D3
+	BMI.W	.cpu_fallback			; word_x < 0
+	CMP.W	#11,D3
+	BGT.W	.cpu_fallback			; word_x > 11 -> 9 word non entrano in 20
+
+	; ----- clipping verticale -----
+	MOVE.W	D1,D5
+	SUB.W	#RAGGIO_LUCE,D5			; D5 = top_row = cy - 64 (signed)
+	MOVEQ	#0,D6					; D6 = rows_skip
+	TST.W	D5
+	BPL.S	.vt_ok
+	MOVE.W	D5,D6
+	NEG.W	D6						; rows_skip = -top_row
+	MOVEQ	#0,D5					; vtop = 0
+.vt_ok:
+	MOVE.W	D1,D7
+	ADD.W	#RAGGIO_LUCE,D7			; D7 = cy + 64 = bottom (esclusivo)
+	CMP.W	#256,D7
+	BLE.S	.vb_ok
+	MOVE.W	#256,D7					; clamp altezza display
+.vb_ok:
+	MOVE.W	D7,D4
+	SUB.W	D5,D4					; D4 = height = vbot - vtop
+	BLE.W	.exit					; <=0: cerchio fuori in verticale
+
+	BSR.W	AspettaBlitter
+
+	; A0 = LightMask + rows_skip*stride
+	MULU.W	#LIGHT_MASK_STRIDE,D6
+	LEA		LightMask,A0
+	ADDA.W	D6,A0
+	; A1 = CurrentDarkDraw + vtop*48 + word_x*2
+	MOVE.L	CurrentDarkDraw,A1
+	MOVE.W	D5,D6
+	MULU.W	#BPSF_PITCH,D6
+	ADDA.W	D6,A1
+	MOVE.W	D3,D6
+	ADD.W	D6,D6					; word_x*2
+	ADDA.W	D6,A1
+
+	MOVE.L	A0,$50(A6)				; BLTAPT = maschera
+	MOVE.L	A1,$48(A6)				; BLTCPT = dark plane (lettura)
+	MOVE.L	A1,$54(A6)				; BLTDPT = dark plane (scrittura)
+
+	; BLTCON0 = (shift<<12) | USEA|USEC|USED | LF=$0A (D = ~A & C)
+	MOVE.W	D2,D6
+	LSL.W	#8,D6
+	LSL.W	#4,D6					; shift << 12
+	ORI.W	#$0B0A,D6
+	MOVE.W	D6,$40(A6)				; BLTCON0
+	MOVE.W	#0,$42(A6)				; BLTCON1 = 0
+	MOVE.L	#$FFFFFFFF,$44(A6)		; BLTAFWM/BLTALWM = $FFFF
+	MOVE.W	#0,$64(A6)				; BLTAMOD = 0 (maschera 9 word, blit 9 word)
+	MOVE.W	#BPSF_PITCH-LIGHT_MASK_W*2,$60(A6)	; BLTCMOD = 48-18 = 30
+	MOVE.W	#BPSF_PITCH-LIGHT_MASK_W*2,$66(A6)	; BLTDMOD = 48-18 = 30
+
+	MOVE.W	D4,D6					; height
+	LSL.W	#6,D6
+	ORI.W	#LIGHT_MASK_W,D6		; | 9 word
+	MOVE.W	D6,$58(A6)				; BLTSIZE -> avvia
+	BRA.S	.exit
+
+.cpu_fallback:
+	; cx (D0) e cy (D1) sono ancora intatti -> uso la routine CPU collaudata.
+	; Attendo un eventuale blit cerchio precedente: la CPU scrive direttamente.
+	BSR.W	AspettaBlitter
+	BSR.W	DisegnaCerchioLuce
+
+.exit:
+	MOVEM.L	(SP)+,D0-D7/A0-A1
+	RTS
 
 *****************************************************************************
 * DisegnaHealthBars
@@ -3258,9 +3536,9 @@ DisegnaBarraVita:
 	; byte_offset = (bob_X / 16) * 2 + D3 * 40
 	MOVE.W	D2,D4
 	LSR.W	#4,D4						; D4 = bob_X / 16
-	LSL.W	#1,D4						; D4 = byte offset di word
+    LSL.W	#1,D4						; D4 = byte offset di word
 	MOVE.W	D3,D5
-	MULU.W	#40,D5						; D5.l = D3*40
+	MULU.W	#BPSF_PITCH,D5						; D5.l = D3*48 (dest pitch)
 	ADD.L	D4,D5						; D5.l = offset totale plane 0 riga D3
 
 	; A1 = base del backbuffer (CurrentDraw)
@@ -3271,7 +3549,7 @@ DisegnaBarraVita:
 	; Per ogni plane:
 	;   se HEALTHBAR_COLOR ha bit acceso -> pixel |= bitmask (OR per accendere)
 	;   se HEALTHBAR_COLOR ha bit spento -> pixel &= ~bitmask (AND per spegnere)
-	; Cosi' i pixel della barra piena vengono colorati, ma i pixel "vuoti"
+		; Cosi' i pixel della barra piena vengono colorati, ma i pixel "vuoti"
 	; (dove bitmask = 0) restano invariati = mostrano lo sfondo sotto = trasparenza.
 	; Per ogni plane scriviamo 2 righe (riga D3, riga D3+1)
 	MOVE.W	#HEALTHBAR_COLOR,D6
@@ -3283,15 +3561,15 @@ DisegnaBarraVita:
 	BEQ.S	.plane_off
 	; Plane acceso: OR con bitmask (accende i pixel della barra)
 	OR.L	D2,(A1)						; riga D3
-	OR.L	D2,40(A1)					; riga D3+1
+	OR.L	D2,BPSF_PITCH(A1)			; riga D3+1 (dest pitch 48)
 	BRA.S	.plane_next
 .plane_off:
 	; Plane spento: AND con NOT bitmask (spegne i pixel della barra)
 	AND.L	D1,(A1)						; riga D3
-	AND.L	D1,40(A1)					; riga D3+1
+	AND.L	D1,BPSF_PITCH(A1)			; riga D3+1 (dest pitch 48)
 .plane_next:
 	; Prossimo plane
-	ADDA.L	#40*256,A1
+	ADDA.L	#BG_PLANE_STRIDE,A1
 	LSR.W	#1,D6
 	DBRA	D5,.plane_loop
 .skip:
@@ -3455,7 +3733,45 @@ AI_Hunt:
 .tryY_blocked:
 	MOVEQ	#1,D2
 	RTS
-	
+
+*****************************************************************************
+* UpdatePlayerPhysics
+*   Genera IntentY dalla fisica del platform, al posto dell'input verticale.
+*   - Gravita': PlayerVelY += GRAVITY ogni frame, con cap a MAX_FALL.
+*   - Salto: solo sul FRONTE di salita di UpNow (tasto appena premuto) E se il
+*     player e' a terra -> PlayerVelY = JUMP_VEL (negativa = su), grounded = 0.
+*     Cosi' si salta una volta per pressione e solo da terra.
+*   - IntentY = PlayerVelY (spostamento verticale di questo frame).
+*   PlayerGrounded viene aggiornato da UpdatePlayerWorldPos in base alle
+*   collisioni verticali (giu' bloccato = a terra; su bloccato = testata).
+*****************************************************************************
+UpdatePlayerPhysics:
+	MOVE.W	D0,-(SP)
+	TST.W	GravityOn
+	BEQ.S	.skipGrav			; gravita' OFF (8 direzioni): IntentY viene gia' dall'input (lockstep)
+	; --- Gravita' (applicata solo in platform) ---
+	MOVE.W	PlayerVelY,D0
+	ADD.W	#GRAVITY,D0
+	CMP.W	#MAX_FALL,D0
+	BLE.S	.noCap
+	MOVE.W	#MAX_FALL,D0			; clamp alla velocita' terminale
+.noCap:
+	MOVE.W	D0,PlayerVelY
+	; --- Salto: fronte di salita di UpNow + player a terra ---
+	TST.W	UpNow
+	BEQ.S	.noJump					; tasto su non premuto
+	TST.W	UpPrev
+	BNE.S	.noJump					; era gia' premuto -> non e' un fronte
+	TST.W	PlayerGrounded
+	BEQ.S	.noJump					; in aria -> niente salto
+	MOVE.W	#JUMP_VEL,PlayerVelY	; SALTO! (sovrascrive la gravita' di questo frame)
+	CLR.W	PlayerGrounded
+.noJump:
+	MOVE.W	UpNow,UpPrev			; memorizza stato per il prossimo fronte
+	MOVE.W	PlayerVelY,IntentY		; IntentY = velocita' verticale corrente
+.skipGrav:
+	MOVE.W	(SP)+,D0
+	RTS
 *****************************************************************************
 * UpdatePlayerWorldPos (Fase 2 + Fase 4)
 *   Aggiorna PlayerWorldX/Y in base a ScrllX/Y (intent dell'utente).
@@ -3537,9 +3853,18 @@ UpdatePlayerWorldPos:
 	CMP.W	PlayerWorldY,D1
 	BEQ.S	.y_blocked				; non si e' mosso (clamp) -> azzera ScrllY
 	MOVE.W	D1,PlayerWorldY
+	CLR.W	PlayerGrounded			; movimento verticale riuscito -> player in aria
 	BRA.S	.skipY
 .y_blocked:
 	CLR.W	ScrllY					; sincronizza camera: niente scroll su Y
+	; --- stato verticale: giu' bloccato = a terra, su bloccato = testata ---
+	MOVE.W	IntentY,D0
+	BPL.S	.y_land					; IntentY>=0 (scendeva) -> atterrato sul tile
+	CLR.W	PlayerVelY				; IntentY<0 (saliva) -> testata sul soffitto
+	BRA.S	.skipY
+.y_land:
+	MOVE.W	#1,PlayerGrounded		; piedi su tile solido -> puo' saltare
+	CLR.W	PlayerVelY
 .skipY:
 
 	; Sync bob_WorldX/Y del Player con le variabili globali
@@ -3551,6 +3876,63 @@ UpdatePlayerWorldPos:
 	MOVEM.L	(SP)+,D0-D2/A2
 	RTS
 
+*****************************************************************************
+* ComputeCameraFollowY
+*   Solo in modalita' platform (GravityOn=1): scroll verticale per inseguire
+*   il player. In 8-direzioni (GravityOn=0) NON tocca nulla: ScrllY e
+*   VScrollStep sono gia' impostati dall'input (lockstep a 1px).
+*
+*   Passo adattivo (auto-riallineamento):
+*   - se PixelOffY e' multiplo di CAM_STEP_Y -> passo pieno CAM_STEP_Y
+*   - altrimenti -> passo 1px (nella direzione dell'inseguimento) finche'
+*     PixelOffY torna allineato. Serve perche' il refill richiede passi
+*     multipli che mantengano PixelOffY allineato; entrando da 8-direzioni
+*     (passo 1) PixelOffY puo' essere qualsiasi, e cosi' si riallinea liscio.
+*   VScrollStep viene impostato uguale a |ScrllY| cosi' lo shift combacia.
+*
+*   errore = (PlayerWorldY - CENTER_Y) - (TileY*16 + PixelOffY)
+*   |errore| <= CAM_DEADZONE_Y -> fermo.
+*****************************************************************************
+ComputeCameraFollowY:
+	MOVEM.L	D0-D2,-(SP)
+	TST.W	GravityOn
+	BEQ.W	.skip					; 8-direzioni: gestito dall'input (lockstep)
+	MOVE.W	TileY,D0
+	LSL.W	#4,D0					; TileY*16
+	ADD.W	PixelOffY,D0			; D0 = CameraY corrente (px)
+	MOVE.W	PlayerWorldY,D1
+	SUB.W	#CENTER_Y,D1			; D1 = CameraY target
+	SUB.W	D0,D1					; D1 = errore (target - corrente)
+	CMP.W	#CAM_DEADZONE_Y,D1
+	BGT.S	.needDown				; errore > +deadzone -> giu'
+	CMP.W	#-CAM_DEADZONE_Y,D1
+	BLT.S	.needUp					; errore < -deadzone -> su
+	CLR.W	ScrllY					; dentro la dead-zone -> fermo
+	BRA.S	.skip
+.needDown:
+	MOVE.W	PixelOffY,D2
+	AND.W	#CAM_STEP_Y-1,D2		; PixelOffY mod CAM_STEP_Y (CAM_STEP_Y e' potenza di 2)
+	BNE.S	.down1					; non allineato -> 1px per riallineare
+	MOVE.W	#CAM_STEP_Y,VScrollStep
+	MOVE.W	#CAM_STEP_Y,ScrllY
+	BRA.S	.skip
+.down1:
+	MOVE.W	#1,VScrollStep
+	MOVE.W	#1,ScrllY
+	BRA.S	.skip
+.needUp:
+	MOVE.W	PixelOffY,D2
+	AND.W	#CAM_STEP_Y-1,D2
+	BNE.S	.up1
+	MOVE.W	#CAM_STEP_Y,VScrollStep
+	MOVE.W	#-CAM_STEP_Y,ScrllY
+	BRA.S	.skip
+.up1:
+	MOVE.W	#1,VScrollStep
+	MOVE.W	#-1,ScrllY
+.skip:
+	MOVEM.L	(SP)+,D0-D2
+	RTS
 *****************************************************************************
 * UpdatePlayerScreenPos
 *   Calcola bob_X/bob_Y (coordinate schermo del player) come differenza
@@ -3657,7 +4039,7 @@ DisegnaBOB:
 	; A1 = destinazione (CurrentDraw + Y*40 + word_offset)
 	MOVE.L	CurrentDraw,A1
 	MOVE.W	bob_Y(A0),D0
-	MULU.W	#40,D0					; D0 = Y * 40
+	MULU.W	#BPSF_PITCH,D0			; D0 = Y * 48 (dest pitch)
 	ADD.W	D6,D0
 	ADDA.W	D0,A1					; A1 = posizione plane 0 destinazione
  
@@ -3690,10 +4072,10 @@ DisegnaBOB:
 	MOVE.L	#$ffffffff,$44(A6)		; BLTAFWM/BLTALWM = $FFFF/$FFFF
 	MOVE.W	D5,$40(A6)				; BLTCON0 (con ASH = shift sulla MASCHERA = A)
 	MOVE.W	D6,$42(A6)				; BLTCON1 (BSH = shift sul BOB = B)
-	MOVE.W	#36,$60(A6)				; BLTCMOD = 40 - 4 (sfondo, pitch 40 byte)
+	MOVE.W	#BPSF_PITCH-4,$60(A6)	; BLTCMOD = 48 - 4 (sfondo = dest, pitch 48 byte)
 	MOVE.W	#36,$62(A6)				; BLTBMOD = 40 - 4 (BOB, pitch 40 byte)
 	MOVE.W	#0,$64(A6)				; BLTAMOD = 4 - 4 (MASK fissa 4 byte/riga)
-	MOVE.W	#36,$66(A6)				; BLTDMOD = 40 - 4 (destinazione, pitch 40 byte)
+	MOVE.W	#BPSF_PITCH-4,$66(A6)	; BLTDMOD = 48 - 4 (destinazione, pitch 48 byte)
  
 	; ----------------- Loop sui 5 bitplane -----------------
 	; L'incremento per passare al plane successivo e' SEMPRE plane_size = 10240 byte.
@@ -3711,7 +4093,7 @@ DisegnaBOB:
  
 
 	ADD.L	#40*256,A2				; prossimo plane sorgente BOB (B): +10240
-	ADD.L	#40*256,A1				; prossimo plane destinazione/sfondo: +10240
+	ADD.L	#BG_PLANE_STRIDE,A1		; prossimo plane destinazione BPSFONDO (con padding)
 
 	; A3 (MASCHERA = A) NON avanza: e' una sola per tutti i plane
  
@@ -3857,8 +4239,6 @@ CurrentDarkDisplay:
 CurrentDarkDraw:
 	dc.l	DARKPLANE_B
 
-
-
 *****************************************************************************
 * TileFlags
 *   Tabella delle proprieta' delle tile, indicizzata dal numero di tile.
@@ -3871,12 +4251,16 @@ CurrentDarkDraw:
 TF_BLOCK        EQU     1
 
 TileFlags:
-;       tile:   0   1   2   3   4   5   6   7   8   9  10  11  12  13  14  15
-	dc.b	1,	0,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1
-;       tile:  16  17  18  19  20  21  22  23  24  25  26  27  28  29  30  31
-	dc.b	1,	1,	0,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1
-	even
+;   tile:   0   1   2   3   4   5   6   7   8   9  10  11  12  13  14  15
+	dc.b	0,	0,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	0,	0,	0,	0
+;   tile:  16  17  18  19  20  21  22  23  24  25  26  27  28  29  30  31
+	dc.b	0,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1
+;   tile:  32  33  34  35  36  37  38  39  40  41  42  43  44  45  46  47
+	dc.b	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1
+;   tile:  48  49  50  51  52  53  54  55  56  57  58  59  60  61  62  63
+	dc.b	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1
 
+	even	; padding per allineamento word
 *****************************************************************************
 * Disegno la mappa con le tiles 
 *****************************************************************************
@@ -3884,26 +4268,26 @@ TileFlags:
 MAPPA:
 ;			 0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 ;	 
 	dc.w	 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;0
-	dc.w	 0, 2, 8,18, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 4, 0	;1
-	dc.w	 0, 6, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 7, 0	;2
-	dc.w	 0, 6, 1, 1, 1,10,13, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 7, 0	;3
-	dc.w	 0, 6, 1, 1, 1,11,12, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 7, 0	;4
-	dc.w	 0, 6, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 7, 0	;5
-	dc.w	 0, 6, 1, 1, 1, 1, 1, 1, 1, 1, 1,10,13, 1, 1, 1, 1, 1, 1, 1, 1, 1, 7, 0	;6
-	dc.w	 0, 6, 1, 1, 1, 1, 1, 1, 1, 1, 1,11,12, 1, 1, 1, 1, 1, 1, 1, 1, 1, 7, 0	;7
-	dc.w	 0, 6, 1, 1,10, 9,13, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 7, 0	;8
-	dc.w	 0, 6, 1, 1, 7,14, 6, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 7, 0	;9
-	dc.w	 0, 6, 1,10, 5, 2,12, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 7, 0	;10
-	dc.w	 0, 6, 1, 7, 2,12, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 7, 0	;11
-	dc.w	 0, 6, 1,11,12, 1, 1, 1, 1, 1, 1, 1, 1, 1,10,13, 1, 1, 1, 1, 1, 1, 7, 0	;12
-	dc.w	 0, 6, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,10, 5, 3, 9,13, 1, 1, 1, 1, 7, 0	;13
-	dc.w	 0, 6, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 7,14,14,14, 6, 1, 1, 1, 1, 7, 0	;14
-	dc.w	 0, 6, 1, 1, 1,19, 1, 1, 1, 1, 1, 1, 1,11, 8, 8, 8,12, 1, 1, 1, 1, 7, 0	;15
-	dc.w	 0, 6, 1, 1, 1,	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 7, 0	;16
-	dc.w	 0, 6, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 7, 0	;17
-	dc.w	 0, 6, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 7, 0	;18
-	dc.w	 0, 6, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 7, 0	;19
-	dc.w	 0, 3, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 5, 0	;20
+	dc.w	 0,32,33,34,35,36,32,33,34,35,36,32,33,34, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;1
+	dc.w	 0, 2, 3, 0, 0, 0, 0, 0, 0,17,18, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;2
+	dc.w	 0, 4, 5, 0, 0, 0, 0, 0, 0,19,20, 0, 0, 0, 0, 0,12,13,14, 0, 0, 0, 0, 0	;3
+	dc.w	 0, 6, 7, 0, 0, 0, 0, 0, 0,21,22, 0, 0, 0, 0, 0,32,33,34, 0, 0, 0, 0, 0	;4
+	dc.w	 0, 8, 9, 0, 0, 0, 0, 0, 0,23,24, 0,12,13,14,15, 0, 0, 0, 0, 0, 0, 0, 0	;5
+	dc.w	 0,10,11, 0, 0, 0, 0, 0, 0, 0,25,26,32,33,34,35, 0, 0, 0, 0, 0, 0, 0, 0	;6
+	dc.w	 0, 2, 3,12,13,14,15,16, 0, 0,27,28, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;7
+	dc.w	 0, 4, 5,32,33,34,35,36, 0, 0,29,30, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;8
+	dc.w	 0, 6, 7, 0, 0, 0, 0, 0, 0, 0,31,36, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;9
+	dc.w	 0, 8, 9, 0, 0, 0, 0, 0, 0, 0,37,38, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;10
+	dc.w	 0,10,11,12,13,14,15,16,12,13,14,15,16,12,13,14,15,16,12,13,14,15,16, 0	;11
+	dc.w	 0,35,36,32,33,34,35,36,32,33,34,35,36,32,33,34,35,36,32,33,34,35,36, 0	;12
+	dc.w	 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;13
+	dc.w	 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;14
+	dc.w	 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;15
+	dc.w	 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;16
+	dc.w	 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;17
+	dc.w	 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;18
+	dc.w	 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;19
+	dc.w	 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;20
 	dc.w	 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;21
 	
 *****************************************************************************
@@ -3924,12 +4308,20 @@ BufferOffY:	dc.w	0
 ;   tile 18 = MAPPA[1][3] -> world pixel (48, 16)
 ;   CameraX/Y iniziale = 0, quindi bob_X/Y schermo = (48, 16)
 PlayerWorldX:	dc.w	32
-PlayerWorldY:	dc.w	0
+PlayerWorldY:	dc.w	32
 ; Intent dell'utente (movimento desiderato): -1, 0, +1
 ; Distinto da ScrllX/Y che invece e' "camera scroll" (gated dal centro schermo).
 ; PlayerWorldX += IntentX sempre; ScrllX = IntentX solo se player al centro.
 IntentX:		dc.w	0
 IntentY:		dc.w	0
+
+; --- Stato fisica platform ---
+PlayerVelY:		dc.w	0		; velocita' verticale (+ = giu', px/frame)
+PlayerGrounded:	dc.w	0		; 1 = piedi a terra (puo' saltare), 0 = in aria
+UpNow:			dc.w	0		; tasto SU/salto premuto in questo frame
+UpPrev:			dc.w	0		; stato del tasto SU nel frame precedente (per il fronte)
+GravityOn:		dc.w	1		; 1 = platform (gravita'), 0 = movimento 8 direzioni (toggle col tasto G)
+VScrollStep:	dc.w	CAM_STEP_Y	; passo scroll verticale RUNTIME (CAM_STEP_Y in platform, 1 in 8-direzioni)
 
 ; Variabili di clipping per DisegnaBOB:
 ;   BobClipSkipRows: numero di righe da saltare all'inizio del frame (clip top)
@@ -3955,6 +4347,7 @@ NightModePrev:	dc.b	0			; ultimo valore "applicato" di NightMode (per rilevare c
 MusicOn:		dc.b	0			; 0 = music off, 1 = music on (toggle col tasto M)
 MusicKeyPrev:	dc.b	0			; stato precedente del tasto M (per edge detect)
 MusicOnPrev:	dc.b	0			; ultimo valore "applicato" di MusicOn
+GravKeyPrev:	dc.b	0			; stato precedente del tasto G (per edge detect)
 
 	EVEN
 ; ----- Falò sprite hardware -----
@@ -4132,9 +4525,13 @@ TitleBPL_7:	dc.w	$00fc,$0000,$00fe,$0000	; BPL8PT
 	dc.w	$FFFF,$FFFE			; FINE COPPERLIST
 
 CopperList:
-	; Forza FMODE = $03 (BPL32+BPAGEM) all'inizio del frame, in caso qualcuno
-	; (PT Player IRQ, OS, ecc.) lo abbia resettato. Necessario per AGA cycle-exact.
-	dc.w	$01fc,$0003			; FMODE = BPL32 + BPAGEM (64-bit fetch)
+	; Il gioco gira a 6 bitplane lores con fetch AGA a 64 bit (FMODE=$0003) per
+	; lasciare piu' banda DMA a blitter/CPU. Il "fetch-ahead" a 64 bit in fondo
+	; allo schermo legge oltre i piani: per renderlo innocuo i 5 piani di
+	; BPSFONDO sono distanziati da BG_PLANE_STRIDE (con righe di padding vuote
+	; tra un piano e l'altro), cosi' il prefetch pesca righe blank invece dei
+	; dati del piano successivo. Vedi BG_PLANE_STRIDE / BG_PAD_ROWS.
+	dc.w	$01fc,$0003			; FMODE = BPL32 + BPAGEM (fetch 64-bit AGA)
 	dc.w	$0100,%0110001010000001		; BPLCON0: 6 bitplane, EHB on, ECSENA on
 				  ;5432109876543210	
 ; bit 15		HiRes
@@ -4156,10 +4553,10 @@ CopperList:
 	; Nota: BPLCON3 e BPLCON4 NON sono qui perche' la PALETTE section piu' avanti
 	; gia' imposta BPLCON3 (con LOCT alternato) e nessuno modifica BPLCON4 a runtime.
 	; Settarli qui rompe la palette degli sprite hardware (es. falo' diventa verde).
-	dc.w	$108,0			; BPL1MOD
-	dc.w	$10A,0			; BPL2MOD
+	dc.w	$108,BPSF_PITCH-40	; BPL1MOD = 48-40 = 8 (pitch 48, mostra 20 word/riga)
+	dc.w	$10A,BPSF_PITCH-40	; BPL2MOD = 48-40 = 8
 	dc.w 	$0092,$0038,$0094,$00b8 ; DdfStrt - DdfStop (5 fetch FMODE=3 allineati)
-	dc.w	$008e,$2c81,$0090,$2cc1	; DiwStrt - DiwStop
+	dc.w	$008e,$2c81,$0090,(($2C-CUT_BOTTOM_ROWS)<<8)|$C1	; DiwStrt - DiwStop (display 256-CUT righe)
 
 BitPlaneTiles:
 	dc.w 	$e0,$0000,$e2,$0000	;primo   bitplane - BPL0PT
@@ -4243,24 +4640,33 @@ PALETTE:
 
 	; Ripristino BPLCON3 a default LOCT=0 (per il prossimo frame)
 	dc.w	$0106,$0c00
-; Dopo la fine del DIW (scanline 300 = V=$12c) spegne la DMA
-; bitplane. Senza questo, WinUAE (e hardware reale in modalita'
-; overscan) continua a fetchare memoria oltre BPSFONDO per
-; riempire le righe sotto al viewport. Il fetch usa BPLxMOD=0
-; (pitch 40 byte/riga) ma trova oltre BPSFONDO il buffer
-; SFONDOGRANDE che ha pitch 44, quindi legge "a mosaico"
-; pezzi di righe diverse -> appaiono righe parziali e disallineate
-; in fondo allo schermo, piu' o meno evidenti in base a PixelOffX
-; e al contenuto della MAPPA.
+
+; include dell'effetto di gradiente cielo, che e' parte della copperlist perche' 
+; scrive a BPL1PT..BPL5PT.
+	include "CieloCopper.i"		; gradiente cielo 
+
+; Spegne il DMA bitplane in fondo allo schermo. Senza questo, WinUAE
+; (e hardware reale in overscan) continua a fetchare oltre BPSFONDO
+; (che ha pitch 40) trovando SFONDOGRANDE (pitch 48): legge "a mosaico"
+; pezzi di righe diverse -> riga parziale/sfarfallante in fondo, visibile
+; soprattutto dove la luce notturna la illumina.
 ;
-; Il copper VP e' 8 bit, quindi per V>=256 serve il "trick"
-; past-line-255: prima WAIT($FFDF,$FFFE) manda il copper oltre
-; V=255 (incrementa il V8 flip-flop interno), poi il WAIT
-; successivo usa V8 implicito.
-	dc.w	$FFDF,$FFFE		; past end of line 255
-	dc.w	$2C01,$FF00		; WAIT V=300 (=$12c), H=any -> fine DIW
+; IMPORTANTE: lo spegnimento va fatto a FINE scanline 299 (dopo che la
+; riga 255 e' gia' stata prelevata e mostrata: il DIW orizzontale finisce
+; a H=$C1, e DDFSTOP e' a $b8) ma PRIMA che inizi il fetch della scanline
+; 300. Se invece si aspetta l'INIZIO di V=300 (H=$00), il fetch della
+; scanline 300 (DDFSTART=$38) parte prima che il copper - che ha priorita'
+; DMA inferiore al bitplane - riesca a scrivere BPLCON0=0: la quantita' di
+; over-fetch che trapela dipende dalla contesa di bus (sprite/blitter) e
+; varia da frame a frame -> sfarfallio. Spegnendo a V=299/H=$E0 il fetch
+; della riga di over-fetch non avviene MAI (race-proof).
+;
+; Il copper VP e' 8 bit: per V>=256 serve il "trick" past-line-255
+; (WAIT $FFDF,$FFFE) che fa scattare il flip-flop interno V8.
+	dc.w	$FFDF,$FFFE		; past end of line 255 (arma V8)
+	dc.w	$2BE1,$FFFE		; WAIT V=299 ($12b), H>=$E0 (dopo fine riga, prima di V=300)
 	dc.w	$0100,$0201		; BPLCON0: 0 bitplane, Color burst, ECSENA
- 
+
 	dc.w	$FFFF,$FFFE		; FINE DELLA COPPERLIST
  
 
@@ -4309,11 +4715,11 @@ OMINO_MASK_FIXED:
 
 	cnop	0,8				; allinea a 8 byte per AGA FMODE=3
 BPSFONDO_A:
-	ds.b	5*40*256		; bitplanes (5 plane standard, no dark plane)
+	ds.b	5*BG_PLANE_STRIDE	; 5 piani con padding inter-piano (vedi BG_PAD_ROWS)
 
 	cnop	0,8				; allinea a 8 byte per AGA FMODE=3
 BPSFONDO_B:
-	ds.b	5*40*256		; bitplanes  
+	ds.b	5*BG_PLANE_STRIDE	; idem
 
 	cnop	0,8				; allinea a 8 byte per AGA FMODE=3
 SFONDOGRANDE:
@@ -4327,11 +4733,18 @@ SFONDOGRANDE:
 ; 2. Scansione viewport: per ogni tile=TILE_LAMPIONE, disegna cerchio di luce
 
 DARKPLANE_A:
-	ds.b	40*256			; 1 plane = 10240 byte
+	ds.b	BPSF_PITCH*DARK_ROWS	; 256 righe visibili + padding anti over-fetch (pitch 48)
 
 	cnop	0,8
 DARKPLANE_B:
-	ds.b	40*256
+	ds.b	BPSF_PITCH*DARK_ROWS
+
+	cnop	0,8
+; Maschera del disco di luce (bit=1 dentro). Sorgente A del blitter in
+; DisegnaCerchioLuceBlitter. In chip RAM (la DMA del blitter la legge).
+; Costruita una volta al boot da BuildLightMask.
+LightMask:
+	ds.b	LIGHT_MASK_STRIDE*LIGHT_MASK_H	; 18 byte * 128 righe = 2304 byte
 
 ; Maschera dell'OMINO: 1 bitplane (10240 byte = 40*256) calcolata al boot
 ; come OR dei 5 bitplane dello spritesheet originale.
