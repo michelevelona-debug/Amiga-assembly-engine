@@ -6,6 +6,8 @@
 *   Aggiungre parallasse e altri effetti grafici (es. acqua, luci) 			*
 *   Inserire logica di gioco (PF, punti, interfaccia grafica e game over)	*
 *   Sviluppo intro 															*
+*   Ottimizzazioni varie (es. AI nemici, routine di disegno)				*
+*   Aggiungere tutta la mappa di gioco (ora c'e' solo una schermata)		*	
 *																			*
 *****************************************************************************
 
