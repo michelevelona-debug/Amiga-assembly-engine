@@ -1,8 +1,11 @@
 *****************************************************************************
 *				   MEGA GAME												*
 *																			*
-*   Inserire suoni e grafiche 												*
-*   Inserire logica di gioco (PF, punti, game over)							*
+*   Inserire effetti sonori e grafiche										*
+*	Aggiungere nemici e logica di combattimento								*
+*   Aggiungre parallasse e altri effetti grafici (es. acqua, luci) 			*
+*   Inserire logica di gioco (PF, punti, interfaccia grafica e game over)	*
+*   Sviluppo intro 															*
 *																			*
 *****************************************************************************
 
