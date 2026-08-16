@@ -3,7 +3,7 @@
 *																			*
 *   Inserire effetti sonori e grafiche										*
 *	Aggiungere nemici e logica di combattimento								*
-*   Aggiungre parallasse e altri effetti grafici (es. acqua, luci) 			*
+*   Aggiungre effetti grafici (es. acqua, luci) 							*
 *   Inserire logica di gioco (PF, punti, interfaccia grafica e game over)	*
 *   Sviluppo intro 															*
 *   Ottimizzazioni varie (es. AI nemici, routine di disegno)				*
@@ -12,6 +12,65 @@
 *****************************************************************************
 
 	SECTION	MegaGame,CODE
+
+;=====================================================================
+; PATH B - scroll hardware al posto del treadmill
+;
+; Con 1 il gioco NON usa piu' GestisciShiftPixel, CopiaVideo e
+; AggiornaTiles: la mappa viene disegnata TUTTA all'init dentro
+; SFONDOGRANDE, che diventa il buffer VISUALIZZATO, e lo scroll e' solo
+; aritmetica sui BPLxPT piu' BPLCON1 (vedi ScrollHW.i).
+;
+; PASSO 2 - stato attuale: i BOB lasciano scie (nessuno ripulisce piu'
+; lo sfondo dietro di loro) ed e' ATTESO. Serve a misurare il guadagno
+; prima di rifare il rendering dei BOB nel passo 3.
+; Darkplane e parallasse continuano a girare (il loro costo resta nella
+; misura) ma sono puntati a un buffer vuoto: i moduli BPL1MOD/BPL2MOD
+; sono condivisi fra piani pari e dispari, e i loro buffer hanno ancora
+; pitch 48 mentre il world ne vuole 56. Si riadattano nel passo 2b.
+;=====================================================================
+PATH_B          EQU     1
+
+; PATH_B_FREEZE: blocca la CAMERA a 0,0 lasciando girare tutto il resto
+;   (fisica, nemici, BOB, darkplane, parallasse). Serve a separare due
+;   difetti che si somigliano: se le strisce ci sono ANCHE da fermo, il
+;   problema e' come DisegnaSfondo ha riempito il buffer o come il
+;   display lo legge; se compaiono solo scrollando, e' lo scroll.
+PATH_B_FREEZE   EQU     0
+
+; PATH_B_AUX: quali piani ausiliari sono ATTIVI a video.
+;   0 = nessuno (darkplane e parallasse su buffer vuoto, come al passo 2)
+;   1 = solo darkplane
+;   2 = solo parallasse
+;   3 = entrambi
+; Il passo 2b li ha riattivati insieme e il costo e' esploso (WORST da 193
+; a 392): con due variabili in gioco non si capisce quale. Questo permette
+; di misurarli UNO ALLA VOLTA. Le loro routine girano comunque sempre,
+; quindi il costo di calcolo resta nella misura in ogni caso: cambia solo
+; chi finisce a video, e quindi quanto lavora il DMA display.
+PATH_B_AUX      EQU     3
+
+; PATH_B_PAR_COMP: come compensare BPLCON1 sul parallasse.
+;   0 = nessuna compensazione. Costo minimo, ma il parallasse trema di
+;       0-63 px insieme allo scroll fine.
+;   1 = compensazione piena. Parallasse perfettamente fermo, ma l'offset
+;       cambia a OGNI pixel invece che ogni due: par_dirty scatta sempre
+;       e il parallasse ri-blitta ogni frame (e' il difetto che fa
+;       perdere 27-53 frame).
+;   2 = compensazione ARROTONDATA a 2 px. L'offset torna a cambiare ogni
+;       due pixel, quindi par_dirty si comporta come in Path A e il costo
+;       torna quello di prima; il residuo e' un tremolio di UN pixel, su
+;       uno sfondo lontano che si muove a meta' velocita'.
+; TEST IN CORSO: 0 = nessuna compensazione di BPLCON1 sul parallasse.
+; Misurato che al primo pixel di scroll la parallasse salta di ~60 px, cioe'
+; esattamente il valore di PathBDelay: la compensazione viene applicata al
+; contenuto ma non risulta annullata. Con 0 si distingue fra le due cause:
+;   parallasse FERMA e corretta sempre -> BPLCON1 non shifta i piani 7-8,
+;                                         la compensazione era di troppo
+;   parallasse che ONDEGGIA di 0..63 px -> BPLCON1 li shifta davvero, e il
+;                                         difetto e' nel passaggio CameraX 0->1
+; Rimettere a 2 dopo il test.
+PATH_B_PAR_COMP EQU     1
 
 	include	"title.i"			; Costanti title screen (TITLE_WIDTH, ...)
 
@@ -28,24 +87,461 @@ DMASET	EQU	%1000001111100000	; bltr, copper, bitplane, SPRITE ON
 * COSTANTI
 *****************************************************************************
 NUM_PLANES			EQU		6				; numero di bitplane (5 + 1 per EHB notte)
-PLANE_SIZE      	EQU     40*256          ; 10240 byte = un singolo bitplane
-SFONDO_PITCH		EQU		48				; pitch riga di SFONDOGRANDE in byte
-											; (era 44, ora 48 per allineamento AGA FMODE=3,
-											; multiplo di 8). Larghezza utile = 22 word = 44 byte
-											; (= 352 pixel come prima); i 4 byte extra
-											; (= ultimi 32 pixel di ogni riga) sono inutilizzati.
+; ---- BOB e spritesheet (OMINO / NEMICO) ----
+; Un frame e' BOB_W x BOB_H px. Lo slot orizzontale nello sheet e' PIU' LARGO
+; dell'arte: con uno shift di 1..15 px il blit di BOB_W px si spalma su
+; BOB_BLIT_W word, e quella word in piu' deve essere NERA. Da qui i 16 px di
+; stacco fra un frame e l'altro. Non e' il padding a proteggere il rendering
+; (la maschera e' il selettore del cookie cut), ma con lo slot pieno ogni
+; lettura resta dentro il proprio frame e la riga divide esatta.
+BOB_W            	EQU     32              ; larghezza frame (px)
+BOB_H            	EQU     32              ; altezza frame (px)
+BOB_WORDS        	EQU     BOB_W/16        ; word occupate dall'arte
+BOB_BLIT_W       	EQU     BOB_WORDS+1     ; word lette/scritte dal blit
+BOB_SLOT_BYTES   	EQU     BOB_BLIT_W*2    ; byte di uno slot frame
+BOB_MASK_PITCH   	EQU     BOB_SLOT_BYTES  ; la maschera ha lo stesso passo
+OMINO_FRAMES     	EQU     8               ; frame di animazione per direzione
+OMINO_DIRS       	EQU     8               ; bande verticali (vedi DirectionDeltas)
+OMINO_PITCH      	EQU     OMINO_FRAMES*BOB_SLOT_BYTES  ; byte per riga di sheet
+OMINO_DIR_STRIDE 	EQU     BOB_H*OMINO_PITCH            ; byte di una banda direzione
+OMINO_ROWS       	EQU     OMINO_DIRS*BOB_H             ; righe dello sheet
+PLANE_SIZE       	EQU     OMINO_PITCH*OMINO_ROWS       ; un bitplane dello sheet
+
+; Volume di COLLISIONE, deliberatamente separato dalla grafica: la grafica e'
+; 32x32 ma il box resta 16x16, cosi' il livello e gli spawn tarati sul box
+; piccolo continuano a valere. IsBoxBlocked sonda a passo <=15 px + il bordo,
+; quindi funziona per qualunque valore senza saltare tile in mezzo.
+; NB: portandoli a BOB_W/BOB_H il nemico 1 (288,48) rientra nel muro di
+; tile(18,4) e va rispostato.
+
+BOB_COLL_W       	EQU     BOB_W
+BOB_COLL_H       	EQU     BOB_H
+; ===================== DIMENSIONI DELLA MAPPA =====================
+; Le uniche due manopole del livello. Allargare la mappa vuol dire cambiare
+; MAPPA_COLS e aggiungere una colonna a ogni dc.w di MAPPA: tutto il resto
+; (pitch del buffer, modulo dello scroll, limiti del player, TILEXMAX,
+; dimensione dei buffer) si ricalcola da solo.
+; Stanno QUI e non piu' in mezzo alle costanti di gioco perche' SFONDO_PITCH
+; ne dipende, e un EQU non puo' riferirsi a un simbolo definito dopo.
+MAPPA_COLS 			EQU		25
+MAPPA_ROWS			EQU		22
+
+; Origine del mondo dentro il buffer. Definita qui sopra a SFONDO_PITCH
+; perche' BG_ORIGIN_X entra nel calcolo del pitch; l'offset composto
+; BG_ORIGIN_OFS invece sta piu' giu', perche' dal pitch dipende.
+;   X=2 Y=16 : replica esatta di Path A (quello provato)
+;   X=0 Y=0  : nessun margine, il mondo parte dall'angolo del buffer
+BG_ORIGIN_X			EQU		0				; in BYTE. A 0 la mappa comincia dove
+BG_ORIGIN_Y			EQU		0				; comincia la finestra: nessuno sfasamento
+; Path B: il world buffer E' quello visualizzato. Pitch 56 = 48 byte di
+; mappa (384 px) + 8 di guardia a sinistra per il prefetch del display.
+; La mappa vera comincia all'offset DELTA_MAPPAVERA.
+; NB: la guardia e' definita QUI e non presa da SCROLL_GUARD_BYTES di
+; ScrollHW.i, perche' quel file viene incluso in coda mentre serve gia'
+; a DisegnaSfondo, molto piu' su. I due valori devono restare uguali.
+DELTA_MAPPAVERA		EQU		8
+
+; Byte che il display fetcha per riga. Deve coincidere con SCROLL_FETCH_BYTES
+; di ScrollHW.i, che pero' e' incluso DOPO e qui serve gia' per il pitch.
+; Piu' sotto, dopo l'include, c'e' un controllo che ferma l'assemblaggio se i
+; due valori divergono.
+DISPLAY_FETCH_BYTES	EQU		56
+
+; A che byte della riga punta il display per i piani 7-8 (parallasse).
+; NON e' un dettaglio: davanti al puntatore serve una GUARDIA che ospiti
+;   - la prima word del blit, che e' contaminata (16 px), e
+;   - l'arretramento massimo del display dovuto a BPLCON1 (63 px).
+; A +8 la guardia era di soli 64 px: non ci stavano entrambe, ed e' da li' che
+; venivano prima la striscia sporca e poi gli 8 px vuoti a sinistra.
+; A +16 la guardia e' di 128 px e ci stanno con margine.
+PAR_PTR_OFS			EQU		16
+
+; BPLCON3: i due valori usati ovunque, con LOCT a 0 o 1.
+; Il bit 5 e' BRDRBLNK: acceso, l'area FUORI dalla finestra DIW viene forzata a
+; NERO invece di mostrare COLOR00. Serve a mascherare i pixel sporchi ai bordi:
+; si stringe la finestra di qualche pixel per lato e quello che resta fuori
+; diventa una cornice nera. Il copper NON potrebbe farlo cambiando COLOR00,
+; perche' quel colore vale solo dove TUTTI i bitplane sono a zero, mentre i
+; pixel sporchi hanno i bit della parallasse accesi.
+; NB: i commenti nel sorgente dicevano gia' "BRDRBLNK=1" ma il bit era ZERO.
+BPLCON3_BRDRBLNK	EQU		$20
+BPLCON3_LOCT0		EQU		$0C00|BPLCON3_BRDRBLNK
+BPLCON3_LOCT1		EQU		$0E00|BPLCON3_BRDRBLNK
+; Il pitch deve contenere: guardia + origine del mondo + una riga intera di
+; mappa, arrotondato al multiplo di 8 richiesto da FMODE=3. Era scritto a
+; mano (64): con 56 l'ultima colonna sforava nella riga successiva, e con
+; una mappa oltre le 27 colonne anche 64 sarebbe silenziosamente
+; insufficiente. Ora si adegua da solo a MAPPA_COLS.
+; La riga deve bastare a DUE cose, e si prende la maggiore:
+;   - la mappa vera, con la sua guardia a sinistra
+;   - la guardia del parallasse piu' i byte che il display fetcha
+SFONDO_ROW_MAPPA	EQU		DELTA_MAPPAVERA+BG_ORIGIN_X+MAPPA_COLS*2
+SFONDO_ROW_PARAL	EQU		PAR_PTR_OFS+DISPLAY_FETCH_BYTES
+	IFGE	SFONDO_ROW_MAPPA-SFONDO_ROW_PARAL
+SFONDO_ROW_NEED		EQU		SFONDO_ROW_MAPPA
+	ENDC
+	IFLT	SFONDO_ROW_MAPPA-SFONDO_ROW_PARAL
+SFONDO_ROW_NEED		EQU		SFONDO_ROW_PARAL
+	ENDC
+SFONDO_PITCH		EQU		((SFONDO_ROW_NEED+7)/8)*8
+; I piani 6/7/8 (darkplane e parallasse) DEVONO avere lo stesso pitch dei
+; piani 1-5: BPL1MOD e BPL2MOD sono condivisi fra piani dispari (1,3,5,7)
+; e pari (2,4,6,8), quindi un pitch diverso farebbe slittare ogni riga.
+AUX_PITCH			EQU		SFONDO_PITCH
+; Dove finiscono i BOB: in Path B sul world buffer visualizzato.
+DEST_PITCH			EQU		SFONDO_PITCH
+DEST_PLANE_SZ		EQU		SFONDO_PLANE_SIZE
+; Limiti del buffer darkplane, che in Path B e' grande come la mappa e
+; non come lo schermo. Erano 11 e 256 scritti a mano.
+DARK_MAX_WORDX		EQU		(AUX_PITCH/2)-LIGHT_MASK_W-1
+DARK_MAX_ROWS		EQU		SFONDO_HEIGHT
+; ORIGINE DEL MONDO nel buffer, sui due assi SEPARATAMENTE.
+;
+; In Path A CopiaVideo leggeva da SFONDOGRANDE+16*SFONDO_PITCH+2, cioe'
+; 16 righe e 16 px (una word) di margine. Ma quei due margini servivano
+; al TREADMILL (spazio per lo shift e per AddRigaAlto), e non e' detto
+; che le coordinate mondo della LOGICA li includano: sfondo e BOB usano
+; la stessa origine, quindi restano allineati fra loro qualunque valore
+; si metta qui — cambia solo il rapporto con la griglia delle tile che
+; la collisione usa.
+;
+; TARATURA: prova le combinazioni e guarda il player rispetto alla tile
+; su cui appoggia. Ogni unita' di BG_ORIGIN_X vale 8 px, ogni unita' di
+; BG_ORIGIN_Y vale una riga.
+;   X=2 Y=16 : replica esatta di Path A (quello provato)
+;   X=0 Y=0  : nessun margine, il mondo parte dall'angolo del buffer
+;   X=0 Y=16 : solo verticale
+;   X=2 Y=0  : solo orizzontale
+BG_ORIGIN_OFS		EQU		BG_ORIGIN_Y*SFONDO_PITCH+BG_ORIGIN_X
 BPSF_PITCH			EQU		48
-SFONDO_HEIGHT		EQU		288				; altezza SFONDOGRANDE in righe
-SFONDO_PLANE_SIZE 	EQU		SFONDO_PITCH*SFONDO_HEIGHT	; 13824 byte/plane
+
+;---------------------------------------------------------------------
+; ALTEZZA DI SFONDOGRANDE — derivata dall'area visibile
+;
+; Il buffer non serve alto 256+ righe: serve alto quanto l'area che
+; CopiaVideo copia davvero, piu' un margine sopra e sotto per far
+; entrare le tile in modo fluido durante lo scroll verticale.
+;
+;   +----------------------+  <- riga 0
+;   | margine sopra        |     BG_MARGIN_TOP_ROWS (16 = 1 tile)
+;   +----------------------+  <- riga 16: da qui legge CopiaVideo
+;   | AREA VISIBILE        |     BG_VIS_ROWS = 256 - CUT_BOTTOM_ROWS
+;   +----------------------+
+;   | margine sotto        |     BG_MARGIN_BOT_ROWS
+;   +----------------------+  <- SFONDO_HEIGHT
+;
+; PERCHE' CONTA: gli shift del treadmill (ShiftPixelSinistra/Destra/
+; Alto/Basso) muovono TUTTO il buffer a ogni pixel di scroll. Il costo
+; e' 5 piani x SFONDO_HEIGHT x 22 word x 2 cicli: con 288 righe sono
+; ~63.000 cicli = ~279 righe raster PER ASSE. Ogni riga di buffer in
+; meno e' tempo di scroll risparmiato, in proporzione diretta.
+; NB: CopiaVideo NON dipende da questo valore (copia BG_VIS_ROWS righe).
+;
+; >>> PER TAGLIARE: abbassa BG_MARGIN_BOT_ROWS. 96 e' il valore storico
+; >>> (6 tile, di cui 5 mai lette da nessuno). 32 (= 2 tile) e' il
+; >>> minimo prudente e porta SFONDO_HEIGHT a 224 (-22%).
+; >>> Alza TILEYMAX di conseguenza => piu' range di scroll verticale.
+;
+; SFONDO_HEIGHT e' forzato a multiplo di 16 (una riga di tile) passando
+; per BUFFER_ROWS: se i margini non sommassero a un multiplo di 16, il
+; troncamento della divisione lo aggiusta.
+;---------------------------------------------------------------------
+; Il taglio era servito a far stare due cose nel blank, quando si correva col
+; pennello. Adesso NON e' piu' un vincolo di tempo:
+;   - il doppio buffer del mondo toglie la scadenza sui BOB: si pubblica solo
+;     a disegno finito, quindi il pennello non vede mai un buffer a meta';
+;   - pubblicando la parallasse insieme a BPLCON1 dentro ScrollPathBApply,
+;     contenuto e compensazione entrano in vigore nello stesso quadro e SW
+;     smette di contare.
+; Quindi si riprendono le 32 righe di schermo tagliate. Resta solo il vincolo
+; geometrico: BG_VIS_ROWS multiplo di 16, altrimenti TILEYMAX arrotonda per
+; difetto e la camera scende oltre il fondo mappa.
+CUT_BOTTOM_ROWS		EQU		80				; righe in fondo NON disegnate
+											; (documentazione estesa piu' sotto)
+BG_VIS_ROWS			EQU		256-CUT_BOTTOM_ROWS		; area copiata da CopiaVideo
+BG_MARGIN_TOP_ROWS	EQU		16				; 1 tile: offset di lettura di CopiaVideo
+BG_MARGIN_BOT_ROWS	EQU		32				; <<< LA LEVA DEL TAGLIO (vedi sopra)
+											; 96 = valore storico (6 tile, 5 mai
+											; lette); 32 = 2 tile, minimo prudente.
+											; Se compare una striscia non inizializ-
+											; zata sul bordo basso durante uno scroll
+											; verticale rapido, sali a 48.
+
+BUFFER_ROWS			EQU		MAPPA_ROWS+1	; tutta la mappa + 1 tile di margine
+											; sopra (vedi BG_ORIGIN_OFS)
+SFONDO_HEIGHT		EQU		BUFFER_ROWS*16	; altezza SFONDOGRANDE in righe
+SFONDO_PLANE_SIZE 	EQU		SFONDO_PITCH*SFONDO_HEIGHT	; byte/plane
+
+; ---- Parallasse: 1 layer su 2 bitplane = 4 colori (valore 0..3 per pixel) ----
+;
+; UNICI due valori da toccare: SRC_W e SRC_H, che devono descrivere il file
+; caricato dall'incbin "parallasse.raw". Tutto il resto e' derivato: prima
+; STRIP_W e STRIP_PITCH erano scritti a mano (976 e 122) e non seguivano
+; SRC_W, quindi cambiare la larghezza dell'arte produceva uno skew diagonale
+; silenzioso. Se cambi SRC_W, non c'e' piu' niente altro da aggiornare.
+;
+; VINCOLI: SRC_W multiplo di 16 (la sorgente si indirizza a word); il file
+; deve essere planare a piani CONTIGUI, cioe' 2 * SRC_H righe consecutive da
+; SRC_PITCH byte = 2*PARALLAX_SRC_PLANE_SZ byte in totale.
+PARALLAX_SRC_W		EQU		640				; <<< LARGHEZZA REALE di parallasse.raw in px
+PARALLAX_SRC_H		EQU		256				; altezza arte: deve essere >= BG_VIS_ROWS
+PARALLAX_SRC_PITCH	EQU		PARALLAX_SRC_W/8		; byte per riga, per piano
+PARALLAX_SRC_PLANE_SZ	EQU	PARALLAX_SRC_PITCH*PARALLAX_SRC_H	; un piano dell'arte (80*256)
+
+; La striscia e' l'arte piu' una replica della sua testa, cosi' una blittata
+; che parte in fondo continua a leggere dati validi invece di sfondare.
+; La replica deve valere almeno una blittata intera: WRAP_W = BLIT_W word.
+;
+; ALTEZZA: la striscia contiene solo le righe che vengono davvero blittate,
+; cioe' BG_VIS_ROWS. Le righe sotto il taglio non si vedono, costruirle
+; sarebbe lavoro al boot e chip RAM sprecata. Cosi' il costo della striscia
+; segue CUT_BOTTOM_ROWS da solo.
+; ATTENZIONE: vale finche' la parallasse NON scorre in verticale (la blittata
+; parte sempre dalla riga 0 della striscia). Se un giorno le si desse uno
+; scroll Y, la striscia dovra' tornare alta PARALLAX_SRC_H.
+; VINCOLO: PARALLAX_SRC_H >= BG_VIS_ROWS (l'arte deve coprire l'area visibile).
+; 24 word = i 48 byte che il display fetcha per riga (40 di finestra + 8 di
+; prefetch FMODE=3), piu' 1 word di guardia per lo shift = 25.
+; Con 21 il blit copriva solo 40 byte: appena BPLCON1 introduceva un ritardo,
+; il bordo sinistro pescava nel blocco di prefetch mai scritto -> i primi ~64
+; px si riempivano di spazzatura e della word di guardia.
+; La larghezza del blit deve coprire ESATTAMENTE i byte che il display fetcha
+; per riga (SCROLL_FETCH_BYTES), piu' 1 word di guardia per lo shift.
+; Era 25 quando il fetch era di 48 byte; allargando DDF a 56 byte restavano
+; scoperti gli ultimi 8 byte = 64 px, che comparivano come margine a destra.
+; ScrollHW.i e' incluso dopo, quindi qui il valore va tenuto allineato a mano:
+; PARALLAX_BLIT_W = SCROLL_FETCH_BYTES/2 + 1 = 56/2 + 1 = 29
+; Larghezza del blit di parallasse, in word. Copre TUTTA la riga del buffer
+; (AUX_PITCH = 64 byte = 32 word), non solo la parte che il display "dovrebbe"
+; leggere.
+; MOTIVO: con ritardo BPLCON1 grande il display ARRETRA oltre il puntatore.
+; Il primo pixel visibile e' buffer_pixel(64 + Pf - D) e con Pf~48 a D=63
+; diventa il pixel 49, cioe' il byte 6 — che era proprio la word di GUARDIA,
+; l'unica che il blitter riempie di spazzatura. Da qui la striscia sporca a
+; sinistra, presente solo per D>=48 cioe' CameraX da 1 a 16, e assente da
+; fermo (D=0) e a scroll avviato (D<48). Scrivendo tutta la riga, qualunque
+; arretramento trova dati validi.
+PARALLAX_BLIT_W         EQU     AUX_PITCH/2
+PARALLAX_WRAP_W         EQU     PARALLAX_BLIT_W*16      ; 512 px = una blittata
+PARALLAX_STRIP_W        EQU     PARALLAX_SRC_W+PARALLAX_WRAP_W		; 1152
+PARALLAX_STRIP_PITCH    EQU     PARALLAX_STRIP_W/8      ; 144
+PARALLAX_STRIP_ROWS     EQU     BG_VIS_ROWS             ; righe effettivamente blittate
+PARALLAX_STRIP_PLANE_SZ EQU     PARALLAX_STRIP_PITCH*PARALLAX_STRIP_ROWS	; un piano della striscia
+; Da quale riga dell'arte comincia la striscia. La striscia e' alta
+; PARALLAX_STRIP_ROWS (= BG_VIS_ROWS = 176) mentre l'arte ne ha SRC_H (256):
+; con ROW0=0 si prendono le PRIME 176 righe e le ultime 80 restano fuori.
+; Se il fondale ha cielo vuoto in cima, alzare ROW0 fa scendere l'arte e
+; riempie il margine superiore. Range utile: 0 .. SRC_H-STRIP_ROWS = 0..80.
+; MISURATO su parallasse.raw (40960 byte = 2 piani x 256 x 80, layout corretto):
+; il contenuto sta nelle righe 11..255, con le PRIME 11 righe completamente
+; vuote su entrambi i piani e nessuna riga vuota in fondo o in mezzo.
+; Partendo da 0 quelle 11 righe finivano in cima allo schermo come margine.
+; Con ROW0=11 la striscia prende le righe 11..186 dell'arte: il margine
+; superiore si chiude e il fondale resta continuo fino in basso.
+; Range utile 0..80 (= SRC_H - STRIP_ROWS): alzarlo ancora fa scorrere
+; l'inquadratura verso il basso, la densita' dell'arte e' uniforme (16-30%)
+; quindi e' solo una scelta estetica.
+; NOTA STORICA: qui c'era PARALLAX_ORIGIN_ADJ, che cercava di sottrarre dal
+; l'offset la distanza in pixel fra il puntatore dei piani 7-8 e il primo pixel
+; visibile. Provata a 64 e poi a 57, lasciava sempre una striscia sporca larga
+; qualche pixel sul bordo sinistro, perche' quel numero non si riusciva a
+; misurare in modo affidabile e sbagliarlo mandava l'offset NEGATIVO: il mod
+; lo riportava a ~633 e i primi pixel mostravano il bordo DESTRO dell'arte.
+;
+; Non serve conoscere quella distanza. Chiamandola Pf, lo schermo x=0 mostra
+; sempre il pixel (offset + Pf - D) dell'arte. Ponendo offset = (CameraX>>1) +
+; D + MARGINE, la D si annulla da sola e resta (CameraX>>1) + MARGINE + Pf:
+; il fondale scorre ESATTAMENTE a meta' velocita' qualunque sia Pf, e l'unico
+; effetto di Pf e' QUALE colonna dell'arte si vede per prima — cioe' una
+; scelta di inquadratura, non un difetto.
+; Cosi' l'offset resta fra 16 e ~119, non e' mai negativo e non wrappa mai:
+; la giunzione fra arte e replica non entra piu' nella finestra.
+;
+; Il margine serve solo a tenere R = (offset-1)>>4 non negativo, cioe' a non
+; far leggere al blitter la word prima dell'inizio della striscia.
+; Alzandolo si scorre l'inquadratura verso destra dentro l'arte: servono al
+; massimo le colonne (MARGINE + Pf + 375), che con MARGINE 16 e Pf fino a 128
+; fanno 519 su 640 disponibili.
+; Di quante word arretra la SORGENTE, ora che la destinazione parte dalla word
+; 0 invece che dalla word 3. Sono 3, non 4: la word che finisce a byte 8 deve
+; restare la stessa di prima. Con 4 l'inquadratura slittava di 16 px.
+PAR_GUARD_WORDS         EQU     PAR_PTR_OFS/2-1
+
+; Margine a sinistra dell'offset. Deve tenere (R - PAR_GUARD_WORDS) >= 0,
+; altrimenti il blit leggerebbe prima dell'inizio della striscia: serve
+; offset >= PAR_GUARD_WORDS*16 + 1 = 49. Con 80 c'e' un giro di margine.
+; Alzandolo si scorre l'inquadratura verso destra dentro l'arte.
+PARALLAX_LEFT_MARGIN    EQU     128
+
+; PROVA DI MICHELE: il blitter lascia dati sporchi nella prima colonna quando
+; fa lo shift fine. A 1 l'offset viene arrotondato a multipli di 16, quindi
+; ASH vale sempre 0 e il blit NON shifta: non c'e' nulla da far entrare da
+; sinistra e la prima word non puo' essere sporca.
+;   la striscia SPARISCE -> confermato, e' il primo word del blit shiftato.
+;                           Si risolve spostando la guardia piu' a sinistra,
+;                           non rinunciando allo shift fine.
+;   la striscia RESTA     -> non e' il blit, e il difetto e' altrove.
+; PREZZO durante la prova: la parallasse si muove a scatti di 16 px invece che
+; fluida. E' brutta ma serve solo a rispondere alla domanda.
+PARALLAX_NO_FINE        EQU     0
+
+; PROVA SUCCESSIVA: a 1 i piani 7-8 vengono puntati su PathBVuoto invece che
+; sul buffer di parallasse, cioe' la parallasse e' SPENTA. Serve a capire da
+; quali piani venga davvero la striscia sporca a sinistra, come si era fatto
+; col darkplane.
+;   la striscia SPARISCE -> viene dai piani 7-8, cioe' dal percorso parallasse
+;   la striscia RESTA    -> viene dai piani 1-5 del mondo, e il sospetto sono
+;                           gli 8 byte di guardia a inizio riga (DELTA_MAPPAVERA)
+;                           che DisegnaSfondo non tocca mai
+PAR_DISABLE             EQU     0
+
+; PROVA A MOTIVO REGOLARE: a 1 la striscia viene riempita con un motivo a
+; BANDE VERTICALI da 8 px ($FF00 ripetuto), invece che con l'arte.
+;
+; Il riempimento uniforme precedente aveva un limite: con tutti i pixel uguali
+; una colonna sbagliata e' indistinguibile da una giusta, quindi diceva solo
+; che il display non legge fuori dal buffer. Con le bande il motivo E' un
+; righello: sullo schermo devono comparire bande di 8 px perfettamente
+; regolari per tutta la larghezza.
+;   bande regolari ovunque -> il percorso e' sano fin dentro il contenuto, e
+;     l'artefatto viene da quello che ci scrive BuildParallaxStrip
+;   una banda di larghezza SBAGLIATA sul bordo sinistro -> li' il display
+;     legge una colonna della striscia fuori sequenza, e la larghezza della
+;     banda anomala dice di quanto
+PAR_TEST_FILL           EQU     0
+PAR_TEST_PATTERN        EQU     $FF00FF00
+; PAR_TEST_MODE: 1 = bande VERTICALI da 8 px (motivo uguale su tutte le righe)
+;                2 = strisce ORIZZONTALI da 1 riga, alternate piene e vuote
+; Le bande verticali hanno un punto cieco: essendo identiche riga per riga,
+; NON mostrerebbero un errore di RIGA. Le strisce orizzontali fanno l'opposto:
+; se una parte dello schermo legge da una riga sbagliata, li' le strisce vanno
+; in controfase e si vede subito.
+PAR_TEST_MODE           EQU     2
+;
+; Era 64 — il blocco di prefetch teorico — ma il valore VERO misurato e' 57.
+; Come si e' visto: correlando parallasse.raw con lo screenshot, le colonne
+; 0..6 dello schermo avevano accordo 82-89% contro il 93-96% dalla 7 in poi,
+; con un taglio verticale netto a x=7 e una scheggia isolata a x=6.
+; Meccanica: con ADJ=64 e prefetch reale 57, la finestra parte dal pixel
+; (P-7) dell'arte, che a camera quasi ferma diventa NEGATIVO e wrappa a 633.
+; Cosi' i primi pixel mostravano le colonne 633..639 — il bordo DESTRO
+; dell'immagine, che non e' continuo col bordo sinistro — e poi la cucitura.
+; Compariva solo con P < 7, cioe' CameraX < 14: all'estremo sinistro della
+; mappa, ed e' per questo che si vedeva solo all'innesco dello scroll.
+; Con ADJ = 57 la finestra parte esattamente dal pixel P dell'arte. L'offset
+; passa ancora per la zona di replica (a camera ferma vale 583 e la finestra
+; cade in strip 640..975, cioe' tutta nella replica), ma NON attraversa piu'
+; la giunzione fra arte e replica: quella cade esattamente a schermo x=0, con
+; nulla alla sua sinistra. Servono al massimo le colonne 0..375 dell'arte
+; (P max 40 piu' 336 di finestra), e la replica ne copre 464: sempre coperta.
+;
+; TARATURA: se restasse una scheggia larga k px sul bordo sinistro, il valore
+; giusto e' 57-k. La larghezza del residuo E' l'errore.
+
+; --- gradiente cielo generato al boot -------------------------------------
+; Un cambio colore per riga visibile. Ogni passo sono 10 word:
+;   WAIT(riga)  +  BPLCON3 LOCT=1 + COLOR00 basso  +  BPLCON3 LOCT=0 + COLOR00 alto
+; piu' 2 word in coda per lasciare BPLCON3 a LOCT=0 (stato di riposo).
+SKY_STEPS               EQU     BG_VIS_ROWS
+SKY_WORDS_PER_STEP      EQU     10
+SKY_COPPER_WORDS        EQU     SKY_STEPS*SKY_WORDS_PER_STEP+2
+
+PARALLAX_SRC_ROW0       EQU     11
+PARALLAX_SRC_HEAD       EQU     PARALLAX_SRC_PITCH*PARALLAX_SRC_ROW0	; righe saltate PRIMA
+; ATTENZIONE: lo SKIP fra un piano e l'altro NON dipende da ROW0. HEAD viene
+; applicato una volta sola prima del loop, quindi dopo aver copiato
+; STRIP_ROWS righe bisogna avanzare di (SRC_H - STRIP_ROWS) righe per trovarsi
+; alla STESSA riga relativa del piano successivo. Sottraendo anche ROW0 il
+; secondo piano ripartiva dalla riga 0: due piani sfasati di ROW0 righe, cioe'
+; i quattro colori del fondale mescolati.
+PARALLAX_SRC_SKIP       EQU     PARALLAX_SRC_PITCH*(PARALLAX_SRC_H-PARALLAX_STRIP_ROWS)	; coda non copiata
 
 XTiles				EQU		16
 YTiles				EQU 	16	
 
-MAPPA_COLS 			EQU		24
-MAPPA_ROWS			EQU		22
-BUFFER_COLS			EQU		22
-BUFFER_ROWS			EQU		18
-VIS_COLS			EQU		20
+; MAPPA_COLS / MAPPA_ROWS sono definite PIU' SU (prima di SFONDO_PITCH, che
+; ora ne discende). Qui restano solo le costanti che dipendono da loro.
+BUFFER_COLS			EQU		MAPPA_COLS		; Path B: il buffer contiene TUTTA la mappa
+; BUFFER_ROWS ora e' DERIVATO da CUT_BOTTOM_ROWS + margini (vedi in testa,
+; blocco "ALTEZZA DI SFONDOGRANDE"). Con i valori correnti vale 18, come prima.
+; Finestra orizzontale di display. Allargata di 8 px per lato ($81/$C1 ->
+; $79/$C9) per coprire le due strisce in cui si vedeva COLOR00 al posto del
+; playfield. La DIW passa da 320 a 336 px = 21 tile, e con essa VIS_COLS.
+; PREZZO: la camera scorre 16 px in meno (da 80 a 64), cioe' una tile.
+; NB: allargando la vista CameraX max scende, quindi il puntatore di display
+; avanza al massimo di un blocco invece di due e SFONDO_PITCH resta 64.
+; PROVA: la finestra e' spostata a DESTRA di 16 px (start $79->$89, stop
+; $C9->$D9), lasciando la larghezza invariata a 336. Il fetch NON cambia
+; (DDFSTRT $18, DDFSTOP $d8), quindi cambia solo la distanza fra inizio fetch
+; e inizio finestra.
+; Misurato che i primi 7 px di ogni riga mostrano la parallasse sfasata di UNA
+; RIGA: e' il residuo dell'ultimo fetch della riga precedente.
+;   la striscia SPARISCE o si stringe -> e' ancorata al FETCH, e si sistema
+;     con la geometria DDF/DIW
+;   la striscia RESTA identica a sinistra -> e' ancorata alla FINESTRA, e
+;     allora l'unica via e' mascherare quei pixel
+; Valori originali: START $79, STOP $C9.
+; ANTICIPO DEL FETCH. DDFSTRT e' gia' al minimo hardware ($18 = pixel 48),
+; quindi l'unico modo di dare piu' respiro al pipeline e' far cominciare la
+; finestra piu' tardi:
+;     anticipo = DIW_H_START - 48,  e serve che superi il ritardo BPLCON1 max
+; Con FMODE=3 il puntatore si muove a blocchi di 64 px, quindi BPLCON1 deve
+; coprire 0..63. A $79 l'anticipo era 73 px, cioe' solo 10 px oltre il ritardo
+; massimo — e proprio a ritardo grande comparivano 7 px sporchi a sinistra.
+; A $89 l'anticipo sale a 89 px, 26 oltre il massimo.
+; La larghezza resta 336: si sposta anche lo STOP della stessa quantita'.
+; POSIZIONE DELLA FINESTRA. Il dato del primo pixel arriva a
+;     DDFSTRT*2 + LATENZA + D
+; dove LATENZA e' il ritardo di pipeline con FMODE=3 e D il ritardo BPLCON1.
+; Se la finestra apre PRIMA, i primi pixel non hanno ancora dati e restano
+; vuoti — ed e' proprio quello che si vedeva: nessuna banda a riposo (D=0) e
+; 6 px vuoti a ritardo massimo (D=63).
+; LATENZA misurata da li': 6 = 48 + LATENZA + 63 - 137  ->  LATENZA = 32 px.
+; Serve quindi DIW_H_START >= 48+32+63 = 143.
+; A destra il vincolo opposto: la finestra deve finire entro il dato
+; disponibile, cioe' DDFSTRT*2 + 7*64 = 496. Con 336 px di larghezza il valore
+; deve stare fra 143 e 160: $97 = 151 lascia 8 px di margine a sinistra e 9 a
+; destra, il compromesso piu' centrato.
+; VALORE INCHIODATO DA UNA MISURA, non piu' stimato. Col pannello acceso si e'
+; letto DL=62 (ritardo BPLCON1) e PO=191 (offset parallasse) nello STESSO
+; istante in cui la banda vuota misurava 7 px. Da li':
+;     banda = D - (DIW_H_START - DDFSTRT*2 - LATENZA)
+;     7 = 62 - (151 - 48 - LATENZA)   ->   LATENZA = 48 px
+; Verificato all'indietro su tutte le misure precedenti: i ritardi che ne
+; risultano (47, 49, 32) sono posizioni di camera plausibili.
+;
+; Perche' la banda sia SEMPRE nulla serve DIW >= 48 + 48 + 63 = 159.
+; A destra la finestra deve stare dentro il dato fetchato, 48 + 7*64 = 496,
+; quindi DIW <= 496 - 336 = 160.
+; La finestra utile e' 159..160: si prende 160, che azzera la banda anche al
+; ritardo massimo e fa finire il display esattamente sull'ultimo pixel
+; disponibile.
+; NB: e' un incastro ESATTO, senza margine a destra. Se il bordo destro
+; mostrasse problemi, la slack si ottiene solo restringendo la finestra
+; (VIS_COLS 21 -> 20 libera 16 px da distribuire fra i due lati).
+
+; FINESTRA ORIZZONTALE. Valori trovati SUL FERRO, non da un modello: sono gli
+; stessi della schermata del titolo, e con BRDRBLNK acceso danno bordi neri
+; stretti e nessuna colonna sporca a sinistra all'innesco dello scroll.
+;
+; Storia, per non ripetere il giro: avevo costruito un modello
+;     banda = ritardoBPLCON1 - (DIW_H_START - DDFSTRT*2 - LATENZA)
+; tarato su una misura col pannello (DL=62, PO=191, banda 7 px -> LATENZA 48).
+; Tornava su tutte le misure passate ma ha PREDETTO MALE questo caso: dava
+; fino a 30 px di banda a $81, e invece $81 e' pulito. Era un modello adattato
+; ai dati, non verificato. Se il difetto tornasse, ripartire da una misura
+; nuova col pannello, non da quella formula.
+; Riga raster in cui apre la finestra. Gli sprite ci si agganciano: VSTART
+; e HSTART si misurano da qui, non da valori cablati.
+DIW_V_START			EQU		$2C
+DIW_H_START			EQU		$81
+DIW_H_STOP			EQU		$C1				; +256 = 449, quindi finestra 129..449 = 320 px
+; DERIVATA dalla finestra, non piu' cablata: e' la larghezza visibile in tile.
+; Non dice quanto si DISEGNA (il mondo e' disegnato tutto e il fetch porta 448
+; px per riga): dice alla logica quanto si VEDE, e da qui dipendono TILEXMAX,
+; CENTER_X e il cull dei BOB. Se non combacia con la finestra vera, la camera
+; scorre oltre il bordo mappa e il cull sbaglia.
+VIS_COLS			EQU		(DIW_H_STOP+256-DIW_H_START)/16
 VIS_ROWS			EQU		16
 
 ; TILEXMAX / TILEYMAX = numero massimo che TileX/TileY puo' raggiungere.
@@ -54,10 +550,18 @@ VIS_ROWS			EQU		16
 ; Con mappa 18x24 e buffer 18x22 => TILEXMAX=2, TILEYMAX=0 (no scroll Y di tile).
 ; Per abilitare lo scroll Y di tile: estendi MAPPA a >=20 righe e aggiorna MAPPA_ROWS.
 
-TILEXMAX			EQU		MAPPA_COLS-BUFFER_COLS
-TILEYMAX			EQU		MAPPA_ROWS-BUFFER_ROWS
-PLAYER_MAX_X    	EQU		(MAPPA_COLS*16)-16-32   ; 344 (bob_X max 288 = 320-32 viewport)
-PLAYER_MAX_Y    	EQU		(MAPPA_ROWS*16)-16-32   ; 304 (bob_Y max 240 = 256-16 viewport)
+; Path B: il buffer contiene tutta la mappa, quindi il limite non e' piu'
+; il buffer ma quanto se ne vede a schermo.
+TILEXMAX			EQU		MAPPA_COLS-VIS_COLS
+TILEYMAX			EQU		MAPPA_ROWS-(BG_VIS_ROWS/16)
+; Limiti in coordinate MONDO: il bordo VERO della mappa. Il player si ferma
+; quando il suo box tocca il confine, non prima. C'era un -32 cablato che lo
+; bloccava due tile prima: a fermarlo dove serve ci pensano gia' IsBoxBlocked
+; (tile) e IsOverlapEnemies (nemici), controllati subito dopo questo clamp.
+PLAYER_MAX_X    	EQU		(MAPPA_COLS*16)-BOB_COLL_W
+PLAYER_MAX_Y    	EQU		(MAPPA_ROWS*16)-BOB_COLL_H
+PLAYER_SPAWN_X  	EQU		48					; spawn in coordinate MONDO: tile (3,3), libera
+PLAYER_SPAWN_Y  	EQU		48
 
 ; --- Fisica platform (visto di lato) ---
 GRAVITY			EQU		1		; px/frame aggiunti a PlayerVelY (accelerazione di gravita')
@@ -77,6 +581,8 @@ RAWKEY_SPACE		EQU 	$40
 RAWKEY_N			EQU 	$36			; rawkey del tasto N (toggle giorno/notte)
 RAWKEY_M			EQU 	$37			; rawkey del tasto M (toggle musica)
 RAWKEY_G			EQU 	$24			; rawkey del tasto G (toggle gravita' / 8-direzioni)
+RAWKEY_P			EQU 	$19			; rawkey del tasto P (mostra/nascondi i numeri del profilo)
+RAWKEY_R			EQU 	$13			; rawkey del tasto R (azzera gli high-water del profilo)
 
 KEY_RELEASE_BIT 	EQU 	7	   		; bit 7 del keycode decodificato
 ANIM_DELAY			EQU 	3
@@ -90,10 +596,18 @@ BULLET_SPEED		EQU		4			; pixel per frame del proiettile
 BULLET_TTLC			EQU		60			; frame di vita massima
 BULLET_COOLDOWNC	EQU		10			; frame di cooldown tra due spari
 BULLET_DAMAGE		EQU		2			; danno inflitto al nemico
+
+; PROVA TEMPORANEA: a 1 il proiettile e' sempre acceso e inchiodato a meta'
+; schermo, ignorando Bullet_Active e la posizione reale.
+;   si VEDE     -> lo sprite funziona (puntatore, dati, colori, priorita') e
+;                  il difetto sta nella logica o nella posizione calcolata
+;   NON si vede -> il difetto e' nello sprite stesso: dati di BulletSprite,
+;                  oppure SPR1PT sovrascritto da qualcun altro dopo di noi
+BULLET_DEBUG		EQU		1
 BULLET_HEIGHT		EQU		4			; altezza dello sprite proiettile
 
 ; ----- Illuminazione (EHB) -----
-TILE_LUCE			EQU		19			; numero tile = sorgente di luce
+TILE_LUCE			EQU		50			; numero tile = sorgente di luce
 RAGGIO_LUCE			EQU		64			; raggio in pixel della luce (tile 19)
 
 ; Maschera statica del disco di luce per il blit del cerchio (vedi
@@ -114,7 +628,8 @@ DBG_FIXLIGHT		EQU		0
 ; Righe di "padding" extra sotto le 256 visibili nel dark plane: assorbono
 ; un eventuale over-fetch di 1+ righe in fondo, evitando che la DMA legga
 ; nel buffer adiacente (contenuto diverso tra A e B -> sfarfallio in basso).
-DARK_PAD_ROWS		EQU		16
+;DARK_PAD_ROWS		EQU		16
+DARK_PAD_ROWS		EQU		0
 DARK_ROWS			EQU		256+DARK_PAD_ROWS
 
 ; Righe di "padding" tra un piano e l'altro di BPSFONDO. Con FMODE=3 (fetch
@@ -129,6 +644,14 @@ DARK_ROWS			EQU		256+DARK_PAD_ROWS
 BG_PAD_ROWS			EQU		16
 BG_PLANE_STRIDE		EQU		BPSF_PITCH*(256+BG_PAD_ROWS)	; 13056 byte = passo di piano BPSFONDO (pitch 48)
 
+; Passo di piano dei buffer PARALLASSE (piani 7-8). NON e' BG_PLANE_STRIDE:
+; quelli usano AUX_PITCH, che in Path A vale BPSF_PITCH (48) ma in Path B
+; vale SFONDO_PITCH (64). Con BG_PLANE_STRIDE il copper puntava il piano 8
+; a +13056 mentre il blitter lo scriveva a +17408: 4352 byte = 68 righe di
+; disallineamento, e il secondo piano mostrava una copia sfasata del primo.
+; Allocazione, scrittura e copper devono usare TUTTI questa costante.
+PAR_PLANE_STRIDE	EQU		AUX_PITCH*(256+BG_PAD_ROWS)
+
 ; Numero di righe in fondo allo schermo da NON disegnare (border invisibile).
 ;
 ; STORIA: era un cerotto (=12) contro lo sfarfallio AGA sulle ultime ~12
@@ -142,8 +665,11 @@ BG_PLANE_STRIDE		EQU		BPSF_PITCH*(256+BG_PAD_ROWS)	; 13056 byte = passo di piano
 ; >>> Se dovesse tornare un filo, alza al minimo che lo elimina (prova 4, 8...).
 ;
 ; Muove insieme: BLTSIZE in CopiaVideo, cull cerchio in DisegnaCerchioLuce,
-; DIWSTOP nella copperlist di gioco.
-CUT_BOTTOM_ROWS		EQU		0
+; DIWSTOP nella copperlist di gioco, e l'altezza di SFONDOGRANDE.
+;
+; >>> L'EQU e' DEFINITA IN TESTA AL FILE (blocco "ALTEZZA DI SFONDOGRANDE"),
+; >>> perche' BUFFER_ROWS/SFONDO_HEIGHT/SFONDO_PLANE_SIZE derivano da lei e
+; >>> vanno risolte prima. Qui resta solo la documentazione del perche'.
 
 FaloAnimSpeed		EQU		5			; ogni N frame avanza animazione
 ENEMY_COUNT			EQU		4			; numero massimo di nemici
@@ -168,9 +694,126 @@ SFX_PRI_SPARO			EQU		64
 SFX_PRI_HITENEMY		EQU		90
 SFX_PRI_HITPLAYER		EQU		100
 SFX_PRI_DEATH			EQU		110
+;=====================================================================
+; PROFILING HARNESS — margine con high-water mark + frame persi
+;
+; Come si legge la barra (dall'alto in basso):
+;   BLU     = lavoro reale di QUESTO frame
+;   ROSSO   = margine gia' bruciato in passato (high-water, sticky)
+;   BIANCO  = margine RESIDUO -> e' il budget che ti resta
+;   SCHERMO TUTTO ROSSO per un frame = FRAME PERSO
+;
+; La fascia bianca si assottiglia da sola man mano che il gioco incontra
+; situazioni piu' pesanti. Dopo 2-3 minuti di gioco vario si stabilizza:
+; quel valore e' il tuo margine reale. Riferimento: 1 riga raster = 227
+; cicli di colore, il BOB 32x32 costa ~6 righe in piu' del 16x16.
+;=====================================================================
+PROTO_SCROLL    EQU     0       ; 1 = parte il PROTOTIPO dello scroll hardware
+                                ;     (Path B passo 1) al posto del gioco.
+                                ;     Rimetti 0 e torna tutto come prima.
+PROFILING       EQU     1       ; 0 = harness completamente fuori dalla build
+; PROF_COLORS: TUTTA la strumentazione che scrive COLOR00 — sia le barre di
+; PROFMARK a ogni marca di fase, sia le tre fasce di fine frame (rosso pieno =
+; frame perso, rosso scuro = margine bruciato, bianco = margine residuo).
+; Erano gattate solo le prime: le fasce restavano accese e si vedevano come
+; una riga orizzontale colorata a tutta larghezza dello schermo.
+; Servono
+; solo a leggere il costo delle fasi a occhio sul bordo schermo; la MISURA sta
+; nel latch di ProfRaw e funziona lo stesso. Spente: il gioco si vede pulito.
+PROF_COLORS     EQU     0
+; PROF_KILL_SKY: a 1 esclude il gradiente cielo dalla copperlist, perche' il
+; gradiente riscrive COLOR00 riga per riga e coprirebbe le fasce dell'harness.
+; A 0 il cielo torna e il gioco si vede come deve: la MISURA non ne risente,
+; perche' i tempi stanno nel latch di ProfRaw e si leggono dal pannello P.
+; Serve rialzarlo a 1 solo se torni a leggere il costo dalle fasce a bordo
+; schermo invece che dai numeri.
+PROF_KILL_SKY   EQU     0
 
-WaitDisk EQU 30 ; 50-150 al salvataggio (secondo i casi)
+; Riga su cui sincronizza AspettaVBL. UNICA fonte di verita': AspettaVBL
+; costruisce da qui il valore di confronto, FineLavoro la usa come origine
+; della misura. NON duplicare il numero altrove: se le due si scollano, la
+; misura e' sfasata di quella differenza e non te ne accorgi.
+; Il lavoro del frame comincia appena il display finisce, cioe' alla riga
+; ($2C + BG_VIS_ROWS). Era cablato a $108 = 264, che buttava 44 righe di blank;
+; poi a $0DC = 220, giusto ma solo per BG_VIS_ROWS=176. Ora DERIVA, cosi'
+; cambiando CUT_BOTTOM_ROWS il sync si sposta da solo — altrimenti alzando il
+; CUT si guadagnerebbe blank senza usarlo, o peggio si partirebbe dentro il
+; display.
+VBL_SYNC_LINE   EQU     $2C+BG_VIS_ROWS
+RASTER_LINES    EQU     313     ; PAL (NTSC = 262)
+
+; NB: non serve piu' una soglia euristica per i frame persi. FineLavoro
+; conta i wrap del raster e ricostruisce la durata REALE del frame, quindi
+; il rilevamento e' diventato un confronto diretto: durata >= RASTER_LINES.
+; Questo permette anche di misurare i frame che sforano, che sono proprio
+; quelli dove stanno i costi peggiori.
+
+;---------------------------------------------------------------------
+; PROFILO PER FASE — dove vanno le righe
+;
+; Ogni confine del main loop scrive COLOR00 col colore della fase che
+; INIZIA e latcha la riga raster. Risultato: lo schermo diventa una
+; striscia di bande colorate, e l'altezza di ogni banda E' il costo di
+; quella fase. Triage visivo immediato, senza debugger.
+;
+; I numeri precisi stanno in ProfWorst (peggior costo per fase, sticky):
+; leggibile dal debugger come array di word, indice = PH_xxx.
+; ATTENZIONE: la somma dei ProfWorst NON e' il worst totale — i picchi
+; delle singole fasi non avvengono nello stesso frame.
+;
+; Overhead dell'harness completo: ~40 cicli per marker (11 marker) piu'
+; il loop di normalizzazione in FineLavoro = circa 4-5 righe raster in
+; totale. Sottraile mentalmente dai valori.
+;---------------------------------------------------------------------
+; Gli indici DEVONO essere in ordine temporale: il costo della fase i si
+; ricava come ProfRaw[i+1] - ProfRaw[i] (l'ultima usa FrameLines come fine).
+PH_VBLEND       EQU     0       ; GestisciMusica + SwapBuffers (subito dopo il sync)
+PH_INPUT        EQU     1       ; input + fisica + camera + bordi
+PH_SCROLL       EQU     2       ; GestisciShiftPixel  (treadmill)
+PH_TILES        EQU     4       ; AggiornaTiles       (AddColonna/AddRiga)
+PH_DARK         EQU     5       ; UpdateDarkPlane
+PH_FALO         EQU     6       ; AnimaFalo
+; ATTENZIONE: l'indice della fase DEVE seguire l'ordine CRONOLOGICO delle
+; PROFMARK nel main loop. Il profiler calcola la durata di una fase come
+; distanza dal marker SUCCESSIVO nell'array: se un latch arriva fuori ordine
+; la differenza va negativa, la logica di wrap ci somma un frame intero e il
+; totale si gonfia di ~313 righe (WO falsato e DR che sale anche da fermo).
+; PH_PARALLAX e' passata da 6 a 9 quando AggiornaParallax e' stata spostata
+; dopo il disegno dei BOB.
+PH_COPIAVIDEO   EQU     7       ; (CopiaVideo non esiste piu': fase a costo zero)
+PH_ENTITIES     EQU     8       ; screenpos + nemici + combattimento + proiettile
+PH_BOB          EQU     9       ; restore + DisegnaBOB*
+PH_PARALLAX     EQU     3       ; AggiornaParallax (DOPO i BOB, vedi main loop)
+PH_BLTDRAIN     EQU     10      ; AspettaBlitter (attesa pura: se e' grossa, il
+                                ;   blitter e' il collo di bottiglia, non la CPU)
+PROF_SLOTS      EQU     11
+
+;---------------------------------------------------------------------
+; PROFMARK <indice fase>,<colore>
+;   Marca l'inizio di una fase: colora COLOR00 e latcha la riga raster.
+;   Salva la riga ASSOLUTA (0..312): la normalizzazione rispetto al sync
+;   la fa FineLavoro, cosi' la macro resta senza salti e senza label
+;   (niente \@, massima compatibilita' fra assemblatori).
+;   Indirizzamento assoluto e non A6: funziona anche dove A6 non e' caricato.
+;   Distrugge: nulla.
+;---------------------------------------------------------------------
+PROFMARK        MACRO
+        IFNE    PROFILING
+        move.l  d0,-(sp)
+        IFNE    PROF_COLORS
+        move.w  #\2,$DFF180             ; COLOR00 = colore di questa fase
+        ENDC
+        move.l  $DFF004,d0              ; VPOSR+VHPOSR come long = atomico
+        lsr.l   #8,d0
+        and.w   #$01FF,d0
+        move.w  d0,ProfRaw+(\1*2)
+        move.l  (sp)+,d0
+        ENDC
+        ENDM
+
+WaitDisk 		EQU 30 ; 50-150 al salvataggio (secondo i casi)
 START:
+
 *****************************************************************************
 * TITLE SCREEN
 *   Setup AGA + PT Player, avvia musica, mostra title.raw, attende SPACE
@@ -178,7 +821,7 @@ START:
 *****************************************************************************
 	LEA		$DFF000,A6
 	MOVE.W	#$3,$1fc(A6)			; FMODE = $03 (AGA fetch 64-bit)
-	MOVE.W	#$0c00,$106(A6)			; BPLCON3 default
+	MOVE.W	#BPLCON3_LOCT0,$106(A6)			; BPLCON3 default
 	MOVE.W	#$0000,$10c(A6)			; BPLCON4 default
 
 	; ----- PT Player: installa interrupt CIA-B -----
@@ -223,12 +866,19 @@ START:
 *	PUNTIAMO I BITPLANES DELLE TILES
 *****************************************************************************
 
-	MOVE.L	CurrentDisplay,D0		; in D0 l'indirizzo della memoria per la mappa,
-	MOVE.L	#DARKPLANE_A,D2			; dark plane iniziale = A
+	MOVE.L	#SFONDOGRANDE,D0		; Path B visualizza direttamente il world buffer
+	MOVE.L	#PathBDarkPlane,D2		; darkplane di Path B (i doppi buffer vecchi non ci sono piu')
 
 	BSR.W	AggiornaCopperBPL 		; aggiorna i puntatori bitplane nella copperlist
 
 	BSR.W	AggiornaCopperSPR 		; aggiorna anche i puntatori sprite nella copperlist
+
+	; Piani 7-8 (parallasse): ora DOPPIO BUFFER, puntatori dal display corrente
+    MOVE.L  CurrentParDisplay,D0
+    BSR.W   AggiornaCopperParallasse
+	; ----- Banchi palette 1..7 (colori 32..255) per gli 8 bitplane.
+	; Copper DMA ancora spento: BPLCON3 e' tutto nostro, niente race.
+	BSR.W	InitPalette8BPL
 
 	LEA		$dff000,A6
 	MOVE.W	#DMASET,$96(A6)			; DMACON - abilita dma
@@ -238,7 +888,7 @@ START:
 	; Ripristina FMODE/BPLCON3/BPLCON4 per il gioco (la title li aveva
 	; impostati ma per sicurezza li riscriviamo, in caso siano cambiati).
 	MOVE.W	#$3,$1fc(A6)			; FMODE = $03 (fetch 64-bit AGA)
-	MOVE.W	#$0c00,$106(A6)			; BPLCON3 default
+	MOVE.W	#BPLCON3_LOCT0,$106(A6)			; BPLCON3 default
 	MOVE.W	#$0011,$10c(A6)			; BPLCON4: BPLAM=0, ESPRM=$1, OSPRM=$1 (entrambi sprite a COLOR17-19 arancione)
 ;	MOVE.W	#$1000,$10c(A6)			; BPLCON4: ESPRM=$10 (SPR0 falo' a COLOR17-19 arancione), OSPRM/BPLAM=$00
 	; ----- DEBUG: scrivi SPR0PT direttamente nei registri custom -----
@@ -255,7 +905,10 @@ START:
 
 	BSR.W   InitPlayer				; <-- INIZIALIZZA IL PLAYER
 	BSR.W   InitEnemies				; <-- INIZIALIZZA I NEMICI
-	BSR.W	BuildOminoMask			; Genera la maschera dell'OMINO al boot
+	BSR.W	BuildBobMasks			; Genera la maschera dell'OMINO al boot
+	IFEQ	PROFILING*PROF_KILL_SKY
+	BSR.W	BuildSkyCopper			; genera il gradiente cielo su BG_VIS_ROWS righe
+	ENDC							; (con PROF_KILL_SKY=1 lo spazio non e' riservato)
 
 	; ----- Musica: resta in pausa dopo il click sulla title.
 	; L'utente la riattiva con M (toggle MusicOn -> _mt_Enable via GestisciMusica).
@@ -266,83 +919,154 @@ START:
 	BSR.W	DisegnaSfondo			; Routine che disegna lo sfondo
 
 	; Pre-render su entrambi i buffer per evitare il primo frame nero
-	BSR.W	CopiaVideo				; copia su CurrentDraw = BPSFONDO_B
-	BSR.W	AspettaBlitter
-	BSR.W	SwapBuffers				; ora display = B, draw = A
-	BSR.W	CopiaVideo				; copia anche su A
+	BSR.W	BuildParallaxStrip		; costruisce la striscia di parallasse (una tantum: e' statica)
+; riempi ENTRAMBI i buffer parallasse col frame iniziale (A6 = $DFF000 qui)
+    MOVE.W  #-1,par_old                  ; forza il primo blit
+    BSR.W   AggiornaParallax               ; riempie il Draw (B), dirty 2->1
+    BSR.W   SwapParBuffers               ; Draw ora = A
+    BSR.W   AggiornaParallax               ; offset invariato, dirty 1->0, riempie A
+    BSR.W   SwapParBuffers               ; torna a Display=A
 	; (al primo giro del loop il display è B, e disegnamo su A — entrambi pronti)
 
+	BSR.W	PathBInit				; DDFSTRT/BPLxMOD + piani 6-8 su buffer vuoto
+	LEA		SFONDOGRANDE,A0
+	LEA		PathBMaster,A1
+	BSR.W	PathBBuildMaster		; copia pulita per il restore dei BOB
+	; Col doppio buffer la mappa deve stare in ENTRAMBI: il secondo buffer non
+	; viene mai ridisegnato da zero, si ripulisce solo per rettangoli.
+	LEA		SFONDOGRANDE,A0
+	LEA		SFONDOGRANDE_B,A1
+	BSR.W	PathBBuildMaster		; stessa mappa nel secondo buffer del mondo
+	; DisegnaCerchioLuceBlitter scrive dove punta CurrentDarkDraw: in Path B
+	; e' sempre il buffer statico, che non fa piu' doppio buffering.
+	; Stessa origine dello sfondo: il darkplane deve stare allineato con lui,
+	; e il suo BPL6PT usa lo stesso offset dei piani 1-5.
+	MOVE.L	#PathBDarkPlane+DELTA_MAPPAVERA+BG_ORIGIN_OFS,CurrentDarkDraw
+	BSR.W	PathBBuildDark			; darkplane statico, una volta sola
 	BSR.W	BuildLightMask			; costruisce una volta la maschera del disco di luce
+
+	IFNE	PROTO_SCROLL
+	; --- PROTOTIPO SCROLL HARDWARE (Path B, passo 1) --------------
+	; Salta il gioco: usa startup, copperlist, palette e input appena
+	; inizializzati, ma sostituisce il rendering con la griglia di test.
+	BSR.W	ProtoScrollMain
+	BRA.W	GameCleanup
+	ENDC
 .mainloop:
 *****************************************************************************
-	BSR.W	ReadKeyboard			; Routine che legge la tastiera
+	PROFMARK PH_INPUT,$0404			; viola scuro
+	; NB: LeggiTastiera deve stare QUI, prima di tutto. Provata dopo la parallasse
+	; per togliere le sue righe dall'overhead che ritarda la pubblicazione del
+	; buffer: i BOB partono piu' tardi di quanto lei costa e si corrompono.
+	; Il tempo va tolto altrove, non da qui.
+	BSR.W	LeggiTastiera			; Routine che legge la tastiera
 	BSR.W	LeggiJoystick			; Routine che legge il Joystick	
-	BSR.W	GateScrollByCenter		; Se bob NON al centro, azzera ScrllX/Y
-	BSR.W	UpdatePlayerPhysics		; gravita' + salto -> IntentY
-	BSR.W	UpdatePlayerWorldPos	; Aggiorna PlayerWorldX/Y (Fase 2)
-	BSR.W	ComputeCameraFollowY	; camera insegue il player in verticale -> ScrllY
+	BSR.W	RettangoloScrollNelCentro		; Se bob NON al centro, azzera ScrllX/Y
+	BSR.W	AggiornaFisicaPlayer		; gravita' + salto -> IntentY
+	BSR.W	AggPosizioneGlobalePlayer	; Aggiorna bob_WorldX/Y (Fase 2)
+	BSR.W	CalcolaInseguimentoCameraY	; camera insegue il player in verticale -> ScrllY
 	BSR.W	ControllaBordi			; Controllo dei bordi
-	BSR.W	GestisciShiftPixel		; Esegue lo scrolling fine
-	BSR.W	AggiornaTiles			; Gestisce l'agggiunta di tiles dalla mappa
-									; al buffer	
-	BSR.W	UpdateDarkPlane			; fill dark plane + lampioni (sempre ogni frame)
+	PROFMARK PH_SCROLL,$0F80		; arancione
+	BSR.W	ScrollPathB				; scroll hardware: solo puntatori + BPLCON1
+
+
+	; La parallasse va DOPO i BOB, non prima. Il suo blit e' 8800 word (~77
+	; scanline di blitter) e gira in background: mettendolo prima, ogni blit di
+	; BOB si accodava dietro di lui e il disegno dei BOB finiva verso la riga 94,
+	; quando il pennello era gia' passato -> BOB tagliati in una fascia FISSA
+	; dello schermo. Misurato col pannello: PA 001 (solo il tempo di programmare)
+	; contro BO 082 per un lavoro che di blitter ne vale 46: la differenza era
+	; pura attesa in coda.
+	; La parallasse puo' permettersi di finire tardi: e' doppio-bufferizzata e
+	; viene pubblicata da SwapParBuffers a fine frame.
+	PROFMARK PH_PARALLAX,$00F0		; verde
+	BSR.W 	AggiornaParallax			; aggiorna il piano 7-8 (parallasse) in base a ScrllX
+
+	; Il blit della parallasse parte QUI, subito dopo ScrollPathB che ha appena
+	; scritto BPLCON1: contenuto e ritardo appartengono cosi' allo STESSO frame.
+	; Poi si aspetta il blitter e si pubblica subito, mentre il pennello e'
+	; ancora nel blank: il copper rilegge la copperlist all'inizio del quadro e
+	; trova gia' i puntatori nuovi. Prima lo swap stava dopo AspettaVBL e
+	; pubblicava il buffer del giro PRECEDENTE, compensato per il ritardo di un
+	; frame prima: da li' il flash quando il ritardo salta da 0 a 63 al primo
+	; pixel di scroll.
+	; I BOB partono dopo, ma con CUT_BOTTOM_ROWS=96 finiscono verso la riga 27,
+	; molto prima che il display cominci alla 44.
+	BSR.W	AspettaBlitter			; il buffer parallasse dev'essere completo
+	; NB: qui NON si pubblica. Lo swap sta in ScrollPathBApply insieme a BPLCON1
+	; e ai puntatori del mondo: contenuto e compensazione devono diventare
+	; effettivi nello STESSO quadro, altrimenti la parallasse mostra un frame
+	; compensato per un ritardo che non e' ancora in vigore.
+	PROFMARK PH_TILES,$0FF0			; giallo
+	PROFMARK PH_DARK,$000F			; blu acceso
+	; In Path B il darkplane e' STATICO: disegnato una volta in coordinate
+	; mondo da PathBBuildDark e ricostruito solo al toggle di NightMode.
+	; Qui non serve fare nulla: il costo per frame e' zero.
 	; NOTA: il dark plane e' gia' double-buffered correttamente.
 	; UpdateDarkPlane scrive SOLO CurrentDarkDraw (mai il buffer in display);
 	; SwapBuffers alterna A/B e aggiorna BPL5PT. Nessuna copia extra serve qui:
 	; copiare in CurrentDarkDisplay = scrivere nel piano EHB mentre il pennello
 	; lo legge -> tearing visibile sul bordo del cerchio (lo "sfarfallio in basso").
 
+	PROFMARK PH_FALO,$0088			; ciano scuro
 	BSR.W	AnimaFalo				; anima sprite falò e lo posiziona su tile 19
-	BSR.W	CopiaVideo				; Disegna lo schermo
-	BSR.W	UpdatePlayerScreenPos	; Calcola bob_X/Y dalle coord. mondo 
-	BSR.W	UpdateEnemies			; AI dei nemici (movimento)
+	PROFMARK PH_COPIAVIDEO,$0F0F	; magenta
+	PROFMARK PH_ENTITIES,$0808		; viola medio
+	BSR.W	AggiornaPlayerScreenPos	; Calcola bob_X/Y dalle coord. mondo 
+	BSR.W	AggiornaNemici			; AI dei nemici (movimento)
 	BSR.W	Combattimento			; gestisce collisioni player-nemici (vita)
 	BSR.W	Proiettile				; gestione fire + proiettile (move, collisione)
 ;	BSR.S 	SxMouse
+	PROFMARK PH_BOB,$00FF			; ciano acceso
+	BSR.W	PathBRestoreAll			; ripulisce lo sfondo dietro ai BOB del frame scorso
 	BSR.W	DisegnaBOBEnemy			; sui bitplane di CurrentDraw
 	BSR.W	DisegnaBOBPlayer		; idem, dopo i nemici per z-ordering
-	BSR.W	DisegnaBarraVita		; barre vita rosse sopra ogni BOB attivo
+
 	BSR.W	AggiornaProiettile		; aggiorna SPRPOS/SPRCTL dello sprite proiettile
 ; --- Sincronizzazione e swap ---
+	PROFMARK PH_BLTDRAIN,$0FF8		; giallo pallido = attesa pura del blitter
+									; (era $0840, indistinguibile dal rosso
+									;  scuro $0800 dell'high-water)
 	BSR.W	AspettaBlitter
-	BSR.S	AspettaVBL
-	BSR.W	GestisciMusica			; start/stop + tick PT Player (chiama _mt_music ogni VBL)
-	BSR.S	SwapBuffers				; aggiorna BPL pointers in copperlist + scambia variabili
+
+	; Il disegno e' finito e il blitter ha drenato: ORA si pubblica il buffer e
+	; si scambia con l'altro. Prima di qui il pennello non ha mai visto un
+	; buffer a meta'.
+	BSR.W	ScrollPathBApply
+
+	IFNE	PROFILING
+	BSR.W	FineLavoro			; misura margine + high-water + frame persi
+								; (scrive lui ROSSO/BIANCO: niente $0FFF qui,
+								;  sarebbe sovrascritto subito)
+	TST.B	ProfShow			; premi P per mostrare/nascondere i numeri
+	BEQ.S	.noprof
+	BSR.W	MostraProfilo		; DOPO la misura: non entra in FrameLines
+.noprof:
+	ENDC
+	BSR.W	AspettaVBL
+	PROFMARK PH_VBLEND,$0008		; BLU = inizio lavoro (musica + swap)
+ 	BSR.W	GestisciMusica			; start/stop + tick PT Player (chiama _mt_music ogni VBL)
+	; Ora SwapParBuffers torna: scrive BPL7PT/BPL8PT sul parallasse vero,
+	; che ha finalmente il pitch giusto. Il darkplane invece ha il suo
+	; doppio buffer dentro SwapBuffers, che in Path B non gira: lo scambio
+	; lo fa PathBSwapDark qui sotto.
+	; NB: PathBSwapDark non serve piu'. Il darkplane e' statico e non fa
+	; doppio buffering: il suo BPL6PT lo aggiorna ScrollPathB insieme ai
+	; puntatori dei piani 1-5, perche' ora scorre come loro.
 
 	BTST.B	#6,$bfe001				; tasto sx del mouse premuto?
-	BNE.S	.mainloop
+	BNE.W	.mainloop
 
+; Label GLOBALE e non locale: il salto dal prototipo e' un forward
+; reference e il linker non risolveva ".cleanup" nello scope di START.
+; Sicuro da mettere qui: fra questa label e l'RTS non ci sono label
+; locali, quindi nessuno scope cambia sotto i piedi al codice esistente.
+GameCleanup:
 	; ----- Cleanup PT Player prima di tornare all'OS -----
 	LEA		$DFF000,A6
 	JSR		_mt_end					; ferma replay + azzera canali audio
 	JSR		_mt_remove				; rimuove handler CIA-B, ripristina timer
 	RTS
-*****************************************************************************
-* ROUTINE DI SWAP DEL BUFFER
-*****************************************************************************
-SwapBuffers:
-	MOVEM.L D0-D2,-(SP)
-; Scambia CurrentDisplay e CurrentDraw
-	MOVE.L  CurrentDisplay,D0
-	MOVE.L  CurrentDraw,D1
-	MOVE.L  D1,CurrentDisplay
-	MOVE.L  D0,CurrentDraw
-
-; Scambia anche CurrentDarkDisplay e CurrentDarkDraw
-	MOVE.L  CurrentDarkDisplay,D0
-	MOVE.L  CurrentDarkDraw,D2
-	MOVE.L  D2,CurrentDarkDisplay
-	MOVE.L  D0,CurrentDarkDraw
-	; D2 = nuovo CurrentDarkDisplay (= il valore vecchio di CurrentDarkDraw)
-	; D1 = nuovo CurrentDisplay
-
-; Aggiorna copperlist con i nuovi puntatori
-	MOVE.L  D1,D0
-	BSR.S   AggiornaCopperBPL
-
-	movem.l (SP)+,D0-D2
-	RTS
-
 *****************************************************************************
 * ASPETTA VBL
 *****************************************************************************
@@ -350,7 +1074,9 @@ AspettaVBL:
 	MOVEM.L D0-D2,-(SP)
 
 	MOVE.L  #$1ff00,D1
-	MOVE.L  #$10800,D2		  ; linea $108
+	MOVE.L  #(VBL_SYNC_LINE<<8),D2	  ; linea VBL_SYNC_LINE ($108 = 264)
+									  ; NON scrivere il numero a mano: FineLavoro
+									  ; misura a partire da questa stessa EQU.
 .wait:
 	MOVE.L  $dff004,D0		  ; VPOSR
 	AND.L   D1,D0
@@ -387,6 +1113,68 @@ AggiornaCopperBPL:
 	
 	MOVEM.L	(SP)+,D1/A1
 	RTS 
+*****************************************************************************
+* AGGIORNA I BPL POINTER NELLA COPPERLIST PER IL PARALLASSE
+* INPUT:  D0 = indirizzo del buffer parallasse da mostrare
+* OUTPUT: 2 BPL pointer aggiornati a partire da BitplaneParall
+* DISTRUGGE: D0, A1 (e usa internamente D1)
+*****************************************************************************
+AggiornaCopperParallasse:               ; D0 = base buffer parallasse da mostrare
+    MOVEM.L D0-D1/A1,-(SP)
+    LEA     BitplaneParall,A1
+    ; Il blit di AggiornaParallax scrive la guardia a word 3 (byte 6-7) e il
+    ; contenuto da byte 8. Il display ha un prefetch di 8 byte, quindi
+    ; puntando base+8 fetcha i byte 8..55: esattamente il contenuto scritto,
+    ; guardia esclusa. Serve pero' che il blit sia largo BLIT_W=25 word, cioe'
+    ; copra tutti e 48 i byte fetchati: con 21 restavano scoperti gli ultimi
+    ; 8 byte (troncatura a destra), e togliendo il +8 si scopriva il prefetch
+    ; a sinistra. Le due cose vanno insieme.
+    IFNE    PAR_DISABLE
+    MOVE.L  #PathBVuoto,D0               ; prova: parallasse spenta, piani 7-8 vuoti
+    ENDC
+    ADD.L   #PAR_PTR_OFS,D0
+    MOVEQ   #2-1,D1
+.setpar:
+    MOVE.W  D0,6(A1)
+    SWAP    D0
+    MOVE.W  D0,2(A1)
+    SWAP    D0
+    IFEQ    PAR_DISABLE
+    ADD.L   #PAR_PLANE_STRIDE,D0         ; piano 8 (NON BG_PLANE_STRIDE: vedi la EQU)
+    ENDC
+    ADDQ.W  #8,A1
+    DBRA    D1,.setpar
+    MOVEM.L (SP)+,D0-D1/A1
+    RTS
+*****************************************************************************
+* SWAP DEI BUFFER PER IL PARALLASSE
+*****************************************************************************
+SwapParBuffers:
+    MOVEM.L D0-D1,-(SP)
+        ; Diagnostica SW: quante righe DOPO il sync viene pubblicato il buffer.
+        ; Sticky come WorstLines (si azzera col tasto R), perche' mentre scrolli
+        ; non si fa in tempo a leggere il pannello.
+        ; Soglia: deve restare sotto RASTER_LINES-VBL_SYNC_LINE, altrimenti la
+        ; pubblicazione cade dopo che il copper ha riletto la copperlist e la
+        ; parallasse torna in ritardo di un frame.
+        BSR.W   LeggiRiga               ; (richiede A6 = $DFF000, gia' valido qui)
+        SUB.W   #VBL_SYNC_LINE,D0
+        BPL.S   .swNoWrap
+        ADD.W   #RASTER_LINES,D0        ; il frame e' girato
+.swNoWrap:
+        CMP.W   ProfSwapRaster,D0
+        BLS.S   .swDone
+        MOVE.W  D0,ProfSwapRaster       ; high-water
+.swDone:
+    MOVE.L  CurrentParDisplay,D0
+    MOVE.L  CurrentParDraw,D1
+    MOVE.L  D1,CurrentParDisplay
+    MOVE.L  D0,CurrentParDraw
+    MOVE.L  CurrentParDisplay,D0
+    BSR.W   AggiornaCopperParallasse     ; BPL7/8PT sul buffer appena mostrato
+    MOVEM.L (SP)+,D0-D1
+    RTS
+
 *****************************************************************************
 * GestisciMusica
 *   Chiamata ogni frame nel main loop.
@@ -460,29 +1248,195 @@ FaloFrameTable:
 	dc.l	FuocoFrame_0			; padding per ANDI #7 sicurezza
 	dc.l	FuocoFrame_0
 
-*****************************************************************************
-* ROUTINE DI ATTESA TASTO DI SX DEL MOUSE 
-*****************************************************************************
-SxMouse:
-.waitsxpress:
-	BTST.B	#6,$bfe001		; tasto sx del mouse premuto?
-	BNE.S	.waitsxpress
-.waitsxrelease:
-	BTST.B	#6,$bfe001		; tasto sx del mouse rilasciato?
-	BEQ.S	.waitsxrelease
-	RTS
+	IFNE	PROFILING
+;---------------------------------------------------------------------
+; LeggiRiga -> d0.w = riga raster corrente (0..312)
+; $DFF004 letto come LONG = VPOSR+VHPOSR in un colpo -> atomico, niente
+; race sul bit V8 (che sta in VPOSR bit 0 = bit 16 del long).
+; Richiede A6 = $DFF000.  Distrugge solo D0.
+;---------------------------------------------------------------------
+LeggiRiga:
+        move.l  $04(A6),d0
+        lsr.l   #8,d0
+        and.w   #$01FF,d0
+        rts
 
-*****************************************************************************
-* ROUTINE DI ATTESA
-*****************************************************************************
-Attesa:
-	movem.l d7,-(SP)
-	MOVE.L	#1000000,D7
-.attesaloop:
-	SUBQ.L	#1,D7
-	BNE		.attesaloop
-	movem.l (SP)+,d7
-	RTS
+;---------------------------------------------------------------------
+; FineLavoro — da chiamare subito dopo AspettaBlitter, PRIMA di AspettaVBL.
+;
+; Misura quante righe raster ha consumato il lavoro di questo frame,
+; tiene il peggior caso mai visto (high-water) e rileva i frame persi.
+;
+; RILEVAMENTO FRAME PERSO — perche' non serve l'interrupt VERTB:
+;   Il lavoro parte sempre alla riga VBL_SYNC_LINE (264), subito dopo
+;   AspettaVBL. Da lì il raster sale a 312, wrappa a 0 e continua.
+;   Quindi FrameLines = (riga_attuale - 264) mod 313, cioe' 0..312 dove
+;   312 = frame interamente consumato.
+;   Se il lavoro sfora il frame, il contatore wrappa e FrameLines ricade
+;   nella finestra 0..48. Ma un lavoro davvero durato 1..48 righe e'
+;   fisicamente impossibile per questo gioco (solo CopiaVideo su 5 piani
+;   ne costa molte di piu'). Quindi FrameLines < 49 non e' un frame
+;   veloce: e' un frame che ha sforato.
+;   LIMITE: uno sforo superiore a 361 righe torna in finestra "plausibile"
+;   e non viene contato — ma in quel caso la barra e' TUTTA blu e si vede
+;   a occhio, quindi non e' un buco cieco.
+;
+; Richiede A6 = $DFF000.  Preserva tutti i registri.
+;---------------------------------------------------------------------
+FineLavoro:
+        movem.l d0-d5/a0-a1,-(sp)
+
+        ; --- 1. righe consumate da questo frame ---------------------
+        bsr.s   LeggiRiga
+        sub.w   #VBL_SYNC_LINE,d0
+        bpl.s   .nowrap
+        add.w   #RASTER_LINES,d0
+.nowrap:
+        move.w  d0,FrameLines
+        move.w  d0,d4                   ; d4 = fine del frame, serve sotto
+
+        ; --- reset degli high-water su richiesta (tasto R) ----------
+        ; Sta PRIMA dell'uscita per ProfShow: cosi' puoi azzerare anche
+        ; mentre stai guardando i numeri, e riparti pulito.
+        tst.w   WorstReset
+        beq.s   .noreset
+        clr.w   WorstReset
+        clr.w   WorstLines
+        clr.w   DropCount
+        clr.w   ProfSwapRaster
+        lea     ProfWorst,a0
+        moveq   #PROF_SLOTS-1,d2
+.pclr:  clr.w   (a0)+
+        dbra    d2,.pclr
+.noreset:
+
+        ; Se i numeri sono a schermo la misura e' CONGELATA per intero:
+        ; disegnarli costa ~90 righe, che falserebbero proprio i valori che
+        ; stai leggendo e farebbero scattare il rilevatore di frame persi.
+        ; Fondo nero, cosi' le cifre (colore 31) restano leggibili.
+        tst.b   ProfShow
+        beq.s   .measure
+        move.w  #$0000,$180(A6)
+        bra     .out
+.measure:
+
+        ; --- 2. profilo per fase + durata REALE del frame -----------
+        ; Un solo passaggio: normalizza il latch rispetto al sync, calcola il
+        ; costo della fase che si chiude qui (distanza dal latch precedente)
+        ; e aggiorna il suo high-water.
+        ;
+        ; I latch sono monotoni crescenti finche' il frame sta dentro un giro
+        ; di raster. Un delta NEGATIVO significa che il raster ha wrappato:
+        ; il costo vero di quella fase e' delta+RASTER_LINES, e il frame dura
+        ; un giro in piu'. Contando i wrap si ricostruisce la durata reale
+        ; anche quando il frame sfora -- ed e' proprio il caso che interessa,
+        ; perche' e' li' che stanno i costi peggiori.
+        ;
+        ; LIMITE: una singola fase che da sola superi RASTER_LINES non viene
+        ; vista (il suo delta tornerebbe positivo ma sbagliato). Con lo scroll
+        ; a ~243 righe siamo sotto, ma se un giorno una fase si avvicina a 313
+        ; questo numero va preso con le pinze.
+        moveq   #0,d5                   ; d5 = quanti wrap in questo frame
+        lea     ProfRaw,a0
+        lea     ProfWorst,a1
+
+        ; Primo latch: va solo normalizzato, non chiude nessuna fase (il costo
+        ; di una fase e' la distanza FINO al marker successivo).
+        move.w  (a0),d0
+        sub.w   #VBL_SYNC_LINE,d0
+        bpl.s   .pnw0
+        add.w   #RASTER_LINES,d0
+.pnw0:
+        move.w  d0,(a0)+
+        move.w  d0,d1                   ; d1 = latch precedente
+
+        moveq   #PROF_SLOTS-2,d2        ; i PROF_SLOTS-1 latch rimanenti
+.pnorm:
+        move.w  (a0),d0
+        sub.w   #VBL_SYNC_LINE,d0
+        bpl.s   .pnw
+        add.w   #RASTER_LINES,d0
+.pnw:
+        move.w  d0,(a0)+                ; riscrive normalizzata (comoda al debugger)
+        move.w  d0,d3
+        sub.w   d1,d3                   ; costo della fase che si chiude qui
+        bpl.s   .pok
+        addq.w  #1,d5                   ; il raster ha wrappato qui
+        add.w   #RASTER_LINES,d3        ; ...quindi il costo vero e' questo
+.pok:
+        cmp.w   (a1),d3
+        bls.s   .pnext
+        move.w  d3,(a1)                 ; nuovo peggior costo per questa fase
+.pnext:
+        addq.w  #2,a1
+        move.w  d0,d1                   ; questo latch diventa il riferimento
+        dbra    d2,.pnorm
+
+        ; L'ultima fase si chiude sulla fine del lavoro
+        move.w  d4,d3
+        sub.w   d1,d3
+        bpl.s   .plok
+        addq.w  #1,d5
+        add.w   #RASTER_LINES,d3
+.plok:
+        cmp.w   (a1),d3
+        bls.s   .ptot
+        move.w  d3,(a1)
+
+.ptot:  ; --- 3. durata reale = righe dal sync + un giro per ogni wrap
+        move.w  d5,d3
+        mulu.w  #RASTER_LINES,d3
+        add.w   d4,d3                   ; d3 = durata VERA del frame
+        move.w  d3,FrameLines           ; sovrascrive con il valore ricostruito
+        move.w  d3,d4
+
+        ; L'high-water del totale si aggiorna SEMPRE, anche quando il frame
+        ; sfora: ora la durata e' un numero vero e non piu' spazzatura.
+        cmp.w   WorstLines,d4
+        bls.s   .nowl
+        move.w  d4,WorstLines
+.nowl:
+        ; --- 5. frame perso? ---------------------------------------
+        ; Ora e' un confronto diretto: il lavoro e' durato piu' di un frame.
+        cmp.w   #RASTER_LINES,d4
+        blo.s   .frameok
+        addq.w  #1,DropCount
+        IFNE    PROF_COLORS
+        move.w  #$0F00,$180(A6)         ; ROSSO PIENO = frame perso
+        ENDC
+        bra     .out
+
+.frameok:
+        ; --- 6. fascia ROSSA fino al peggior caso, poi BIANCO -------
+        ; Lo spin si ferma comunque prima della riga di sync: se WorstLines
+        ; e' oltre un frame intero (succede scrollando) la fascia bianca non
+        ; compare proprio, ed e' l'informazione giusta -- margine zero.
+        move.w  WorstLines,d1
+        cmp.w   #RASTER_LINES-1,d1
+        blo.s   .spinok
+        move.w  #RASTER_LINES-1,d1
+.spinok:
+        IFNE    PROF_COLORS
+        move.w  #$0800,$180(A6)         ; rosso scuro = margine bruciato
+        ENDC
+.wait:  move.l  $04(A6),d0              ; LeggiRiga inline: in uno spin loop
+        lsr.l   #8,d0                   ; il bsr/rts e' ~30 cicli buttati
+        and.w   #$01FF,d0
+        sub.w   #VBL_SYNC_LINE,d0
+        bpl.s   .nw2
+        add.w   #RASTER_LINES,d0
+.nw2:   cmp.w   d1,d0
+        blo.s   .wait                   ; confronto in "righe dal sync", non
+                                        ; uguaglianza di riga: se un interrupt
+                                        ; ci fa saltare la riga esatta non
+                                        ; restiamo appesi per un frame intero
+        IFNE    PROF_COLORS
+        move.w  #$0FFF,$180(A6)         ; BIANCO = margine RESIDUO
+        ENDC
+.out:
+        movem.l (sp)+,d0-d5/a0-a1
+        rts
+	ENDC
 
 *****************************************************************************
 * LEGGI JOYSTICK 
@@ -523,7 +1477,7 @@ LeggiJoystick:
 	ADDQ.W	#1,ScrllY	; giu' = +1 (usato in 8-direzioni)
 .ENDJOYST:
 ;--- POLLING TASTIERA --------------------------------------
-; Le flag arrow_* sono settate da ProcessArrowKey alla pressione
+; Le flag arrow_* sono settate da ProcessaFrecce alla pressione
 ; e azzerate al rilascio. Qui le leggiamo ogni frame per generare
 ; movimento continuo finche' il tasto resta premuto.
 ; Nota: i tasti freccia possono sommarsi al joystick (entrambi
@@ -597,12 +1551,12 @@ LeggiJoystick:
 	MOVEM.l (SP)+,D0-D3/A0-A1
 	RTS
 ;------------------------------------------------------------
-; ReadKeyboard
+; LeggiTastiera
 ;   Legge UN keycode dalla CIA-A (se disponibile),
 ;   decodifica e aggiorna ScrollX / ScrollY.
 ;   Registri modificati: d0, d1  (salvati/ripristinati)
 ;------------------------------------------------------------
-ReadKeyboard:
+LeggiTastiera:
 	movem.l D0-D1,-(SP)
 
 ;--- Controlla se c'è un tasto in arrivo --------
@@ -637,14 +1591,14 @@ ReadKeyboard:
 	and.b   #$BF,d1
 	move.b  D1,$BFEE01		; SP → modalità input (bit 6 = 0)
 	;--- Processa frecce ----------------------------
-	bsr	 ProcessArrowKey
+	bsr	 ProcessaFrecce
 
 .no_key:
 	movem.l (SP)+,D0-D1
 	rts
 
 ;------------------------------------------------------------
-; ProcessArrowKey
+; ProcessaFrecce
 ;   Input : d0.b = keycode decodificato
 ;			  bit7 = 0 pressione, 1 rilascio
 ;			  bit6-0 = codice tasto
@@ -653,7 +1607,7 @@ ReadKeyboard:
 ;			da LeggiJoystick
 ;   Registri modificati: d2 (salvato/ripristinato)
 ;------------------------------------------------------------
-ProcessArrowKey:
+ProcessaFrecce:
 	movem.l	D1-D2,-(SP)
 
 	move.b	D0,D2
@@ -697,7 +1651,7 @@ ProcessArrowKey:
 	cmp.b	#RAWKEY_SPACE,D2
 	bne.s	.k_night
 	move.b	D1,key_space
-	bra.s	.done
+	bra.w	.done
 
 .k_night:
 	cmp.b	#RAWKEY_N,D2
@@ -710,6 +1664,11 @@ ProcessArrowKey:
 	bne.s	.n_release				; era gia' premuto -> no edge
 	; Edge press: toggle NightMode
 	eori.b	#1,NightMode
+	; il darkplane statico va ridisegnato: e' l'unico momento in cui serve
+	MOVEM.L	D0-D7/A0-A2,-(SP)
+	LEA		$DFF000,A6
+	BSR.W	PathBBuildDark
+	MOVEM.L	(SP)+,D0-D7/A0-A2
 .n_release:
 	move.b	D1,NightKeyPrev
 
@@ -730,7 +1689,7 @@ ProcessArrowKey:
 	move.b	D1,MusicKeyPrev
 .k_gravity:
 	cmp.b	#RAWKEY_G,D2
-	bne.s	.done
+	bne.s	.k_prof
 	; D1 = 1 (premuto) o 0 (rilasciato); toggle solo sul fronte di pressione
 	tst.b	D1
 	beq.s	.g_release				; rilasciato -> aggiorna prev e basta
@@ -738,122 +1697,51 @@ ProcessArrowKey:
 	bne.s	.g_release				; era gia' premuto -> no edge
 	; Edge press: inverti gravita' (platform <-> 8 direzioni)
 	eori.w	#1,GravityOn
-	move.w	#1,VScrollStep			; default 1px; in platform ComputeCameraFollowY lo rialza a CAM_STEP_Y
+	move.w	#1,VScrollStep			; default 1px; in platform CalcolaInseguimentoCameraY lo rialza a CAM_STEP_Y
 	clr.w	PlayerVelY				; reset stato fisica (rilevante al rientro in platform)
 	clr.w	UpPrev
 	clr.w	PlayerGrounded
 .g_release:
 	move.b	D1,GravKeyPrev
+
+; La label sta FUORI dal condizionale: .k_gravity ci salta sempre, anche
+; quando l'harness e' escluso dalla build.
+.k_prof:
+	IFNE	PROFILING
+	cmp.b	#RAWKEY_P,D2
+	bne.s	.k_reset
+	; D1 = 1 (premuto) o 0 (rilasciato); toggle solo sul fronte di pressione
+	tst.b	D1
+	beq.s	.p_release
+	tst.b	ProfKeyPrev
+	bne.s	.p_release
+	; Edge press: mostra/nascondi i numeri del profilo.
+	; Mentre sono mostrati la misura e' CONGELATA (vedi FineLavoro), cosi'
+	; i valori che leggi restano quelli accumulati giocando e non vengono
+	; sporcati dal costo del disegno dei numeri stesso.
+	eori.b	#1,ProfShow
+.p_release:
+	move.b	D1,ProfKeyPrev
+
+.k_reset:
+	cmp.b	#RAWKEY_R,D2
+	bne.s	.done
+	; Azzera WorstLines, DropCount e tutto ProfWorst. Serve perche' gli
+	; high-water sono STICKY: un solo frame anomalo (avvio, cambio scena,
+	; un hiccup qualsiasi) resta appiccicato per sempre e falsa la lettura.
+	; Uso: premi R, gioca il caso che vuoi misurare, poi premi P e leggi.
+	tst.b	D1
+	beq.s	.r_release
+	tst.b	ResetKeyPrev
+	bne.s	.r_release
+	move.w	#1,WorstReset
+.r_release:
+	move.b	D1,ResetKeyPrev
+	ENDC
 .done:
 
 	movem.l	(SP)+,D1-D2
 	rts
-*****************************************************************************
-* 		ROUTINE DI ESECUZIONE SHIFT FINE
-*****************************************************************************
-GestisciShiftPixel:
-	MOVEM.L	D0-D1,-(SP)
-
-	MOVE.W	ScrllX,D0
-	MOVE.W	ScrllY,D1
-;========================
-; ORIZZONTALE
-;========================
-	TST.W  D0
-	BEQ.S  .NoX
-
-	BPL.S  .VersoSinistra
-	BSR.W  ShiftPixelDestra
-	BRA.S  .NoX
-
-.VersoSinistra:
-	BSR.W  ShiftPixelSinistra
-
-.NoX:
-
-;========================
-; VERTICALE
-;========================
-	TST.W  D1
-	BEQ.S  .NoY
-
-	BPL.S  .VersoAlto
-	BSR.W  ShiftPixelBasso
-	BRA.S  .NoY
-
-.VersoAlto:
-	BSR.W  ShiftPixelAlto
-
-.NoY:
-	MOVEM.L	(SP)+,D0-D1
-
-	RTS
-
-*****************************************************************************
-* AGGIORNA TILES
-*
-* Chiamata DOPO GestisciShiftPixel. Processa i flag "Pending*" impostati
-* da ControllaBordi e chiama le Add* routines quando il buffer e' pronto.
-*
-*****************************************************************************
-AggiornaTiles:
-	MOVEM.L	D0-D1,-(SP)
-; ---------- DESTRA ----------
-; Non aspetta nulla: AddColonnaDestra gestisce internamente lo split Y.
-	MOVE.W	PdngAddRx,D0
-	TST.W   D0
-	BEQ.S   .NoRight
-	BSR.W   AddColonnaDestra
-	CLR.W   PdngAddRx
-.NoRight:
- 
-; ---------- SINISTRA ----------
-; Aspetta PixelOffX=0 (16 shift dx cumulativi dopo il boundary, bug #1).
-; Lo split Y in AddColonnaSinistra gestisce PixelOffY qualunque.
-	MOVE.W	PdngAddSx,D0
-	TST.W   D0
-	BEQ.S   .NoLeft
-	MOVE.W	PixelOffX,D1
-	TST.W   D1
-	BNE.S   .NoLeft
-	BSR.W   AddColonnaSinistra
-	CLR.W   PdngAddSx
-.NoLeft:
- 
-; ---------- BASSO ----------
-; Non aspetta nulla: AddRigaBasso gestisce internamente lo split X.
-	MOVE.W	PdngAddBot,D0
-	TST.W   D0
-	BEQ.S   .NoBot
-	BSR.W   AddRigaBasso
-	CLR.W   PdngAddBot
-.NoBot:
- 
-; ---------- ALTO ----------
-; AddRigaAlto riscrive le righe 0-15 (serbatoio superiore) con MAPPA[TileY].
-; Lo split X in AddRigaAlto gestisce PixelOffX qualunque.
-;
-; FIX smear: ShiftPixelBasso lascia la riga 0 NON riscritta -> quel pixel-row
-; si propaga verso il basso 1 riga/frame. Va ripulito a OGNI PixelOffY==0
-; mentre si scrolla verso l'alto (ScrllY<0), non solo quando c'e' un boundary
-; pendente (PdngAddTop). Altrimenti, partendo da PixelOffY!=0 (discesa fermata
-; a meta' tile), lo smear accumula prima del boundary + i 16 frame di rinvio,
-; supera le 16 righe del serbatoio e trabocca nell'area visibile.
-	MOVE.W	PixelOffY,D1
-	TST.W   D1
-	BNE.S   .NoTop			; non allineato: nessun refill
-	MOVE.W	PdngAddTop,D0
-	TST.W   D0
-	BNE.S   .DoTop			; boundary pendente -> refill
-	MOVE.W	ScrllY,D0
-	BPL.S   .NoTop			; ScrllY>=0 (non si sale) -> nessun refill
-.DoTop:
-	BSR.W   AddRigaAlto
-	CLR.W   PdngAddTop
-.NoTop:
-	MOVEM.L	(SP)+,D0-D1
-	RTS
- 
 *****************************************************************************
 * 		ROUTINE DI CONTROLLO DEI BORDI
 * TILE BOUNDARY - SHIFT BUFFER
@@ -950,7 +1838,7 @@ ControllaBordi:
 	BRA.S   .FineControlli
 .AzzeroYMax:
 	MOVE.W  #0,ScrllY
-	MOVEQ   #16-CAM_STEP_Y,D1	; clamp allineato al passo (15 se step=1, 8 se step=8)
+	MOVEQ   #16-CAM_STEP_Y,D1	; 15 se step=1, 8 se step=8
 	BRA.S   .FineControlli
 .ControlloYMin:
 	TST.W   D1
@@ -967,626 +1855,35 @@ ControllaBordi:
 	MOVE.W  #0,ScrllY
 	MOVEQ   #0,D1
 .FineControlli:
+	; La camera non deve MAI superare TILE*MAX*16 ---
+	; I check qui sopra bloccano lo scroll solo quando PixelOff vale 0. Basta
+	; arrivare al tile di bordo con un offset residuo — succede cambiando il
+	; passo verticale a meta' tile, cioe' premendo G — e la camera prosegue
+	; fino a TILEYMAX*16+15, poi si assesta 8 px oltre il limite valido.
+	; Questo chiude sia il transitorio sia il regime: al tile di bordo
+	; l'offset e' per definizione 0, perche' la finestra finisce esattamente
+	; sul bordo della mappa.
+	MOVE.W	TileX,D2
+	CMP.W	#TILEXMAX,D2
+	BLT.S	.setXok
+	MOVE.W	#TILEXMAX,TileX
+	MOVEQ	#0,D0
+.setXok:
+	MOVE.W	TileY,D2
+	CMP.W	#TILEYMAX,D2
+	BLT.S	.setYok
+	MOVE.W	#TILEYMAX,TileY
+	MOVEQ	#0,D1	
+.setYok:
 	MOVE.W  D0,PixelOffX
 	MOVE.W  D1,PixelOffY
 	MOVEM.L (SP)+,D0-D2
 	RTS
  
 *****************************************************************************
-* SCROLLING A SINISTRA
-*****************************************************************************
-ShiftPixelSinistra:
-	MOVEM.L D4/A1,-(SP)
-
-; In DESC il blitter parte dall'ultimo word: 287*48 + 42 = 13818
-	MOVE.L  #SFONDOGRANDE+287*SFONDO_PITCH+42,A1  
-										; in-place: src = dst = fine buffer
-
-	MOVEQ	#5-1,D4
-.loop:
-	BSR.W   AspettaBlitter
-
-	MOVE.L  #$ffffffff,$44(A6)
-
-; ASH=1, DESC → shift a sinistra di 1 pixel
-; D[i] = (A[i] << 1) | (A[i+1] >> 15) con A[22] = 0 (pipeline)
-	MOVE.L  #$19F00002,$40(A6)   ; BLTCON0: ASH=1 | BLTCON1: DESC
-
-	MOVE.W  #4,$64(A6)		; BLTAMOD = 4 (= 48-44, blittate 22 word, pitch SFONDO 48) 
-							; (22 word × 2 = 44 byte blittate, pitch SFONDOGRANDE = 48)
-	MOVE.W  #4,$66(A6)		; BLTDMOD = 4 (= 48-44, blittate 22 word, pitch SFONDO 48)
-	BSR.W   AspettaBlitter
-
-	MOVE.L  A1,$50(A6)		   ; BLTAPT
-	MOVE.L  A1,$54(A6)		   ; BLTDPT
-	MOVE.W  #(288<<6)+22,$58(A6) ; 288 righe × 22 word (TUTTO il buffer)
-
-	ADD.L   #288*SFONDO_PITCH,A1
-	DBRA	D4,.loop
-
-	MOVEM.L (SP)+,D4/A1
-	RTS
-
-****************************************************************************
-* SCROLLING A DESTRA
-*****************************************************************************
-ShiftPixelDestra:
-	MOVEM.L D4/A1-A2,-(SP)
-
-	MOVE.L  #SFONDOGRANDE,A2
-	MOVE.L  #SFONDOGRANDE,A1
-
-	MOVEQ	#5-1,D4
-.loop:
-	BSR.W   AspettaBlitter
-
-	MOVE.L  #$ffffffff,$44(A6)
-
-	; DESC + shift 1 bit
-	MOVE.L  #$19F00000,$40(A6)
-
-	MOVE.W  #4,$64(A6)		; BLTAMOD = 48-44
-	MOVE.W  #4,$66(A6)		; BLTDMOD = 48-44
-
-	MOVE.L  A2,$50(A6)
-	MOVE.L  A1,$54(A6)
-
-	MOVE.W  #(288<<6)+22,$58(A6)
-
-	ADD.L   #288*SFONDO_PITCH,A2
-	ADD.L   #288*SFONDO_PITCH,A1
-
-	DBRA	D4,.loop
-	MOVEM.L (SP)+,D4/A1-A2
-	RTS
-
-****************************************************************************
-* SCROLLING IN ALTO
-*****************************************************************************
-ShiftPixelAlto:
-	MOVEM.L D0-D1/D4/A1-A2,-(SP)
-
-	; sorgente = riga VScrollStep ; dest = riga 0
-	MOVE.W  VScrollStep,D0
-	MULU.W  #SFONDO_PITCH,D0			; D0 = VScrollStep * SFONDO_PITCH
-	MOVE.L  #SFONDOGRANDE,A2
-	ADDA.L  D0,A2
-	MOVE.L  #SFONDOGRANDE,A1
-
-	; BLTSIZE = ((288-VScrollStep)<<6)+22
-	MOVE.W  #288,D1
-	SUB.W   VScrollStep,D1
-	LSL.W   #6,D1
-	ADD.W   #22,D1
-
-	MOVEQ	#5-1,D4
-.loop:
-	BSR.W   AspettaBlitter
-
-	MOVE.L  #$ffffffff,$44(A6)
-	MOVE.L  #$09F00000,$40(A6)
-
-	MOVE.W  #4,$64(A6)		; BLTAMOD = 48-44
-	MOVE.W  #4,$66(A6)		; BLTDMOD = 48-44
-
-	MOVE.L  A2,$50(A6)
-	MOVE.L  A1,$54(A6)
-
-	MOVE.W  D1,$58(A6)		; (288-VScrollStep) righe x 22 word
-
-	ADD.L   #288*SFONDO_PITCH,A2
-	ADD.L   #288*SFONDO_PITCH,A1
-
-	DBRA	D4,.loop
-	MOVEM.L (SP)+,D0-D1/D4/A1-A2
-	RTS
-
-****************************************************************************
-* SCROLLING IN BASSO
-*****************************************************************************
-ShiftPixelBasso:
-	MOVEM.L D0-D1/D4/A1-A2,-(SP)
-
-	; sorgente DESC = ultima word di riga (287 - VScrollStep) ; dest DESC = ultima word riga 287
-	MOVE.W  #287,D0
-	SUB.W   VScrollStep,D0
-	MULU.W  #SFONDO_PITCH,D0
-	MOVE.L  #SFONDOGRANDE+42,A2
-	ADDA.L  D0,A2
-	MOVE.L  #SFONDOGRANDE+287*SFONDO_PITCH+42,A1
-
-	; BLTSIZE = ((288-VScrollStep)<<6)+22
-	MOVE.W  #288,D1
-	SUB.W   VScrollStep,D1
-	LSL.W   #6,D1
-	ADD.W   #22,D1
-
-	MOVEQ	#5-1,D4
-.loop:
-	BSR.W   AspettaBlitter
-
-	MOVE.L  #$ffffffff,$44(A6)
-	MOVE.L  #$09F00002,$40(A6)
-
-	MOVE.W  #4,$64(A6)		; BLTAMOD = 48-44
-	MOVE.W  #4,$66(A6)		; BLTDMOD = 48-44
-
-	MOVE.L  A2,$50(A6)
-	MOVE.L  A1,$54(A6)
-
-	MOVE.W  D1,$58(A6)		; (288-VScrollStep) righe x 22 word
-
-	ADD.L   #288*SFONDO_PITCH,A2
-	ADD.L   #288*SFONDO_PITCH,A1
-
-	DBRA	D4,.loop
-	MOVEM.L (SP)+,D0-D1/D4/A1-A2
-	RTS
-*****************************************************************************
-* ADD COLONNA DESTRA (con split Y)
-*
-* Blitta nella colonna 21 del buffer (byte offset 42) la colonna
-* MAPPA[TileY..TileY+17][TileX+21], allineata al PixelOffY corrente.
-*
-*****************************************************************************
-AddColonnaDestra:
-	MOVEM.L	D0-D7/A0-A3,-(SP)
-
-	; Registri "fissi" settati una volta sola per tutta la routine
-	BSR.W	AspettaBlitter
-	MOVE.L	#$ffffffff,$44(A6)		; BLTAFWM/BLTALWM
-	MOVE.L	#$09F00000,$40(A6)		; BLTCON0/1 - copia normale
-	MOVE.W	#38,$64(A6)				; BLTAMOD = 40-2
-	MOVE.W	#46,$66(A6)				; BLTDMOD = 48-2
-	; A0 = MAPPA[TileY][TileX+21]
-	MOVE.W	TileX,D0
-	ADDI.W	#BUFFER_COLS-1,D0	; colonna piu' a destra nel buffer = TileX+21
-	MOVE.W	TileY,D1
-	MULU.W	#MAPPA_COLS*2,D1
-	ADD.W	D0,D0			; *2 byte per word
-	LEA	MAPPA,A0
-	ADDA.W	D1,A0
-	ADDA.W	D0,A0
-
-; A3 = buffer col 21 row 0
-	MOVE.L	#SFONDOGRANDE+42,A3
-
-; D2 = PixelOffY (preservato per tutta la routine)
-	MOVE.W	PixelOffY,D2
-
-;=========================================================
-; SLICE: MAPPA[TileY] pixel rows PixelOffY..15
-;		-> buffer rows 0..(15-PixelOffY)
-;		numero righe = 16-PixelOffY
-;=========================================================
-	MOVEQ	#0,D3
-	MOVE.W	(A0),D3			; numero tile
-	ADDA.L	#MAPPA_COLS*2,A0	; scendi di una riga nella MAPPA
-
-; Calcola source tile in TILES (plane 0)
-	MOVE.L	D3,D4
-	DIVU.W	#20,D4			; D4.w = riga tile, resto = col tile
-	MOVE.W	D4,D5
-	MULU.W	#16*40,D5
-	SWAP	D4
-	MOVE.W	D4,D6
-	MULU.W	#2,D6
-	MOVE.L	#TILES,A2
-	ADD.L	D5,A2
-	ADD.L	D6,A2			; A2 = TILES[tile] plane 0 row 0
-
-; Skip PixelOffY righe dentro la tile: A2 += PixelOffY * 40
-	MOVE.W	D2,D5
-	MULU.W	#40,D5
-	ADD.L	D5,A2			; A2 punta al pixel row PixelOffY della tile
-
-; D5 = numero righe da scrivere = 16 - PixelOffY
-	MOVE.W	#16,D5
-	SUB.W	D2,D5
-; BLTSIZE = (D5 << 6) + 1
-	MOVE.W	D5,D6
-	LSL.W	#6,D6
-	ADDQ.W	#1,D6			; D6 = BLTSIZE per la slice
-
-	MOVE.L	A3,A1			; A1 = dest plane 0 (buffer col 21 row 0)
-
-	MOVEQ	#5-1,D4
-.sliceP:
-	BSR.W	AspettaBlitter
-;	MOVE.L	#$ffffffff,$44(A6)
-;	MOVE.L	#$09F00000,$40(A6)
-;	MOVE.W	#38,$64(A6)				; BLTAMOD = 40-2
-;	MOVE.W	#46,$66(A6)				; BLTDMOD = 48-2 (pitch - 2 byte/word blittata)
-;	BSR.W	AspettaBlitter
-	MOVE.L	A2,$50(A6)
-	MOVE.L	A1,$54(A6)
-	MOVE.W	D6,$58(A6)				; BLTSIZE = (righe slice << 6) + 1
-	ADD.L	#256*40,A2				; next plane in TILES
-	ADD.L	#288*SFONDO_PITCH,A1	; next plane in SFONDOGRANDE
-	DBRA	D4,.sliceP
-
-; Avanza A3 di (16-PixelOffY) righe nel buffer
-	MOVE.W	D5,D6
-	MULU.W	#SFONDO_PITCH,D6
-	ADDA.L	D6,A3
-
-;=========================================================
-; 17 TILE INTERE: MAPPA[TileY+1..TileY+17]
-;=========================================================
-	MOVEQ	#17-1,D7
-.loopTile:
-	MOVEQ	#0,D3
-	MOVE.W	(A0),D3
-	ADDA.L	#MAPPA_COLS*2,A0
-
-	MOVE.L	D3,D4
-	DIVU.W	#20,D4
-	MOVE.W	D4,D5
-	MULU.W	#16*40,D5
-	SWAP	D4
-	MOVE.W	D4,D6
-	MULU.W	#2,D6
-	MOVE.L	#TILES,A2
-	ADD.L	D5,A2
-	ADD.L	D6,A2
-
-	MOVE.L	A3,A1
-	MOVEQ	#5-1,D4
-.loopPlane:
-	BSR.W	AspettaBlitter
-;	MOVE.L	#$ffffffff,$44(A6)
-;	MOVE.L	#$09F00000,$40(A6)
-;	MOVE.W	#38,$64(A6)
-;	MOVE.W	#46,$66(A6)
-;	BSR.W	AspettaBlitter
-	MOVE.L	A2,$50(A6)
-	MOVE.L	A1,$54(A6)
-	MOVE.W	#(16<<6)+1,$58(A6)	; tile intera: 16 righe x 1 word
-	ADD.L	#256*40,A2
-	ADD.L	#288*SFONDO_PITCH,A1
-	DBRA	D4,.loopPlane
-
-	ADDA.L	#16*SFONDO_PITCH,A3		; prossima tile: 16 righe piu' in basso
-	DBRA	D7,.loopTile
-
-	MOVEM.L	(SP)+,D0-D7/A0-A3
-	RTS
-
-*****************************************************************************
-* ADD COLONNA SINISTRA (con split Y)
-*
-* Blitta nella colonna 0 del buffer (byte offset 0) la colonna
-* MAPPA[TileY..TileY+17][TileX]. TileX e' gia' stato decrementato
-* da ControllaBordi. Stesso split Y di AddColonnaDestra.
-*****************************************************************************
-AddColonnaSinistra:
-	MOVEM.L	D0-D7/A0-A3,-(SP)
-
-	; Registri "fissi" settati una volta sola per tutta la routine
-	BSR.W	AspettaBlitter
-	MOVE.L	#$ffffffff,$44(A6)		; BLTAFWM/BLTALWM
-	MOVE.L	#$09F00000,$40(A6)		; BLTCON0/1 - copia normale
-	MOVE.W	#38,$64(A6)				; BLTAMOD = 40-2
-	MOVE.W	#46,$66(A6)				; BLTDMOD = 48-2
-	; A0 = MAPPA[TileY][TileX]  (TileX gia' decrementato)
-	MOVE.W	TileX,D0
-	MOVE.W	TileY,D1
-	MULU.W	#MAPPA_COLS*2,D1
-	ADD.W	D0,D0
-	LEA		MAPPA,A0
-	ADDA.W	D1,A0
-	ADDA.W	D0,A0
-
-	; A3 = buffer col 0 row 0
-	MOVE.L	#SFONDOGRANDE,A3
-
-	; D2 = PixelOffY
-	MOVE.W	PixelOffY,D2
-
-;=========================================================
-; SLICE: MAPPA[TileY] pixel rows PixelOffY..15
-;=========================================================
-	MOVEQ	#0,D3
-	MOVE.W	(A0),D3
-	ADDA.L	#MAPPA_COLS*2,A0
-
-	MOVE.L	D3,D4
-	DIVU.W	#20,D4
-	MOVE.W	D4,D5
-	MULU.W	#16*40,D5
-	SWAP	D4
-	MOVE.W	D4,D6
-	MULU.W	#2,D6
-	MOVE.L	#TILES,A2
-	ADD.L	D5,A2
-	ADD.L	D6,A2
-
-	MOVE.W	D2,D5
-	MULU.W	#40,D5
-	ADD.L	D5,A2			; A2 += PixelOffY * 40
-
-	MOVE.W	#16,D5
-	SUB.W	D2,D5			; D5 = 16 - PixelOffY = righe slice
-	MOVE.W	D5,D6
-	LSL.W	#6,D6
-	ADDQ.W	#1,D6			; D6 = BLTSIZE slice
-
-	MOVE.L	A3,A1
-
-	MOVEQ	#5-1,D4
-.sliceP:
-	BSR.W	AspettaBlitter
-;	MOVE.L	#$ffffffff,$44(A6)
-;	MOVE.L	#$09F00000,$40(A6)
-;	MOVE.W	#38,$64(A6)
-;	MOVE.W	#46,$66(A6)
-;	BSR.W	AspettaBlitter
-	MOVE.L	A2,$50(A6)
-	MOVE.L	A1,$54(A6)
-	MOVE.W	D6,$58(A6)
-	ADD.L	#256*40,A2
-	ADD.L	#288*SFONDO_PITCH,A1
-	DBRA	D4,.sliceP
-
-	; A3 += (16-PixelOffY) * SFONDO_PITCH
-	MOVE.W	D5,D6
-	MULU.W	#SFONDO_PITCH,D6
-	ADDA.L	D6,A3
-
-;=========================================================
-; 17 TILE INTERE: MAPPA[TileY+1..TileY+17]
-;=========================================================
-	MOVEQ	#17-1,D7
-.loopTile:
-	MOVEQ	#0,D3
-	MOVE.W	(A0),D3
-	ADDA.L	#MAPPA_COLS*2,A0
-
-	MOVE.L	D3,D4
-	DIVU.W	#20,D4
-	MOVE.W	D4,D5
-	MULU.W	#16*40,D5
-	SWAP	D4
-	MOVE.W	D4,D6
-	MULU.W	#2,D6
-	MOVE.L	#TILES,A2
-	ADD.L	D5,A2
-	ADD.L	D6,A2
-
-	MOVE.L	A3,A1
-	MOVEQ	#5-1,D4
-.loopPlane:
-	BSR.W	AspettaBlitter
-;	MOVE.L	#$ffffffff,$44(A6)
-;	MOVE.L	#$09F00000,$40(A6)
-;	MOVE.W	#38,$64(A6)
-;	MOVE.W	#46,$66(A6)
-;	BSR.W	AspettaBlitter
-	MOVE.L	A2,$50(A6)
-	MOVE.L	A1,$54(A6)
-	MOVE.W	#(16<<6)+1,$58(A6)
-	ADD.L	#256*40,A2
-	ADD.L	#288*SFONDO_PITCH,A1
-	DBRA	D4,.loopPlane
-
-	ADDA.L	#16*SFONDO_PITCH,A3
-	DBRA	D7,.loopTile
-
-	MOVEM.L	(SP)+,D0-D7/A0-A3
-	RTS
-*****************************************************************************
-* ADD RIGA BASSO (con split X)
-*
-* Scrive nel buffer la riga tile 17 (pixel rows 272..287, byte offset 272*SFONDO_PITCH)
-* la riga MAPPA[TileY+17][TileX..TileX+21], allineata al PixelOffX corrente.
-*
-* TECNICA:
-*   Fase 1: 22 tile scritte word-allineate in rows 272..287 del buffer
-*		   (codice identico a prima: dest = SFONDOGRANDE + 272*SFONDO_PITCH).
-*   Fase 2: shift in-place di PixelOffX bit a SINISTRA sulle stesse 16 righe
-*		   appena scritte. Usa lo stesso meccanismo di ShiftPixelSinistra
-*		   (DESC + ASH) ma con BLTSIZE limitato a 16 righe invece di 288.
-*
-*****************************************************************************
-AddRigaBasso:
-	MOVEM.L	D0-D7/A0-A3,-(SP)
- 	; Registri "fissi" settati una volta sola per tutta la routine
-
-	BSR.W	AspettaBlitter
-	MOVE.L	#$ffffffff,$44(A6)		; BLTAFWM/BLTALWM
-	MOVE.L	#$09F00000,$40(A6)		; BLTCON0/1 - copia normale
-	MOVE.W	#38,$64(A6)				; BLTAMOD = 40-2
-	MOVE.W	#46,$66(A6)				; BLTDMOD = 48-2
-;=========================================================
-; FASE 1: scrittura delle 22 tile word-allineate
-;=========================================================
-	MOVE.W	TileY,D1
-	ADDI.W	#BUFFER_ROWS-1,D1	; riga piu' in basso del buffer = TileY+17
-	MOVE.W	TileX,D0
-	MULU.W	#MAPPA_COLS*2,D1
-	ADD.W	D0,D0
-	LEA		MAPPA,A0
-	ADDA.W	D1,A0
-	ADDA.W	D0,A0
- 
-	MOVE.L	#SFONDOGRANDE+272*SFONDO_PITCH,A3	; riga pixel 272 nel buffer
- 
-	MOVEQ	#BUFFER_COLS-1,D7		; 22 tile per riga
-.loopTile:
-	MOVEQ	#0,D3
-	MOVE.W	(A0)+,D3		; tile successive: post-increment di 2 byte
- 
-	MOVE.L	D3,D4
-	DIVU.W	#20,D4
-	MOVE.W	D4,D5
-	MULU.W	#16*40,D5
-	SWAP	D4
-	MOVE.W	D4,D6
-	MULU.W	#2,D6
-	MOVE.L	#TILES,A2
-	ADD.L	D5,A2
-	ADD.L	D6,A2
- 
-	MOVE.L	A3,A1
-	MOVEQ	#5-1,D4
-.loopPlane:
-	BSR.W	AspettaBlitter
-;	MOVE.L	#$ffffffff,$44(A6)
-;	MOVE.L	#$09F00000,$40(A6)
-;	MOVE.W	#38,$64(A6)
-;	MOVE.W	#46,$66(A6)
-;	BSR.W	AspettaBlitter
-	MOVE.L	A2,$50(A6)
-	MOVE.L	A1,$54(A6)
-	MOVE.W	#(16<<6)+1,$58(A6)
-	ADD.L	#256*40,A2
-	ADD.L	#288*SFONDO_PITCH,A1
-	DBRA	D4,.loopPlane
- 
-	ADDQ.L	#2,A3			; prossima tile: 2 byte a destra
-	DBRA	D7,.loopTile
- 
-;=========================================================
-; FASE 2: shift in-place di PixelOffX bit a sx sulle righe 272..287
-;		 (identico a ShiftPixelSinistra ma con ASH=PixelOffX
-;		  e BLTSIZE = 16 righe x 22 word = solo la nuova riga tile)
-;=========================================================
-; Calcola BLTCON0|BLTCON1 = (ASH<<12 | $09F0) | DESC
-;   BLTCON0 bits 15-12 = ASH = PixelOffX
-;   BLTCON0 bits 11-8  = $9 (USEA=1, USED=1, no B, no C)
-;   BLTCON0 bits  7-0  = $F0 (LF = A, copia diretta)
-;   BLTCON1 bit 1	  = DESC=1
-;=========================================================
-	MOVEQ	#0,D0			; per azzerare tutti i 32 bit
-	MOVE.W	PixelOffX,D0
-	LSL.W	#8,D0			; D0.w = PixelOffX << 8
-	LSL.W	#4,D0			; D0.w = PixelOffX << 12 (ASH in bit 15-12)
-	SWAP	D0			; D0 high = (PixelOffX<<12), low = 0
-	OR.L	#$09F00002,D0		; aggiungi USEA/USED/LF e DESC
- 
-; Indirizzo di partenza in modo DESC = ultima word della ultima riga:
-; riga 287 (ultima delle 16) offset 287*SFONDO_PITCH, word 21 offset 42
-	MOVE.L	#SFONDOGRANDE+287*SFONDO_PITCH+42,A1
- 
-	MOVEQ	#5-1,D4
-.shiftPlane:
-	BSR.W	AspettaBlitter
-;	MOVE.L	#$ffffffff,$44(A6)
-	MOVE.L	D0,$40(A6)		; BLTCON0/BLTCON1 con ASH=PixelOffX, DESC
-	MOVE.W	#4,$64(A6)		; BLTAMOD = 4 (= 48-44, blittate 22 word, pitch SFONDO 48) (22 word = pitch)
-	MOVE.W	#4,$66(A6)		; BLTDMOD = 4 (= 48-44, blittate 22 word, pitch SFONDO 48)
-;	BSR.W	AspettaBlitter
-	MOVE.L	A1,$50(A6)		; BLTAPT (in-place: src=dst)
-	MOVE.L	A1,$54(A6)		; BLTDPT
-	MOVE.W	#(16<<6)+22,$58(A6)	; 16 righe x 22 word (solo nuova riga tile)
-	ADD.L	#288*SFONDO_PITCH,A1		; prossimo plane
-	DBRA	D4,.shiftPlane
-
-	MOVEM.L	(SP)+,D0-D7/A0-A3
-	RTS
- 
-*****************************************************************************
-* ADD RIGA ALTO (con split X)
-*
-* Scrive la riga tile 0 del buffer (pixel rows 0..15) con MAPPA[TileY]
-* [TileX..TileX+21]. TileY e' gia' stato decrementato da ControllaBordi.
-* Stesso split X di AddRigaBasso ma applicato alle righe 0..15.
-*****************************************************************************
-AddRigaAlto:
-	MOVEM.L	D0-D7/A0-A3,-(SP)
- 
-	; Registri "fissi" settati una volta sola per tutta la routine
-	BSR.W	AspettaBlitter
-	MOVE.L	#$ffffffff,$44(A6)		; BLTAFWM/BLTALWM
-	MOVE.L	#$09F00000,$40(A6)		; BLTCON0/1 - copia normale
-	MOVE.W	#38,$64(A6)				; BLTAMOD = 40-2
-	MOVE.W	#46,$66(A6)				; BLTDMOD = 48-2
-;=========================================================
-; FASE 1: scrittura delle 22 tile word-allineate
-;=========================================================
-	MOVE.W	TileY,D1		; TileY gia' decrementato
-	MOVE.W	TileX,D0
-	MULU.W	#MAPPA_COLS*2,D1
-	ADD.W	D0,D0
-	LEA		MAPPA,A0
-	ADDA.W	D1,A0
-	ADDA.W	D0,A0
- 
-	MOVE.L	#SFONDOGRANDE,A3	; riga 0 = inizio buffer
- 
-	MOVEQ	#BUFFER_COLS-1,D7
-.loopTile:
-	MOVEQ	#0,D3
-	MOVE.W	(A0)+,D3
- 
-	MOVE.L	D3,D4
-	DIVU.W	#20,D4
-	MOVE.W	D4,D5
-	MULU.W	#16*40,D5
-	SWAP	D4
-	MOVE.W	D4,D6
-	MULU.W	#2,D6
-	MOVE.L	#TILES,A2
-	ADD.L	D5,A2
-	ADD.L	D6,A2
- 
-	MOVE.L	A3,A1
-	MOVEQ	#5-1,D4
-.loopPlane:
-	BSR.W	AspettaBlitter
-;	MOVE.L	#$ffffffff,$44(A6)
-;	MOVE.L	#$09F00000,$40(A6)
-;	MOVE.W	#38,$64(A6)
-;	MOVE.W	#46,$66(A6)
-;	BSR.W	AspettaBlitter
-	MOVE.L	A2,$50(A6)
-	MOVE.L	A1,$54(A6)
-	MOVE.W	#(16<<6)+1,$58(A6)
-	ADD.L	#256*40,A2
-	ADD.L	#288*SFONDO_PITCH,A1
-	DBRA	D4,.loopPlane
- 
-	ADDQ.L	#2,A3
-	DBRA	D7,.loopTile
- 
-;=========================================================
-; FASE 2: shift in-place di PixelOffX bit a sx sulle righe 0..15
-;=========================================================
-; BLTCON0|BLTCON1 come in AddRigaBasso
-;=========================================================
-
-	MOVEQ	#0,D0			; per azzerare tutti i 32 bit
-
-	MOVE.W	PixelOffX,D0
-	LSL.W	#8,D0
-	LSL.W	#4,D0
-	SWAP	D0
-	OR.L	#$09F00002,D0
- 
-; Indirizzo DESC = ultima word della riga 15: 15*SFONDO_PITCH + 42 = 762
-	MOVE.L	#SFONDOGRANDE+15*SFONDO_PITCH+42,A1
- 
-	MOVEQ	#5-1,D4
-.shiftPlane:
-	BSR.W	AspettaBlitter
-;	MOVE.L	#$ffffffff,$44(A6)
-	MOVE.L	D0,$40(A6)
-	MOVE.W	#4,$64(A6)		; BLTAMOD = 48-44
-	MOVE.W	#4,$66(A6)		; BLTDMOD = 48-44
-;	BSR.W	AspettaBlitter
-	MOVE.L	A1,$50(A6)
-	MOVE.L	A1,$54(A6)
-	MOVE.W	#(16<<6)+22,$58(A6)	; 16 righe x 22 word
-	ADD.L	#288*SFONDO_PITCH,A1
-	DBRA	D4,.shiftPlane
- 
-	MOVEM.L	(SP)+,D0-D7/A0-A3
-	RTS
-
-*****************************************************************************
 * 		ROUTINE DI COMPOSIZIONE DELLO SFONDO
 *
-* Riempio il buffer di SFONDO_PITCH*288 con il rettangolo in alto a sinistra 
+* Riempio il buffer di SFONDO_PITCH*SFONDO_HEIGHT con il rettangolo in alto a sinistra 
 * della mappa.
 * 
 *****************************************************************************
@@ -1597,9 +1894,12 @@ DisegnaSfondo:
 	MOVE.W	TileX,D0			; colonna di partenza
 	ADD.W	D0,D0				; *2 perché ogni tile è una word
 	ADDA.W	D0,A0				; salta le colonne a sinistra
-	MOVE.L	#SFONDOGRANDE,PuntaSfondoGr
+	MOVE.L	#SFONDOGRANDE+DELTA_MAPPAVERA+BG_ORIGIN_OFS,PuntaSfondoGr	; guardia + origine
 	MOVEQ	#BUFFER_COLS-1,D1	; d1 = numero colonne
-	MOVEQ	#BUFFER_ROWS-1,D2	; d2 = numero righe
+	; BUFFER_ROWS ora include la riga di margine, che NON contiene tile:
+	; il loop deve fermarsi alle righe vere della mappa, altrimenti legge
+	; oltre la fine di MAPPA.
+	MOVEQ	#MAPPA_ROWS-1,D2
 .CicloTile:
 	MOVEQ	#0,D3				; Pulisci d3
 	MOVE.W	(A0)+,D3			; d3 = numero della tile da stampare
@@ -1628,13 +1928,13 @@ DisegnaSfondo:
 								; BLTALWM = $ffff = passa tutto
 	MOVE.L	#$09F00000,$40(A6)	; BLTCON0/1 - copia normale
 	MOVE.W	#38,$64(A6)			; BLTAMOD 
-	MOVE.W	#46,$66(A6)			; BLTDMOD 
+	MOVE.W	#SFONDO_PITCH-2,$66(A6)	; BLTDMOD (era 46 hardcoded = pitch 48 - 2)
 ;	BSR.W	AspettaBlitter
 	MOVE.L	A2,$50(A6)			; BLTAPT
 	MOVE.L	A1,$54(A6)			; BLTDPT
 	MOVE.W	#(16*64)+1,$58(A6)	; BLTSIZE
 	ADD.L	#256*40,A2				; prossimo plane sorgente
-	ADD.L	#288*SFONDO_PITCH,A1	; prossimo plane destinazione
+	ADD.L	#SFONDO_PLANE_SIZE,A1	; prossimo plane destinazione
 	DBRA	D4,.BlittaLoopSfondo
 	DBRA	D1,.CicloTile
 	; Avanza PuntaSfondoGr alla riga di tile successiva.
@@ -1652,36 +1952,228 @@ DisegnaSfondo:
 	RTS
 
 *****************************************************************************
-*			  ROUTINE DI COPIA DELLA PARTE VISIBILE SUI BITPLANE
+* BuildSkyCopper - genera il gradiente cielo dentro la copperlist
+*
+* Riempie SkyCopper con SKY_STEPS passi, uno per riga visibile, ricampionando
+* la tabella SkyGradient (SKY_SRC_ROWS voci) sulle BG_VIS_ROWS righe di
+* display. Cosi' il gradiente e' sempre INTERO qualunque sia CUT_BOTTOM_ROWS:
+* prima era una lista statica tarata su 212 righe e con il taglio se ne
+* vedeva solo la parte alta.
+*
+* Ogni passo emesso:
+*   $rr01,$fffe        WAIT sulla riga rr
+*   $0106,$0e00        BPLCON3 LOCT=1
+*   $0180,<basso>      COLOR00 nibble bassi
+*   $0106,$0c00        BPLCON3 LOCT=0
+*   $0180,<alto>       COLOR00 nibble alti
+* e in coda $0106,$0c00 per lasciare LOCT=0.
+*
+* L'indice sorgente e' i*SKY_SRC_ROWS/SKY_STEPS: con DIVU, i prodotti stanno
+* in 16 bit finche' SKY_SRC_ROWS*BG_VIS_ROWS < 65536 (212*256 = 54272, ok).
+* Gira una volta al boot, quindi il costo non conta.
 *****************************************************************************
-CopiaVideo:
-	MOVEM.L	D3-D7/A1-A2,-(SP)
+	IFEQ	PROFILING*PROF_KILL_SKY
+BuildSkyCopper:
+	MOVEM.L	D0-D4/A0-A1,-(SP)
+	LEA	SkyCopper,A1
+	MOVEQ	#0,D0                   ; D0 = indice riga visibile
+.skyrow:
+	; --- indice nella tabella = D0 * SKY_SRC_ROWS / SKY_STEPS ---
+	MOVE.W	D0,D1
+	MULU	#SKY_SRC_ROWS,D1
+	DIVU	#SKY_STEPS,D1
+	AND.L	#$0000FFFF,D1           ; solo il quoziente
+	LSL.W	#2,D1                   ; 4 byte per voce
+	LEA	SkyGradient,A0
+	ADDA.W	D1,A0
 
-	MOVE.L	#SFONDOGRANDE+16*SFONDO_PITCH+2,A2	; ind. sorgente A
-	MOVE.L  CurrentDraw,A1				; ind. destinazione D
+	; --- WAIT sulla riga $2C + D0 ---
+	MOVE.W	D0,D2
+	ADD.W	#$2C,D2
+	LSL.W	#8,D2
+	OR.W	#$0001,D2               ; posizione orizzontale 0, bit0=1 = WAIT
+	MOVE.W	D2,(A1)+
+	MOVE.W	#$FFFE,(A1)+
 
-	; Registri "fissi" settati una sola volta fuori dal loop
-	BSR.W	AspettaBlitter
-	MOVE.L	#$ffffffff,$44(A6)		; BLTAFWM/BLTALWM = $FFFF/$FFFF
-	MOVE.L	#$09F00000,$40(A6)		; BLTCON0/1 - copia normale
-	MOVE.W	#8,$64(A6)				; BLTAMOD = 48-40 (sorgente pitch 48)
-	MOVE.W	#BPSF_PITCH-40,$66(A6)	; BLTDMOD = 48-40 (dest BPSFONDO pitch 48, copia 20 word)
+	; --- LOCT=1, nibble bassi ---
+	MOVE.W	#$0106,(A1)+
+	MOVE.W	#BPLCON3_LOCT1,(A1)+
+	MOVE.W	#$0180,(A1)+
+	MOVE.W	2(A0),(A1)+             ; seconda word della voce = basso
+	; --- LOCT=0, nibble alti ---
+	MOVE.W	#$0106,(A1)+
+	MOVE.W	#BPLCON3_LOCT0,(A1)+
+	MOVE.W	#$0180,(A1)+
+	MOVE.W	(A0),(A1)+              ; prima word della voce = alto
 
-	MOVEQ	#5-1,D4
-.BlittaLoopVideo:
-	BSR.W	AspettaBlitter			; Aspetta che il blit precedente finisca
-	MOVE.L	A2,$50(A6)				; BLTAPT
-	MOVE.L	A1,$54(A6)				; BLTDPT
-	MOVE.W	#((256-CUT_BOTTOM_ROWS)<<6)+20,$58(A6)	; BLTSIZE = (256-CUT) righe * 20 word
+	ADDQ.W	#1,D0
+	CMP.W	#SKY_STEPS,D0
+	BLT.S	.skyrow
 
-	ADD.L	#288*SFONDO_PITCH,A2	; prossimo plane sorgente
-	ADD.L	#BG_PLANE_STRIDE,A1		; prossimo plane destinazione BPSFONDO
-
-	DBRA	D4,.BlittaLoopVideo
-
-	MOVEM.L	(SP)+,D3-D7/A1-A2
+	MOVE.W	#$0106,(A1)+            ; lascia BPLCON3 a LOCT=0
+	MOVE.W	#BPLCON3_LOCT0,(A1)+
+	MOVEM.L	(SP)+,D0-D4/A0-A1
 	RTS
+	ENDC
 
+*****************************************************************************
+* 		ROUTINE DI COMPOSIZIONE DELLO PIANO DI PARALLASSE
+*****************************************************************************
+BuildParallaxStrip:
+    MOVEM.L D0-D3/A0-A2,-(SP)
+    LEA     parallasse,A0       ; sorgente: 2 piani contigui, SRC_W x SRC_H, pitch SRC_PITCH
+    ADDA.L  #PARALLAX_SRC_HEAD,A0   ; parte da PARALLAX_SRC_ROW0
+    LEA     PARALLAX_STRIP,A1        ; dest:     2 piani contigui, STRIP_W x STRIP_ROWS
+    MOVEQ   #2-1,D3                  ; 2 piani
+.plane:
+    MOVE.W  #PARALLAX_STRIP_ROWS-1,D0   ; solo le righe che finiscono a schermo
+.row:
+    MOVEA.L A0,A2                    ; A2 = inizio riga arte (per la replica)
+    MOVE.W  #PARALLAX_SRC_PITCH/2-1,D1   ; una riga d'arte, in word
+.copyart:
+    MOVE.W  (A0)+,(A1)+
+    DBRA    D1,.copyart
+    MOVE.W  #PARALLAX_WRAP_W/16-1,D2     ; la replica, in word (i primi WRAP_W px)
+.copywrap:
+    MOVE.W  (A2)+,(A1)+
+    DBRA    D2,.copywrap
+    DBRA    D0,.row                  ; A0 gia' avanzato = riga successiva
+    ; le righe d'arte sotto il taglio non servono: saltale per arrivare
+    ; all'inizio del piano successivo. A CUT_BOTTOM_ROWS=0 lo skip e' 0.
+    ADDA.L  #PARALLAX_SRC_SKIP,A0
+    DBRA    D3,.plane
+
+    IFNE    PAR_TEST_FILL
+    ; Prova: sovrascrive TUTTA la striscia col motivo a bande, entrambi i piani.
+    ; Le bande fanno da righello: qualunque irregolarita' nella loro larghezza
+    ; e' il punto in cui il display legge fuori sequenza. Gira una volta al boot.
+    IFEQ    PAR_TEST_MODE-1
+    LEA     PARALLAX_STRIP,A1
+    MOVE.L  #(2*PARALLAX_STRIP_PLANE_SZ)/4-1,D0
+.fillall:
+    MOVE.L  #PAR_TEST_PATTERN,(A1)+
+    SUBQ.L  #1,D0
+    BPL.S   .fillall
+    ENDC
+
+    IFEQ    PAR_TEST_MODE-2
+    ; strisce orizzontali: una riga piena, una vuota, su entrambi i piani
+    LEA     PARALLAX_STRIP,A1
+    MOVEQ   #2-1,D3
+.hplane:
+    MOVE.W  #PARALLAX_STRIP_ROWS-1,D0
+.hrow:
+    ; NB: a WORD, non a long: PARALLAX_STRIP_PITCH e' 138, che non e'
+    ; divisibile per 4 — un loop a long lascerebbe 2 byte per riga e
+    ; falserebbe proprio la prova. 138/2 = 69 word esatte.
+    MOVEQ   #0,D2
+    BTST    #0,D0
+    BEQ.S   .hvuota
+    MOVE.W  #$FFFF,D2
+.hvuota:
+    MOVE.W  #PARALLAX_STRIP_PITCH/2-1,D1
+.hfill:
+    MOVE.W  D2,(A1)+
+    DBRA    D1,.hfill
+    DBRA    D0,.hrow
+    DBRA    D3,.hplane
+    ENDC
+    ENDC
+
+    MOVEM.L (SP)+,D0-D3/A0-A2
+    RTS
+*****************************************************************************
+* 		ROUTINE DI AGGIORNAMENTO DEL PARALLASSE
+*****************************************************************************
+AggiornaParallax:
+    MOVEM.L D0-D5/A1-A2,-(SP)
+
+    ; ----- offset = (CameraX >> 1) mod 640 -----
+    MOVE.W  TileX,D0
+    LSL.W   #4,D0                    ; TileX*16
+    ADD.W   PixelOffX,D0             ; D0 = CameraX
+    LSR.W   #1,D0                    ; >>1  <-- il FATTORE 1/2 e' qui
+    IFNE    PATH_B*PATH_B_PAR_COMP
+    ; Compensazione di BPLCON1. Lo shifter software gestisce gia' offset
+    ; arbitrari, quindi basta sommarci il ritardo.
+    ;
+    ; ATTENZIONE: il commento precedente diceva l'esatto contrario, ed era
+    ; FALSO. Simulato su tutta la corsa della camera (CameraX 0..80):
+    ;   compensazione PIENA        -> offset cambia 40 volte su 80 passi,
+    ;                                 0 posizioni sbagliate
+    ;   arrotondata a 2 px         -> offset cambia 80 volte su 80 passi,
+    ;                                 39 posizioni sbagliate
+    ; La ragione: P = CameraX>>1 cresce di 1 ogni DUE pixel mentre D cala di
+    ; 1 ogni pixel, quindi la somma P+D cambia ogni due. Arrotondando D a
+    ; pari si rompe quella cadenza e la somma cambia a ogni pixel.
+    ; L'arrotondamento costava dunque il DOPPIO dei blit E sbagliava la
+    ; posizione: a CameraX=1 mandava l'offset sotto zero e il wrap portava
+    ; la colonna 639 dell'arte — il bordo opposto — sul lato sinistro dello
+    ; schermo per un frame.
+    MOVE.W  PathBDelay,D1
+    IFEQ    PATH_B_PAR_COMP-2
+    AND.W   #$FFFE,D1               ; arrotonda a 2 px
+    ENDC
+    ADD.W   D1,D0
+    ENDC
+    ; NIENTE sottrazione del prefetch e NIENTE mod 640: vedi il commento su
+    ; PARALLAX_LEFT_MARGIN. L'offset resta piccolo e sempre positivo, quindi
+    ; la finestra non attraversa mai la giunzione fra arte e replica — che era
+    ; la vera causa della striscia sporca sul bordo sinistro.
+    ADD.W   #PARALLAX_LEFT_MARGIN,D0    ; D0 = offset, sempre >= 16
+    IFNE    PARALLAX_NO_FINE
+    AND.W   #$FFF0,D0                   ; prova: niente shift fine, ASH = 0
+    ENDC
+
+	CMP.W   par_old,D0
+    BEQ.S   .par_checkdirty              ; offset invariato -> forse serve ancora l'altro buffer
+    MOVE.W  D0,par_old
+    MOVE.W  #2,par_dirty                 ; offset cambiato -> ENTRAMBI i buffer da rifare
+.par_checkdirty:
+    TST.W   par_dirty
+    BEQ     .done
+    SUBQ.W  #1,par_dirty
+
+; ----- parola di guardia: R = (offset-1)>>4 con segno, ASH = (-offset) AND 15 -----
+    MOVE.W  D0,D5
+    NEG.W   D5
+    AND.W   #15,D5                   ; D5 = ASH = (-offset) AND 15
+
+    MOVE.W  D0,D1
+    SUBQ.W  #1,D1                    ; offset-1  (= -1 se offset=0)
+    ASR.W   #4,D1                    ; R con segno (-1 se offset=0)
+    EXT.L   D1
+    ADD.L   D1,D1                    ; R*2 (long, gestisce il negativo)
+
+    ; La destinazione parte da BYTE 0, non piu' da byte 6: si scrive l'intera
+    ; riga. Di conseguenza la sorgente arretra di 4 word (PAR_GUARD_WORDS),
+    ; perche' la word che finisce a byte 8 deve restare quella di prima.
+    SUB.L   #PAR_GUARD_WORDS*2,D1
+    LEA     PARALLAX_STRIP,A2
+    ADDA.L  D1,A2                    ; sorgente: strip + (R-4)*2
+	MOVE.L  CurrentParDraw,A1            ; dest = buffer di dietro, riga intera
+    MOVEQ   #2-1,D4
+.plane:
+    BSR.W   AspettaBlitter
+    MOVE.W  D5,D3
+    LSL.W   #8,D3
+    LSL.W   #4,D3                    ; ASH<<12
+    OR.W    #$09F0,D3                ; USEA+USED, minterm D=A
+    MOVE.W  D3,$40(A6)               ; BLTCON0
+    MOVE.W  #$0000,$42(A6)           ; BLTCON1 (ascendente)
+    MOVE.L  #$FFFFFFFF,$44(A6)       ; BLTAFWM/BLTALWM = $FFFF/$FFFF (nessuna maschera)
+    MOVE.W  #PARALLAX_STRIP_PITCH-(PARALLAX_BLIT_W*2),$64(A6)  ; BLTAMOD = 80
+    MOVE.W  #AUX_PITCH-(PARALLAX_BLIT_W*2),$66(A6)             ; BLTDMOD
+    MOVE.L  A2,$50(A6)               ; BLTAPT
+    MOVE.L  A1,$54(A6)               ; BLTDPT
+    MOVE.W  #(BG_VIS_ROWS<<6)+PARALLAX_BLIT_W,$58(A6)   ; BG_VIS_ROWS righe x BLIT_W word
+  
+    ADD.L   #PARALLAX_STRIP_PLANE_SZ,A2
+    ADD.L   #PAR_PLANE_STRIDE,A1
+    DBRA    D4,.plane
+.done:
+    MOVEM.L (SP)+,D0-D5/A1-A2
+    RTS
 *****************************************************************************
 * InitPlayer - inizializza la struttura Player con i valori iniziali
 *****************************************************************************
@@ -1690,20 +2182,19 @@ InitPlayer:
 
 	LEA	 	Player,A0
 	MOVE.W	#1,bob_Type(A0)				; 1 = Player
-	MOVE.W	#48,bob_X(A0)				; inizio X 
-	MOVE.W	#16,bob_Y(A0)				; inizio Y
 	MOVE.W	#1,bob_Speed(A0)			; velocità default
 	MOVE.W	#2,bob_Direzione(A0)		; 0 = guarda a sud
 	MOVE.W	#0,bob_AnimFrame(A0)		; primo frame
 	MOVE.L	#OMINO,bob_Gfx(A0)			; puntatore allo spritesheet
-	MOVE.W	#(16*64)+1,bob_BltSize(A0)  ; 16 righe x 1 word
-	MOVE.W	#16,bob_Larghezza(A0)
-	MOVE.W	#16,bob_Altezza(A0)
-	MOVE.W	#0,bob_FrameCont(A0)
+	MOVE.L	#OMINO_MASK,bob_Mask(A0)	; maschera per-frame dello stesso sheet
+	MOVE.W	#(BOB_H*64)+BOB_BLIT_W,bob_BltSize(A0)	; BOB_H righe x BOB_BLIT_W word
+	MOVE.W	#BOB_W,bob_Larghezza(A0)
+	MOVE.W	#BOB_H,bob_Altezza(A0)
+		MOVE.W	#0,bob_FrameCont(A0)
 	MOVE.W	#0,bob_IsMoving(A0)
 	MOVE.W	#1,bob_Active(A0)
-	MOVE.W	#0,bob_WorldX(A0)
-	MOVE.W	#0,bob_WorldY(A0)
+	MOVE.W	#PLAYER_SPAWN_X,bob_WorldX(A0)	; spawn: unica sorgente di verita'
+	MOVE.W	#PLAYER_SPAWN_Y,bob_WorldY(A0)
 	MOVE.W	#0,bob_AI(A0)
 		; --- Hit Points ---
 	MOVE.W	#20,bob_PFmax(A0)			; player ha 20 PF max
@@ -1751,8 +2242,9 @@ InitEnemies:
 	MOVE.W	#0,bob_FrameCont(A0)
 	MOVE.W	#0,bob_IsMoving(A0)
 	MOVE.L	#NEMICO,bob_Gfx(A0)				; spritesheet del nemico
-	MOVE.W	#16,bob_Larghezza(A0)
-	MOVE.W	#16,bob_Altezza(A0)
+	MOVE.L	#NEMICO_MASK,bob_Mask(A0)		; maschera per-frame del nemico
+	MOVE.W	#BOB_W,bob_Larghezza(A0)
+	MOVE.W	#BOB_H,bob_Altezza(A0)
 	; bob_X, bob_Y verranno calcolati al rendering da World - Camera
 
 	LEA		bob_Length(A0),A0				; prossimo nemico
@@ -1762,24 +2254,37 @@ InitEnemies:
 	RTS
 	
 *****************************************************************************
-* BuildOminoMask
-*   Genera OMINO_MASK come OR dei 5 bitplane di OMINO.
+* BuildBobMasks / BuildBobMask
+*   Genera la maschera per-frame di uno spritesheet come OR dei suoi 5
+*   bitplane: dove almeno un piano ha un bit, li' c'e' il BOB.
 *   Da chiamare UNA SOLA VOLTA al boot (i dati sono statici).
 *
-*   Logica: per ogni word dei 10240 byte = 5120 word del plane,
-*           OMINO_MASK[i] = OMINO[plane0][i] OR ... OR OMINO[plane4][i]
-***************************************************************************** 
-BuildOminoMask:
+*   La maschera esce gia' corretta anche nel margine dello shift: la word
+*   di stacco fra un frame e l'altro e' nera su tutti i piani, quindi l'OR
+*   la lascia a zero. E' il padding da 16 px nello sheet a garantirlo.
+*
+*   BuildBobMask:  IN A1 = sheet (plane 0), A0 = destinazione maschera
+*****************************************************************************
+BuildBobMasks:
+	MOVEM.L	A0-A1,-(SP)
+	LEA		OMINO,A1
+	LEA		OMINO_MASK,A0
+	BSR.S	BuildBobMask
+	LEA		NEMICO,A1
+	LEA		NEMICO_MASK,A0
+	BSR.S	BuildBobMask
+	MOVEM.L	(SP)+,A0-A1
+	RTS
+
+BuildBobMask:
 	MOVEM.L	D0-D1/A0-A5,-(SP)
  
-	LEA		OMINO,A1					; A1 = plane 0
 	LEA		PLANE_SIZE(A1),A2			; A2 = plane 1
 	LEA		PLANE_SIZE(A2),A3			; A3 = plane 2
 	LEA		PLANE_SIZE(A3),A4			; A4 = plane 3
 	LEA		PLANE_SIZE(A4),A5			; A5 = plane 4
-	LEA		OMINO_MASK,A0				; destinazione
  
-	; Loop a long (4 byte per iterazione = 2560 long per coprire 10240 byte)
+	; Loop a long: PLANE_SIZE/4 iterazioni
 	MOVE.W	#(PLANE_SIZE/4)-1,D0
 .loop:
 	MOVE.L	(A1)+,D1
@@ -1794,7 +2299,7 @@ BuildOminoMask:
 	RTS
  
 *****************************************************************************
-* GateScrollByCenter
+* RettangoloScrollNelCentro
 *   Decide se la camera deve scrollare in questo frame.
 *   Regola: la camera scrolla solo se il player e' al centro dello schermo
 *           (bob_X==CENTER_X per X, bob_Y==CENTER_Y per Y, indipendenti).
@@ -1802,14 +2307,20 @@ BuildOminoMask:
 *   viene azzerato -> camera ferma su quell'asse fino a che il player
 *   non torna al centro.
 *
-*   Nota: bob_X/Y devono essere stati calcolati prima (UpdatePlayerScreenPos),
+*   Nota: bob_X/Y devono essere stati calcolati prima (AggiornaPlayerScreenPos),
 *         altrimenti usiamo la posizione del frame precedente, che e' OK
 *         perche' la transizione e' incrementale (1 pixel per frame).
 *****************************************************************************
-CENTER_X        EQU     144         ; centro X iniziale del player (bob_X)
-CENTER_Y        EQU     120         ; centro Y iniziale del player (bob_Y)
+; Centro dello SCHERMO per il BOB, derivato invece che cablato: dipende dalla
+; finestra visibile e dalla dimensione del BOB, ed entrambe sono cambiate.
+; CENTER_X restava giusto per caso (144 = (320-32)/2), CENTER_Y no: 120 era
+; (256-16)/2, cioe' tarato su uno schermo alto 256 righe e un BOB 16x16.
+; Con BG_VIS_ROWS=176 e BOB_H=32 il valore corretto e' 72: erano 48 px di
+; errore sul punto in cui la camera decide di seguire il player.
+CENTER_X        EQU     (VIS_COLS*16-BOB_W)/2   ; = 144
+CENTER_Y        EQU     (BG_VIS_ROWS-BOB_H)/2   ; = 72 (era 120)
 
-GateScrollByCenter:
+RettangoloScrollNelCentro:
 	MOVEM.L	D0/A0,-(SP)
 	LEA		Player,A0
 
@@ -1879,66 +2390,55 @@ IsTileBlocked:
 
 *****************************************************************************
 * IsBoxBlocked
-*   Controlla se un BOB 16x16 a posizione (worldX, worldY) collide con tile
-*   bloccate. Verifica i 4 angoli del bounding box.
-*   Input:  D0 = worldX (pixel del bordo sinistro del BOB)
-*           D1 = worldY (pixel del bordo alto del BOB)
-*   Output: Z flag (BEQ = libero, BNE = collide)
-*   Modifica: D0-D5/A1
+*   Il box (BOB_COLL_W x BOB_COLL_H) a (worldX, worldY) tocca tile bloccate?
+*   Input:  D0 = worldX (bordo sinistro), D1 = worldY (bordo alto)
+*   Output: Z flag (BEQ = libero, BNE = collide), D0/D1 preservati
 *
-*   I 4 angoli testati sono:
-*   - (X    , Y    )  alto-sinistra
-*   - (X+15 , Y    )  alto-destra
-*   - (X    , Y+15)  basso-sinistra
-*   - (X+15 , Y+15)  basso-destra
+*   NON bastano i 4 angoli: su un box piu' largo di una tile due angoli
+*   opposti possono essere liberi mentre la tile IN MEZZO e' un muro, e il
+*   BOB ci passa attraverso. Qui si sonda una griglia a passo 16 px (la
+*   dimensione della tile) piu' sempre il bordo opposto, cosi' nessuna
+*   colonna o riga di tile toccata dal box puo' sfuggire.
+*   A 16x16 degenera nei soliti 4 angoli: stesso costo di prima.
+*
+*   NIENTE COMPENSAZIONE: il BOB e' disegnato alla SUA posizione mondo (X,Y),
+*   cioe' sulle stesse tile che qui vengono controllate.
 *****************************************************************************
 IsBoxBlocked:
-	MOVEM.L	D6-D7,-(SP)
-	; *** FIX RENDERING: il rendering visualizza le tile sfasate di 1 tile
-	; rispetto alle coordinate logiche. Compensiamo aggiungendo 16 ai check.
-	ADDI.W	#16,D0
-	ADDI.W	#16,D1
-	MOVE.W	D0,D6					; salva worldX (input + 16)
-	MOVE.W	D1,D7					; salva worldY (input + 16)
-
-	; Angolo alto-sinistra
-	BSR.W	IsTileBlocked
-	TST.B	D2
-	BNE.S	.endCheck
-
-	; Angolo alto-destra (X+15, Y)
+	MOVEM.L	D4-D7,-(SP)
+	MOVE.W	D0,D6					; X base
+	MOVE.W	D1,D7					; Y base
+	MOVEQ	#0,D5					; dy
+.loopY:
+	MOVEQ	#0,D4					; dx
+.loopX:
 	MOVE.W	D6,D0
-	ADDI.W	#15,D0
+	ADD.W	D4,D0
 	MOVE.W	D7,D1
-	BSR.W	IsTileBlocked
+	ADD.W	D5,D1
+	BSR.W	IsTileBlocked			; tocca solo D0/D1/D2/A1
 	TST.B	D2
-	BNE.S	.endCheck
-
-	; Angolo basso-sinistra (X, Y+15)
-	MOVE.W	D6,D0
+	BNE.S	.fine					; una sonda bloccata basta
+	CMP.W	#BOB_COLL_W-1,D4
+	BEQ.S	.nextY					; era gia' il bordo destro
+	ADD.W	#16,D4
+	CMP.W	#BOB_COLL_W-1,D4
+	BLS.S	.loopX
+	MOVE.W	#BOB_COLL_W-1,D4		; ultima sonda = bordo destro
+	BRA.S	.loopX
+.nextY:
+	CMP.W	#BOB_COLL_H-1,D5
+	BEQ.S	.fine					; era gia' il bordo basso
+	ADD.W	#16,D5
+	CMP.W	#BOB_COLL_H-1,D5
+	BLS.S	.loopY
+	MOVE.W	#BOB_COLL_H-1,D5		; ultima sonda = bordo basso
+	BRA.S	.loopY
+.fine:
+	MOVE.W	D6,D0					; ripristino gli input
 	MOVE.W	D7,D1
-	ADDI.W	#15,D1
-	BSR.W	IsTileBlocked
-	TST.B	D2
-	BNE.S	.endCheck
-
-	; Angolo basso-destra (X+15, Y+15)
-	MOVE.W	D6,D0
-	ADDI.W	#15,D0
-	MOVE.W	D7,D1
-	ADDI.W	#15,D1
-	BSR.W	IsTileBlocked
-	; D2 contiene il risultato finale
-
-.endCheck:
-	; Ripristino D0/D1 input ORIGINALI (= D6/D7 - 16)
-	MOVE.W	D6,D0
-	SUBI.W	#16,D0
-	MOVE.W	D7,D1
-	SUBI.W	#16,D1
-	MOVEM.L	(SP)+,D6-D7
-	; Riapplico Z flag come "TST D2"
-	TST.B	D2
+	MOVEM.L	(SP)+,D4-D7
+	TST.B	D2						; riapplico Z
 	RTS
 *****************************************************************************
 * IsOverlapEnemies
@@ -1978,17 +2478,17 @@ IsOverlapEnemies:
 	MOVE.W	D0,D3
 	SUB.W	bob_WorldX(A0),D3		; D3 = D0 - enemyX
 	; D3 in range [-15, 15] ?
-	CMP.W	#-15,D3
-	BLT.S	.next					; D3 < -15 -> non sovrappone
-	CMP.W	#16,D3
-	BGE.S	.next					; D3 >= 16 -> non sovrappone
+	CMP.W	#-(BOB_COLL_W-1),D3
+	BLT.S	.next					; troppo a sinistra -> non sovrappone
+	CMP.W	#BOB_COLL_W,D3
+	BGE.S	.next					; troppo a destra -> non sovrappone
 
 	; Test sovrapposizione Y
 	MOVE.W	D1,D4
 	SUB.W	bob_WorldY(A0),D4		; D4 = D1 - enemyY
-	CMP.W	#-15,D4
+	CMP.W	#-(BOB_COLL_H-1),D4
 	BLT.S	.next
-	CMP.W	#16,D4
+	CMP.W	#BOB_COLL_H,D4
 	BGE.S	.next
 
 	; Sia X che Y sovrapposti -> COLLISIONE
@@ -2021,18 +2521,18 @@ IsOverlapPlayer:
 
 	; Test X
 	MOVE.W	D0,D3
-	SUB.W	PlayerWorldX,D3
-	CMP.W	#-15,D3
+	SUB.W	Player+bob_WorldX,D3
+	CMP.W	#-(BOB_COLL_W-1),D3
 	BLT.S	.done
-	CMP.W	#16,D3
+	CMP.W	#BOB_COLL_W,D3
 	BGE.S	.done
 
 	; Test Y
 	MOVE.W	D1,D4
-	SUB.W	PlayerWorldY,D4
-	CMP.W	#-15,D4
+	SUB.W	Player+bob_WorldY,D4
+	CMP.W	#-(BOB_COLL_H-1),D4
 	BLT.S	.done
-	CMP.W	#16,D4
+	CMP.W	#BOB_COLL_H,D4
 	BGE.S	.done
 
 	MOVEQ	#1,D2					; overlap
@@ -2069,14 +2569,14 @@ IsEnemyBlocked:
 	RTS
 
 *****************************************************************************
-* UpdateEnemies
+* AggiornaNemici
 *   Per ogni nemico attivo, aggiorna la sua posizione in base a bob_AI:
 *     0 = fermo
 *     1 = ronda su/giù
 *     2 = ronda dx/sx
 *     3 = caccia il player
 *****************************************************************************
-UpdateEnemies:
+AggiornaNemici:
 	MOVEM.L	D0/A0,-(SP)
 
 	LEA		Enemies,A0
@@ -2130,7 +2630,7 @@ LoadAGAPalette256:
 	MOVE.W	D4,D0
 	LSL.W	#5,D0
 	LSL.W	#8,D0					; D0 = bank << 13
-	OR.W	#$0c00,D0				; LOCT=0, BRDRBLNK=1
+	OR.W	#BPLCON3_LOCT0,D0				; LOCT=0, BRDRBLNK=1
 	MOVE.W	D0,$106(A6)				; BPLCON3
 	LEA		$180(A6),A1				; COLOR00
 	MOVEQ	#32-1,D1
@@ -2156,7 +2656,7 @@ LoadAGAPalette256:
 	MOVE.W	D4,D0
 	LSL.W	#5,D0
 	LSL.W	#8,D0
-	OR.W	#$0e00,D0				; LOCT=1, BRDRBLNK=1
+	OR.W	#BPLCON3_LOCT1,D0				; LOCT=1, BRDRBLNK=1
 	MOVE.W	D0,$106(A6)
 	LEA		$180(A6),A1
 	MOVEQ	#32-1,D1
@@ -2178,9 +2678,193 @@ LoadAGAPalette256:
 	ADDQ.W	#1,D4
 	DBRA	D5,.bank_loop
 
-	MOVE.W	#$0000,$106(A6)			; ripristina BPLCON3 (banca 0, LOCT=0, no offset)
+	MOVE.W	#BPLCON3_BRDRBLNK,$106(A6)	; ripristina BPLCON3 (banca 0, LOCT=0, bordo NERO)
 	MOVEM.L	(SP)+,D0-D5/A0-A2/A6
 	RTS
+* InitPalette8BPL
+*   8 bitplane: niente EHB, lookup diretto a 8 bit = 256 entry.
+*     bit 0-4 = sfondo (0..31)   bit 5 = dark plane
+*     bit 6-7 = PARALLASSE, valore 0..3 (0 = trasparente, 1/2/3 = 3 tinte)
+*   Priorita' del pixel: sfondo (se != 0) COPRE lo skyline, che COPRE il cielo.
+*   Scrive UNA VOLTA a init i banchi 1..7 (il banco 0 lo carica gia' la
+*   copperlist a ogni frame). Schema:
+*     banco 1 (32..63)   = meta' del banco 0        (sfondo notturno)
+*     banco 2 (64..95)   = [C1, sfondo 1..31]       (parallasse=1, giorno)
+*     banco 3 (96..127)  = meta' del banco 2        (parallasse=1, notte)
+*     banco 4 (128..159) = [C2, sfondo 1..31]       (parallasse=2, giorno)
+*     banco 5 (160..191) = meta' del banco 4        (parallasse=2, notte)
+*     banco 6 (192..223) = [C3, sfondo 1..31]       (parallasse=3, giorno)
+*     banco 7 (224..255) = meta' del banco 6        (parallasse=3, notte)
+*   In ogni banco "giorno" le entry 1..31 = colori di sfondo, quindi lo sfondo
+*   non-zero vince sempre; solo l'entry 0 (cielo visibile) mostra la tinta.
+*   Sorgente dei 32 colori base: i blocchi copper GamePalHi/GamePalLo.
+*   CHIAMARE CON IL COPPER DMA SPENTO (scrive BPLCON3 a piu' riprese).
+*****************************************************************************
+; Le 3 tinte dello skyline (valori 1/2/3 dei 2 bitplane di parallasse).
+; Regolale a gusto: p.es. base scura, cresta, foschia chiara.
+SKYLINE_C1_RGB	EQU	$182838			; parallasse valore 1
+SKYLINE_C2_RGB	EQU	$2a3a52			; parallasse valore 2
+SKYLINE_C3_RGB	EQU	$46608c			; parallasse valore 3
+
+InitPalette8BPL:
+	MOVEM.L	D0-D7/A0-A2/A6,-(SP)
+	LEA		$DFF000,A6
+
+	; ----- ricostruisce i 32 colori base come long $00RRGGBB -----
+	LEA		GamePalHi+2,A0			; +2 salta il numero di registro
+	LEA		GamePalLo+2,A1
+	LEA		GamePal24,A2
+	MOVEQ	#32-1,D7
+.mk24:
+	MOVE.W	(A0),D0					; $0RGB (nibble alti)
+	BSR.W	.spread					; D2 = $000R0G0B
+	MOVE.L	D2,D3
+	LSL.L	#4,D3					; nibble alti al loro posto
+	MOVE.W	(A1),D0					; $0rgb (nibble bassi)
+	BSR.W	.spread
+	OR.L	D2,D3					; D3 = $00RRGGBB
+	MOVE.L	D3,(A2)+
+	ADDQ.L	#4,A0
+	ADDQ.L	#4,A1
+	DBRA	D7,.mk24
+
+	; ----- banco 1 = meta' del banco 0 (sfondo notturno) -----
+	LEA		GamePal24,A0
+	LEA		GamePalBk,A1
+	MOVEQ	#32-1,D7
+.half1:
+	MOVE.L	(A0)+,D0
+	LSR.L	#1,D0
+	AND.L	#$007F7F7F,D0
+	MOVE.L	D0,(A1)+
+	DBRA	D7,.half1
+	LEA		GamePalBk,A0
+	MOVEQ	#1,D4
+	BSR.W	WriteAGABank32
+
+	; ----- banchi 2..7: 3 tinte skyline, ognuna giorno + notte -----
+	MOVE.L	#SKYLINE_C1_RGB,D3
+	MOVEQ	#2,D5					; banco giorno 2 (notte = 3)
+	BSR.W	.pair
+	MOVE.L	#SKYLINE_C2_RGB,D3
+	MOVEQ	#4,D5					; banco 4 (notte = 5)
+	BSR.W	.pair
+	MOVE.L	#SKYLINE_C3_RGB,D3
+	MOVEQ	#6,D5					; banco 6 (notte = 7)
+	BSR.W	.pair
+
+	MOVE.W	#BPLCON3_LOCT0,$106(A6)			; BPLCON3 a riposo (banca 0, LOCT=0, BRDRBLNK)
+	MOVEM.L	(SP)+,D0-D7/A0-A2/A6
+	RTS
+
+.spread:							; D0 = word $0RGB -> D2 = long $000R0G0B
+	MOVEQ	#0,D2
+	MOVE.W	D0,D2
+	AND.W	#$0F00,D2
+	LSL.L	#8,D2					; R -> bit 19-16
+	MOVE.W	D0,D1
+	AND.W	#$00F0,D1
+	LSL.W	#4,D1					; G -> bit 11-8
+	OR.W	D1,D2
+	MOVE.W	D0,D1
+	AND.W	#$000F,D1				; B -> bit 3-0
+	OR.W	D1,D2
+	RTS
+
+.pair:								; IN: D3 = tinta skyline, D5 = banco giorno.
+									; Costruisce [tinta, sfondo 1..31] -> banco D5,
+									; e la sua meta' -> banco D5+1 (notturno).
+									; WriteAGABank32 preserva D4-D7/A3-A6.
+	LEA		GamePal24,A0
+	LEA		GamePalBk,A1
+	MOVE.L	D3,(A1)+				; entry 0 = tinta skyline (cielo visibile)
+	ADDQ.L	#4,A0					; salta lo sfondo colore 0
+	MOVEQ	#31-1,D7
+.pcopy:
+	MOVE.L	(A0)+,(A1)+				; entry 1..31 = colori sfondo (occlusione)
+	DBRA	D7,.pcopy
+	MOVE.L	D5,D4
+	BSR.W	WriteAGABank32			; banco giorno
+
+	LEA		GamePalBk,A0			; dimezza in-place -> banco notturno
+	MOVEQ	#32-1,D7
+.phalf:
+	MOVE.L	(A0),D0
+	LSR.L	#1,D0
+	AND.L	#$007F7F7F,D0
+	MOVE.L	D0,(A0)+
+	DBRA	D7,.phalf
+	LEA		GamePalBk,A0
+	MOVE.L	D5,D4
+	ADDQ.W	#1,D4					; banco notturno = giorno + 1
+	BSR.W	WriteAGABank32
+	RTS
+
+*****************************************************************************
+* WriteAGABank32
+*   Scrive 32 colori AGA nel banco D4 (0..7). A0 = 32 long $00RRGGBB.
+*   Stessa meccanica hi/lo di LoadAGAPalette256, parametrizzata sul banco.
+*   DISTRUGGE: D0-D3/A0-A2 (preserva D4). Richiede A6 = $DFF000.
+*****************************************************************************
+WriteAGABank32:
+	MOVE.L	A0,A2					; salva inizio blocco per il low pass
+
+	; ----- HIGH NIBBLES PASS (LOCT=0) -----
+	MOVE.W	D4,D0
+	LSL.W	#5,D0
+	LSL.W	#8,D0					; D0 = bank << 13
+	OR.W	#BPLCON3_LOCT0,D0				; LOCT=0, BRDRBLNK=1
+	MOVE.W	D0,$106(A6)				; BPLCON3
+	LEA		$180(A6),A1				; COLOR00
+	MOVEQ	#32-1,D1
+.hi_loop:
+	MOVE.L	(A0)+,D2				; D2 = $00RRGGBB
+	MOVE.L	D2,D3
+	LSR.L	#4,D3
+	AND.W	#$000F,D3				; B high
+	MOVE.L	D2,D0
+	LSR.L	#8,D0
+	AND.W	#$00F0,D0				; G high << 4
+	OR.W	D0,D3
+	MOVE.L	D2,D0
+	LSR.L	#8,D0
+	LSR.L	#4,D0					; shift totale 12 (immediato max 8)
+	AND.W	#$0F00,D0				; R high << 8
+	OR.W	D0,D3
+	MOVE.W	D3,(A1)+				; COLORn
+	DBRA	D1,.hi_loop
+
+	; ----- LOW NIBBLES PASS (LOCT=1) -----
+	MOVE.L	A2,A0					; rewind A0 a inizio blocco
+	MOVE.W	D4,D0
+	LSL.W	#5,D0
+	LSL.W	#8,D0
+	OR.W	#BPLCON3_LOCT1,D0				; LOCT=1, BRDRBLNK=1
+	MOVE.W	D0,$106(A6)
+	LEA		$180(A6),A1
+	MOVEQ	#32-1,D1
+.lo_loop:
+	MOVE.L	(A0)+,D2
+	MOVE.W	D2,D3
+	AND.W	#$000F,D3				; B low
+	MOVE.W	D2,D0
+	LSR.W	#4,D0
+	AND.W	#$00F0,D0				; G low << 4
+	OR.W	D0,D3
+	MOVE.L	D2,D0
+	LSR.L	#8,D0
+	AND.W	#$0F00,D0				; R low << 8
+	OR.W	D0,D3
+	MOVE.W	D3,(A1)+
+	DBRA	D1,.lo_loop
+	RTS
+
+	EVEN
+GamePal24:
+	ds.l	32						; 32 colori base ricostruiti a init
+GamePalBk:
+	ds.l	32						; scratch per costruire ogni banco
+
 
 *****************************************************************************
 * ShowTitle
@@ -2197,7 +2881,7 @@ ShowTitle:
 	MOVE.W	#$0211,$100(A6)			; BPLCON0: BPU3=1 (=8 BPL) + COLOR + ECSENA (no UHRES)
 	MOVE.W	#$0000,$102(A6)			; BPLCON1
 	MOVE.W	#$0024,$104(A6)			; BPLCON2: PF2P=4, PF1P=4 (come gioco)
-	MOVE.W	#$0000,$106(A6)			; BPLCON3: banca 0, LOCT=0, no offset
+	MOVE.W	#BPLCON3_BRDRBLNK,$106(A6)	; BPLCON3: banca 0, LOCT=0, bordo NERO
 	MOVE.W	#$0000,$10c(A6)			; BPLCON4
 	MOVE.W	#$0000,$108(A6)			; BPL1MOD (sequential layout)
 	MOVE.W	#$0000,$10a(A6)			; BPL2MOD
@@ -2236,7 +2920,7 @@ ShowTitle:
 	BSR.W	LoadAGAPalette256
 
 	; --- Ordine identico al setup del gioco: DMA on, COP1LC, strobe ---
-	MOVE.W	#$8380,$96(A6)				; SET + DMAEN + BPLEN + COPEN
+ 	MOVE.W	#$8380,$96(A6)				; SET + DMAEN + BPLEN + COPEN
 	MOVE.L	#TitleCopperList,$80(A6)	; COP1LCH
 	MOVE.W	D0,$88(A6)					; COPJMP1 strobe
 
@@ -2253,7 +2937,7 @@ WaitTitleInput:
 	MOVEM.L	D0,-(SP)
 .wait_press:
 	BSR.W	AspettaVBL
-	BSR.W	ReadKeyboard				; aggiorna key_space
+	BSR.W	LeggiTastiera				; aggiorna key_space
 	TST.B	key_space
 	BNE.S	.pressed
 	MOVE.B	$bfe001,D0					; CIA-A PRA: bit 7 = fire joy1 (active low)
@@ -2263,7 +2947,7 @@ WaitTitleInput:
 .pressed:
 .wait_release:
 	BSR.W	AspettaVBL
-	BSR.W	ReadKeyboard
+	BSR.W	LeggiTastiera
 	TST.B	key_space
 	BNE.S	.wait_release
 	MOVE.B	$bfe001,D0
@@ -2745,30 +3429,31 @@ AnimaFalo:
 
 .found_falo:
 	; D3 = col buffer, D7 = row buffer
-	; Il rendering visualizza le tile sfasate di 1 tile: la tile buffer (D3,D7)
-	; appare a screen ((D3-1)*16 - PixelOffX, (D7-1)*16 - PixelOffY).
-	; Per uno sprite 16x16 sovrapposto alla tile:
-	;   topleft_x = (D3-1)*16 - PixelOffX = D3*16 - 16 - PixelOffX
-	;   topleft_y = (D7-1)*16 - PixelOffY = D7*16 - 16 - PixelOffY
+	; Gli sprite hardware sono posizionati in coordinate SCHERMO, mentre le tile
+	; sono disegnate a partire da BG_ORIGIN dentro il buffer. La differenza fra
+	; le due va tolta qui: BG_ORIGIN_X e' in byte (x8 per avere i pixel),
+	; BG_ORIGIN_Y e' gia' in righe. Con l'origine a zero questi due termini
+	; spariscono da soli. Prima erano due -16 cablati, giustificati da un
+	; commento che parlava di "sfasamento di 1 tile": era proprio BG_ORIGIN.
 	MOVE.W	D3,D0
 	LSL.W	#4,D0					; D0 = D3*16
-	SUBI.W	#16,D0					; -16 (fix sfasamento rendering)
+	SUBI.W	#BG_ORIGIN_X*8,D0		; compensa l'origine del mondo (px)
 	SUB.W	PixelOffX,D0			; D0 = topleft_x
 
 	MOVE.W	D7,D1
 	LSL.W	#4,D1
-	SUBI.W	#16,D1
+	SUBI.W	#BG_ORIGIN_Y,D1
 	SUB.W	PixelOffY,D1			; D1 = topleft_y
 
 	; ----- Costruisco SPRPOS/SPRCTL -----
 	; VSTART_reg = $2C + screen_y
 	; VSTOP_reg  = VSTART_reg + 16
 	; HSTART_reg = $81 + screen_x  (pixel lores 1-to-1)
-	ADDI.W	#$2C,D1					; D1 = VSTART
+	ADDI.W	#DIW_V_START,D1			; D1 = VSTART (agganciato alla finestra)
 	MOVE.W	D1,D2
 	ADDI.W	#16,D2					; D2 = VSTOP
 
-	ADDI.W	#$81,D0					; D0 = HSTART
+	ADDI.W	#DIW_H_START,D0			; D0 = HSTART (agganciato alla finestra)
 
 	; ----- Costruisco SPRPOS/SPRCTL -----
 	; SPRPOS: bit 15-8 = SV7-SV0 (= VSTART[7:0])
@@ -2849,6 +3534,12 @@ AnimaFalo:
 AggiornaProiettile:
 	MOVEM.L	D0-D5/A0-A2,-(SP)
 
+	IFNE	BULLET_DEBUG
+	MOVE.W	#160,D0					; prova: screen_x fisso
+	MOVE.W	#80,D1					; prova: screen_y fisso
+	BRA.W	.in_screen
+	ENDC
+
 	; ----- Se proiettile inattivo: SPR1PT -> EmptySprite, esci -----
 	TST.W	Bullet_Active
 	BNE.S	.is_active
@@ -2893,18 +3584,18 @@ AggiornaProiettile:
 
 .in_screen:
 	; ----- Top-left sprite: applichiamo il fix -16/-16 per rendering sfasato -----
-	SUBI.W	#16,D0					; D0 = topleft_x
-	SUBI.W	#16,D1					; D1 = topleft_y
+	SUBI.W	#BG_ORIGIN_X*8,D0		; D0 = topleft_x (compensa l'origine)
+	SUBI.W	#BG_ORIGIN_Y,D1			; D1 = topleft_y
 
 	; ----- Costruisci SPRPOS/SPRCTL (stessa logica di AnimaFalo) -----
 	; VSTART_reg = $2C + screen_y
 	; VSTOP_reg  = VSTART_reg + 16
 	; HSTART_reg = $81 + screen_x (NO divisione - bit mapping in SPRPOS gestisce)
-	ADDI.W	#$2C,D1					; D1 = VSTART
+	ADDI.W	#DIW_V_START,D1			; D1 = VSTART (agganciato alla finestra)
 	MOVE.W	D1,D2
 	ADDI.W	#16,D2					; D2 = VSTOP
 
-	ADDI.W	#$81,D0					; D0 = HSTART (9 bit possibili)
+	ADDI.W	#DIW_H_START,D0			; D0 = HSTART (agganciato alla finestra)
 
 	; SPRPOS: bit 15-8 = SV7-SV0 (VSTART[7:0]), bit 7-0 = SH8-SH1 (HSTART[8:1])
 	MOVE.W	D1,D3
@@ -2949,140 +3640,6 @@ AggiornaProiettile:
 	RTS
 
 *****************************************************************************
-* UpdateDarkPlane
-*   Aggiorna il dark plane (DARKPLANE_*) ad ogni frame, in 2 step:
-*
-*   STEP 1: Fill del DARKPLANE_corrente (= CurrentDarkDraw)
-*     - NightMode=0 (giorno): tutto $00 -> nessun pixel half-bright
-*     - NightMode=1 (notte): tutto $FF -> tutto half-bright (scuro)
-*
-*   STEP 2: Disegna sorgenti luminose (solo se notte)
-*     Scansiona le 22x18 tile del buffer visibile. Per ogni tile=TILE_LUCE
-*     disegna un cerchio di "luce" (= pixel a 0 sul dark plane) centrato sulla
-*     tile, raggio = RAGGIO_LUCE.
-*
-*   Il cerchio è disegnato con una tabella di "mezza-larghezza per riga"
-*   (LightHalfWidthTable) per evitare sqrt a runtime.
-*****************************************************************************
-UpdateDarkPlane:
-	MOVEM.L	D0-D7/A0-A4,-(SP)
-
-	; ----- STEP 1: Fill del DARKPLANE_corrente via BLITTER -----
-	; Blit "destination-only": il minterm LF non dipende da A/B/C.
-	;   notte  -> LF=$FF -> D=$FFFF (tutto half-bright = scuro)
-	;   giorno -> LF=$00 -> D=$0000 (nessun pixel half-bright)
-	; Niente canali sorgente, niente BLTADAT: bulletproof. Libera ~2.5ms di CPU.
-	BSR.W	AspettaBlitter
-
-	MOVE.W	#$0100,D1				; BLTCON0 base: USED on, LF=$00 (D=0) -> giorno
-	TST.B	NightMode
-	BEQ.S	.fillcon_ok
-	MOVE.W	#$01FF,D1				; notte: LF=$FF -> D=$FFFF
-.fillcon_ok:
-	MOVE.W	D1,$40(A6)				; BLTCON0
-	MOVE.W	#0,$42(A6)				; BLTCON1 = 0 (no shift, no fill mode)
-	MOVE.W	#BPSF_PITCH-40,$66(A6)	; BLTDMOD = 48-40 (dest BPSFONDO pitch 48, copia 20 word)
-	MOVE.L	CurrentDarkDraw,$54(A6)	; BLTDPT
-	MOVE.W	#(DARK_ROWS<<6)|20,$58(A6)	; BLTSIZE -> avvia (DARK_ROWS righe * 20 word)
-
-	; Il cerchio luce (CPU) modifichera' il dark plane appena riempito:
-	; deve attendere la fine del fill blit prima di scriverci.
-	BSR.W	AspettaBlitter
-
-	; ----- STEP 2: Lampioni (solo se notte) -----
-	TST.B	NightMode
-	BEQ.W	.done					; giorno: niente lampioni da disegnare
-
-	IFNE	DBG_FIXLIGHT
-	; --- DIAGNOSTICA: cerchio in posizione FISSA, indipendente dalla camera ---
-	; cx=160 (centro X), cy=216 (basso, cosi' il cerchio esce in basso come nel bug)
-	MOVE.W	#160,D0
-	MOVE.W	#216,D1
-	BSR.W	DisegnaCerchioLuceBlitter
-	BRA.W	.done
-	ENDC
-
-	; Scansione viewport: BUFFER_COLS x BUFFER_ROWS tile
-	; map_col_start = TileX, map_row_start = TileY
-	; Per ogni tile (row, col): se MAPPA[map_row][map_col] == TILE_LUCE,
-	;   center_screen_x = col*16 + 8 - PixelOffX
-	;   center_screen_y = row*16 + 8 - PixelOffY
-	;   disegna cerchio
-
-	MOVE.W	TileY,D6				; D6 = row corrente nella mappa
-	MOVEQ	#0,D7					; D7 = row buffer corrente (0..BUFFER_ROWS-1)
-.row_loop:
-	; Calcola center_screen_y = D7*16 - 8 - PixelOffY
-	; (coerente col centro reale passato a DisegnaCerchioLuce piu' sotto)
-	MOVE.W	D7,D5
-	LSL.W	#4,D5					; D5 = D7*16
-	SUBQ.W	#8,D5					; -8 (centro tile, con sfasamento rendering)
-	SUB.W	PixelOffY,D5			; D5 = center_screen_y
-	; Cull: se y fuori da [-RAGGIO_LUCE, 256+RAGGIO_LUCE], skip
-	CMP.W	#-RAGGIO_LUCE,D5
-	BLT.W	.next_row
-	CMP.W	#256+RAGGIO_LUCE,D5
-	BGE.W	.next_row
-
-	; Loop colonne
-	MOVE.W	TileX,D4				; D4 = col corrente nella mappa
-	MOVEQ	#0,D3					; D3 = col buffer (0..BUFFER_COLS-1)
-.col_loop:
-	; Bounds check su MAPPA
-	CMP.W	#MAPPA_COLS,D4
-	BGE.S	.next_col
-	CMP.W	#MAPPA_ROWS,D6
-	BGE.W	.next_row_full
-
-	; Leggi MAPPA[D6][D4]
-	; offset = (D6 * MAPPA_COLS + D4) * 2
-	MOVE.W	D6,D2
-	MULU.W	#MAPPA_COLS,D2
-	ADD.W	D4,D2
-	ADD.W	D2,D2					; * 2 (word)
-	LEA		MAPPA,A0
-	MOVE.W	(A0,D2.W),D2			; D2 = numero tile
-	CMP.W	#TILE_LUCE,D2
-	BNE.S	.next_col
-
-	; LUCE TROVATA!
-	; center_screen_x = D3*16 + 16 - PixelOffX  (+8 offset + 8 centro)
-	MOVE.W	D3,D0
-	LSL.W	#4,D0
-	SUB.W	#8,D0
-	SUB.W	PixelOffX,D0			; D0 = center_screen_x
-	; center_screen_y = D7*16 + 32 - PixelOffY  (+24 offset + 8 centro)
-	MOVE.W	D7,D1
-	LSL.W	#4,D1
-	SUB.W	#8,D1
-	SUB.W	PixelOffY,D1			; D1 = center_screen_y
-	BSR.W	DisegnaCerchioLuceBlitter	; INPUT: D0=cx, D1=cy
-
-.next_col:
-	ADDQ.W	#1,D3					; col buffer +1
-	ADDQ.W	#1,D4					; col mappa +1
-	CMP.W	#BUFFER_COLS,D3
-	BLT.W	.col_loop
-
-.next_row:
-	ADDQ.W	#1,D7					; row buffer +1
-	ADDQ.W	#1,D6					; row mappa +1
-	CMP.W	#BUFFER_ROWS,D7
-	BLT.W	.row_loop
-	BRA.S	.done
-
-.next_row_full:
-	; Saltiamo direttamente alla prossima riga (= fine col_loop forzata)
-	ADDQ.W	#1,D7
-	ADDQ.W	#1,D6
-	CMP.W	#BUFFER_ROWS,D7
-	BLT.W	.row_loop
-
-.done:
-	MOVEM.L	(SP)+,D0-D7/A0-A4
-	RTS
-
-*****************************************************************************
 * DisegnaCerchioLuce
 *   Disegna un cerchio di "luce" (= bit a 0) sul dark plane corrente.
 *   INPUT:
@@ -3112,7 +3669,7 @@ DisegnaCerchioLuce:
 	ADD.W	D7,D3					; D3 = y_riga
 	; Cull verticale (le ultime CUT_BOTTOM_ROWS righe restano "scure", fuori dal display utile)
 	BMI.W	.skip_row
-	CMP.W	#(256-CUT_BOTTOM_ROWS),D3
+	CMP.W	#BG_VIS_ROWS,D3
 	BGE.W	.skip_row
 
 	; half = LightHalfWidthTable[|dy|]
@@ -3319,8 +3876,9 @@ DisegnaCerchioLuceBlitter:
 	; fallback CPU se il cerchio tocca i bordi sx/dx
 	TST.W	D3
 	BMI.W	.cpu_fallback			; word_x < 0
-	CMP.W	#11,D3
-	BGT.W	.cpu_fallback			; word_x > 11 -> 9 word non entrano in 20
+	CMP.W	#DARK_MAX_WORDX,D3
+	BGT.W	.cpu_fallback			; le 9 word della maschera non entrano
+								; nel buffer: passa al fallback CPU
 
 	; ----- clipping verticale -----
 	MOVE.W	D1,D5
@@ -3334,9 +3892,9 @@ DisegnaCerchioLuceBlitter:
 .vt_ok:
 	MOVE.W	D1,D7
 	ADD.W	#RAGGIO_LUCE,D7			; D7 = cy + 64 = bottom (esclusivo)
-	CMP.W	#256,D7
+	CMP.W	#DARK_MAX_ROWS,D7
 	BLE.S	.vb_ok
-	MOVE.W	#256,D7					; clamp altezza display
+	MOVE.W	#DARK_MAX_ROWS,D7		; altezza del buffer darkplane
 .vb_ok:
 	MOVE.W	D7,D4
 	SUB.W	D5,D4					; D4 = height = vbot - vtop
@@ -3351,7 +3909,7 @@ DisegnaCerchioLuceBlitter:
 	; A1 = CurrentDarkDraw + vtop*48 + word_x*2
 	MOVE.L	CurrentDarkDraw,A1
 	MOVE.W	D5,D6
-	MULU.W	#BPSF_PITCH,D6
+	MULU.W	#AUX_PITCH,D6
 	ADDA.W	D6,A1
 	MOVE.W	D3,D6
 	ADD.W	D6,D6					; word_x*2
@@ -3370,8 +3928,8 @@ DisegnaCerchioLuceBlitter:
 	MOVE.W	#0,$42(A6)				; BLTCON1 = 0
 	MOVE.L	#$FFFFFFFF,$44(A6)		; BLTAFWM/BLTALWM = $FFFF
 	MOVE.W	#0,$64(A6)				; BLTAMOD = 0 (maschera 9 word, blit 9 word)
-	MOVE.W	#BPSF_PITCH-LIGHT_MASK_W*2,$60(A6)	; BLTCMOD = 48-18 = 30
-	MOVE.W	#BPSF_PITCH-LIGHT_MASK_W*2,$66(A6)	; BLTDMOD = 48-18 = 30
+	MOVE.W	#AUX_PITCH-LIGHT_MASK_W*2,$60(A6)	; BLTCMOD
+	MOVE.W	#AUX_PITCH-LIGHT_MASK_W*2,$66(A6)	; BLTDMOD
 
 	MOVE.W	D4,D6					; height
 	LSL.W	#6,D6
@@ -3388,199 +3946,6 @@ DisegnaCerchioLuceBlitter:
 .exit:
 	MOVEM.L	(SP)+,D0-D7/A0-A1
 	RTS
-
-*****************************************************************************
-* DisegnaHealthBars
-*   Disegna una barra di vita rossa (16 pixel × 2 righe) sopra ogni BOB attivo
-*   (player + nemici). La lunghezza della barra è proporzionale a PF/PFmax.
-*   Posizione: 3 pixel sopra il BOB (riga bob_Y - 3 e bob_Y - 2).
-*   Colore: 14 (rosso/rosa nella palette = bit 1+2+3 = $0E).
-*   Disegnata DOPO i BOB (= sopra di essi, ultima cosa renderizzata).
-*
-*   Per ogni BOB attivo:
-*   1. Calcola N = (bob_PF * 16) / bob_PFmax  (= pixel da accendere)
-*   2. Crea bitmask N pixel a sinistra: $FFFF << (16-N)
-*   3. Per ogni plane:
-*      - Se plane fa parte del colore: scrivi mask
-*      - Altrimenti: scrivi 0
-*   4. Scrivi su 2 righe (bob_Y-3, bob_Y-2)
-*
-*   Posizione su backbuffer:
-*     offset_riga = (bob_Y - 3) * 40
-*     offset_col_byte = (bob_X / 16) * 2     [word allineato]
-*     pero' se bob_X non e' allineato a 16, dobbiamo scrivere su 2 word
-*     (per ora SEMPLIFICAZIONE: blittiamo solo a posizione word allineata,
-*      la barra "salta a scatti di 16 pixel" durante lo scroll fine)
-*****************************************************************************
-DisegnaBarraVita:
-	MOVEM.L	D0-D7/A0-A2,-(SP)
-
-	; Aspetta che il blitter finisca i BOB prima di scrivere col CPU
-	BSR.W	AspettaBlitter
-
-	; Disegna prima la barra del player
-	LEA		Player,A0
-	BSR.S	.draw_one
-	; Poi le barre dei nemici
-	LEA		Enemies,A0
-	MOVEQ	#ENEMY_COUNT-1,D7
-.loop:
-	BSR.S	.draw_one
-	LEA		bob_Length(A0),A0
-	DBRA	D7,.loop
-
-	MOVEM.L	(SP)+,D0-D7/A0-A2
-	RTS
-
-; ----------------- subroutine: disegna barra per UN BOB -----------------
-; INPUT: A0 = BOB
-; PRESERVA TUTTI i registri usati (D1-D7, A0, A1) per non corrompere lo stato
-; del chiamante che usa D7 come counter del loop.
-.draw_one:
-	MOVEM.L	D0-D7/A0-A1,-(SP)
-	; Skip se non attivo
-	TST.W	bob_Active(A0)
-	BEQ.W	.skip
-
-	; Skip se PFmax = 0 (sicurezza)
-	MOVE.W	bob_PFmax(A0),D2
-	BEQ.W	.skip
-
-	; Calcola N = (PF * 16) / PFmax
-	MOVE.W	bob_PF(A0),D1
-	BEQ.W	.skip						; PF=0, niente barra
-	LSL.W	#4,D1						; PF * 16
-	DIVU.W	D2,D1						; / PFmax
-	; D1.w = N (0..16)
-	CMP.W	#16,D1
-	BLE.S	.n_ok
-	MOVE.W	#16,D1
-.n_ok:
-
-	; Costruisci bitmask con N bit alti a 1: $FFFF << (16-N)
-	MOVE.W	#16,D2
-	SUB.W	D1,D2						; D2 = 16-N
-	MOVE.W	#$FFFF,D1
-	; Shifta a sinistra di 0..16
-	CMP.W	#16,D2
-	BLT.S	.shift_ok
-	MOVE.W	#0,D1						; tutti 0 se N=0
-	BRA.S	.mask_done
-.shift_ok:
-	LSL.W	D2,D1
-.mask_done:
-	; D1.w = bitmask della barra (1 = pixel acceso del colore rosso)
-
-	; Verifica che bob_X sia in viewport [0, 288]
-	; (288 perché blittiamo 2 word a partire da bob_X allineato a word; per
-	;  bob_X > 288 la second word esce dal display e wrappa nella riga successiva)
-	MOVE.W	bob_X(A0),D2
-	BMI.W	.skip						; bob_X < 0 -> skip
-	CMP.W	#289,D2
-	BGE.W	.skip						; bob_X >= 289 -> skip
-	MOVE.W	bob_Y(A0),D3
-	; Verifica bob_Y in range "visibile" [-15, 240]
-	; bob_Y < -15: BOB completamente fuori in alto -> skip
-	; bob_Y > 240: BOB esce in basso -> per ora skip anche se parziale
-	CMP.W	#-15,D3
-	BLT.W	.skip
-	CMP.W	#241,D3
-	BGE.W	.skip
-
-	; Decide se disegnare la barra SOPRA o SOTTO il BOB
-	; Sopra (preferito): bob_Y - 3.  Sotto (fallback): bob_Y + 16.
-	; Se bob_Y < 3, mettiamo la barra SOTTO
-	CMP.W	#HEALTHBAR_YOFFSET,D3
-	BLT.S	.bar_below
-	; bar_above
-	SUB.W	#HEALTHBAR_YOFFSET,D3		; D3 = bob_Y - 3
-	BRA.S	.y_ok
-.bar_below:
-	; bob_Y < 3 -> mettiamo la barra a bob_Y + 16 (sotto il BOB)
-	ADDI.W	#16,D3
-	; Verifica che D3+1 stia nello schermo (D3 <= 254)
-	CMP.W	#255,D3
-	BGE.W	.skip
-.y_ok:
-	; D3 = riga di partenza barra (0..254). Deve essere positivo a questo punto.
-	TST.W	D3
-	BMI.W	.skip						; safety check
-
-	; ----- Calcolo bitmask 32-bit shiftata -----
-	; D1.w = bitmask 16-bit (N bit alti a 1). Vogliamo posizionarla a pixel bob_X.
-	; Strategia: estendi a 32 bit (bitmask << 16), poi shifta a destra di (bob_X mod 16).
-	; Risultato: D1.long = pattern 32-bit dove i bit della barra sono a posizione (bob_X mod 16).
-	;
-	; IMPORTANTE: la word ALTA di D1 puo' contenere garbage (resto di DIVU.W sopra).
-	; Devo PULIRLA prima dello SWAP, altrimenti si presenta come "barra fantasma".
-	ANDI.L	#$0000FFFF,D1				; pulisco la word alta (era il resto di DIVU)
-	; D2 = bob_X (gia' caricato sopra)
-	; shift = bob_X & 15
-	MOVE.W	D2,D4						; D4 = bob_X
-	ANDI.W	#15,D4						; D4 = shift (0..15)
-	SWAP	D1							; D1.high = bitmask, D1.low = 0
-	; LSR.L con count immediato 0..8. Se shift > 8 dividiamo in 2 passi.
-	CMP.W	#8,D4
-	BLT.S	.shift_once
-	LSR.L	#8,D1
-	SUB.W	#8,D4
-.shift_once:
-	; Adesso shift e' 0..7, posso usarlo come immediato? No, LSR.L con count variabile
-	; serve un registro come count.
-	; Trick: uso un loop di shift singoli, oppure shift con register
-	TST.W	D4
-	BEQ.S	.shift_done
-.shift_more:
-	LSR.L	#1,D1
-	SUBQ.W	#1,D4
-	BNE.S	.shift_more
-.shift_done:
-	; D1.long = bitmask shiftata. Bit alti = word di sinistra (a posizione word_x).
-	; Bit bassi = word di destra (word_x + 1).
-
-	; ----- Calcolo offset destinazione (allineato a word) -----
-	; byte_offset = (bob_X / 16) * 2 + D3 * 40
-	MOVE.W	D2,D4
-	LSR.W	#4,D4						; D4 = bob_X / 16
-    LSL.W	#1,D4						; D4 = byte offset di word
-	MOVE.W	D3,D5
-	MULU.W	#BPSF_PITCH,D5						; D5.l = D3*48 (dest pitch)
-	ADD.L	D4,D5						; D5.l = offset totale plane 0 riga D3
-
-	; A1 = base del backbuffer (CurrentDraw)
-	MOVE.L	CurrentDraw,A1
-	ADD.L	D5,A1						; A1 = posizione barra sul plane 0
-
-	; ----- Loop sui 5 plane -----
-	; Per ogni plane:
-	;   se HEALTHBAR_COLOR ha bit acceso -> pixel |= bitmask (OR per accendere)
-	;   se HEALTHBAR_COLOR ha bit spento -> pixel &= ~bitmask (AND per spegnere)
-		; Cosi' i pixel della barra piena vengono colorati, ma i pixel "vuoti"
-	; (dove bitmask = 0) restano invariati = mostrano lo sfondo sotto = trasparenza.
-	; Per ogni plane scriviamo 2 righe (riga D3, riga D3+1)
-	MOVE.W	#HEALTHBAR_COLOR,D6
-	MOVE.L	D1,D2						; D2 = bitmask (uso per OR)
-	NOT.L	D1							; D1 = ~bitmask (uso per AND)
-	MOVEQ	#5-1,D5
-.plane_loop:
-	BTST	#0,D6
-	BEQ.S	.plane_off
-	; Plane acceso: OR con bitmask (accende i pixel della barra)
-	OR.L	D2,(A1)						; riga D3
-	OR.L	D2,BPSF_PITCH(A1)			; riga D3+1 (dest pitch 48)
-	BRA.S	.plane_next
-.plane_off:
-	; Plane spento: AND con NOT bitmask (spegne i pixel della barra)
-	AND.L	D1,(A1)						; riga D3
-	AND.L	D1,BPSF_PITCH(A1)			; riga D3+1 (dest pitch 48)
-.plane_next:
-	; Prossimo plane
-	ADDA.L	#BG_PLANE_STRIDE,A1
-	LSR.W	#1,D6
-	DBRA	D5,.plane_loop
-.skip:
-	MOVEM.L	(SP)+,D0-D7/A0-A1
-	RTS
 *****************************************************************************
 * AI_Patrol
 *   Ronda generica a 8 direzioni: usa DirectionDeltas per calcolare il
@@ -3595,7 +3960,7 @@ AI_Patrol:
 
 	; Indice nella tabella: bob_Direzione * 4 (4 byte per riga: 2 word)
 	MOVE.W	bob_Direzione(A0),D2
-	AND.W	#7,D2					; sicurezza: clamp 0..7
+	AND.W	#7,D2					; sicurezza:  0..7
 	LSL.W	#2,D2					; *4
 	LEA		DirectionDeltas,A1
 	; Carico dx, dy (segnati) e moltiplico per Speed
@@ -3644,9 +4009,9 @@ AI_Hunt:
 	MOVE.L	A0,A2
 
 	; D3 = dx (player - nemico), D4 = dy
-	MOVE.W	PlayerWorldX,D3
+	MOVE.W	Player+bob_WorldX,D3
 	SUB.W	bob_WorldX(A0),D3
-	MOVE.W	PlayerWorldY,D4
+	MOVE.W	Player+bob_WorldY,D4
 	SUB.W	bob_WorldY(A0),D4
 
 	; |dx| in D5, |dy| in D6 ... usiamo solo D5 e ricalcolo |dy| dopo
@@ -3741,17 +4106,17 @@ AI_Hunt:
 	RTS
 
 *****************************************************************************
-* UpdatePlayerPhysics
+* AggiornaFisicaPlayer
 *   Genera IntentY dalla fisica del platform, al posto dell'input verticale.
 *   - Gravita': PlayerVelY += GRAVITY ogni frame, con cap a MAX_FALL.
 *   - Salto: solo sul FRONTE di salita di UpNow (tasto appena premuto) E se il
 *     player e' a terra -> PlayerVelY = JUMP_VEL (negativa = su), grounded = 0.
 *     Cosi' si salta una volta per pressione e solo da terra.
 *   - IntentY = PlayerVelY (spostamento verticale di questo frame).
-*   PlayerGrounded viene aggiornato da UpdatePlayerWorldPos in base alle
+*   PlayerGrounded viene aggiornato da AggPosizioneGlobalePlayer in base alle
 *   collisioni verticali (giu' bloccato = a terra; su bloccato = testata).
 *****************************************************************************
-UpdatePlayerPhysics:
+AggiornaFisicaPlayer:
 	MOVE.W	D0,-(SP)
 	TST.W	GravityOn
 	BEQ.S	.skipGrav			; gravita' OFF (8 direzioni): IntentY viene gia' dall'input (lockstep)
@@ -3760,7 +4125,7 @@ UpdatePlayerPhysics:
 	ADD.W	#GRAVITY,D0
 	CMP.W	#MAX_FALL,D0
 	BLE.S	.noCap
-	MOVE.W	#MAX_FALL,D0			; clamp alla velocita' terminale
+	MOVE.W	#MAX_FALL,D0			; set alla velocita' terminale
 .noCap:
 	MOVE.W	D0,PlayerVelY
 	; --- Salto: fronte di salita di UpNow + player a terra ---
@@ -3779,25 +4144,25 @@ UpdatePlayerPhysics:
 	MOVE.W	(SP)+,D0
 	RTS
 *****************************************************************************
-* UpdatePlayerWorldPos (Fase 2 + Fase 4)
-*   Aggiorna PlayerWorldX/Y in base a ScrllX/Y (intent dell'utente).
-*   Clampa il risultato in modo che il BOB (16x16, blittato come 2 word)
+* AggPosizioneGlobalePlayer (Fase 2 + Fase 4)
+*   Aggiorna bob_WorldX/Y in base a ScrllX/Y (intent dell'utente).
+*   setta il risultato in modo che il BOB (16x16, blittato come 2 word)
 *   non esca mai dal bitplane visibile.
 *
 *   Limiti calcolati per evitare wrap-around del blit:
 *     bob_X max = (viewport_width - BOB_width) = 320 - 16 = 304
 *     bob_Y max = (viewport_height - BOB_height) = 256 - 16 = 240
 *
-*   PlayerWorldX max = bob_X_max + CameraX_max = 304 + (TILEXMAX*16) = 304 + 32 = 336
-*   PlayerWorldY max = bob_Y_max + CameraY_max = 240 + (TILEYMAX*16) = 240 + 64 = 304
+*   bob_WorldX max = bob_X_max + CameraX_max = 304 + (TILEXMAX*16) = 304 + 32 = 336
+*   bob_WorldY max = bob_Y_max + CameraY_max = 240 + (TILEYMAX*16) = 240 + 64 = 304
 *****************************************************************************
 *****************************************************************************
-* UpdatePlayerWorldPos (Fase 2 + Fase 4 + Collisioni)
-*   Aggiorna PlayerWorldX/Y in base a IntentX/IntentY, applicando:
+* AggPosizioneGlobalePlayer (Fase 2 + Fase 4 + Collisioni)
+*   Aggiorna bob_WorldX/Y in base a IntentX/IntentY, applicando:
 *   1) Collision detection contro le tile bloccate (sliding X poi Y)
-*   2) Clamp ai bordi della mappa
+*   2) Fissa ai bordi della mappa
 *****************************************************************************
-UpdatePlayerWorldPos:
+AggPosizioneGlobalePlayer:
 	MOVEM.L	D0-D2/A2,-(SP)
 
 	;-------------------------------------------------------------
@@ -3805,28 +4170,28 @@ UpdatePlayerWorldPos:
 	;-------------------------------------------------------------
 	MOVE.W	IntentX,D0
 	BEQ.S	.skipX					; se intent=0, salta
-	ADD.W	PlayerWorldX,D0			; D0 = nuova X candidata
-	; Clamp ai bordi mappa
-	BPL.S	.x_clampHi
+	ADD.W	Player+bob_WorldX,D0			; D0 = nuova X candidata
+	; Fissa ai bordi mappa
+	BPL.S	.x_setHi
 	MOVEQ	#0,D0					; X<0 -> 0
 	BRA.S	.x_check
-.x_clampHi:
+.x_setHi:
 	CMP.W	#PLAYER_MAX_X,D0
 	BLE.S	.x_check
 	MOVE.W	#PLAYER_MAX_X,D0		; X>max -> max
 .x_check:
 	; D0 = nuova X candidata, controllo collisioni
-	MOVE.W	PlayerWorldY,D1			; Y attuale (non ancora cambiato)
+	MOVE.W	Player+bob_WorldY,D1			; Y attuale (non ancora cambiato)
 	BSR.W	IsBoxBlocked
 	BNE.S	.x_blocked				; collide con tile, rifiuta movimento X
 	; Controllo collision con i nemici (player NON puo' entrare in un nemico)
 	MOVE.L	#0,A2					; A2=0 -> non escludere nessun BOB
 	BSR.W	IsOverlapEnemies
 	BNE.S	.x_blocked				; overlap con nemico -> rifiuta	
-	; Movimento X accettato. Aggiorna anche se =0 per via del clamp (es. era a max)
-	CMP.W	PlayerWorldX,D0
-	BEQ.S	.x_blocked				; non si e' mosso (clamp) -> azzera ScrllX
-	MOVE.W	D0,PlayerWorldX
+	; Movimento X accettato. 
+	CMP.W	Player+bob_WorldX,D0
+	BEQ.S	.x_blocked				; non si e' mosso (set) -> azzera ScrllX
+	MOVE.W	D0,Player+bob_WorldX
 	BRA.S	.skipX
 .x_blocked:
 	CLR.W	ScrllX					; sincronizza camera: niente scroll su X
@@ -3838,27 +4203,27 @@ UpdatePlayerWorldPos:
 	;-------------------------------------------------------------
 	MOVE.W	IntentY,D1
 	BEQ.S	.skipY
-	ADD.W	PlayerWorldY,D1			; D1 = nuova Y candidata
-	; Clamp ai bordi mappa
-	BPL.S	.y_clampHi
+	ADD.W	Player+bob_WorldY,D1			; D1 = nuova Y candidata
+	; Fissa ai bordi mappa
+	BPL.S	.y_setHi
 	MOVEQ	#0,D1
 	BRA.S	.y_check
-.y_clampHi:
+.y_setHi:
 	CMP.W	#PLAYER_MAX_Y,D1
 	BLE.S	.y_check
 	MOVE.W	#PLAYER_MAX_Y,D1
 .y_check:
 	; D1 = nuova Y candidata, controllo collisioni
-	MOVE.W	PlayerWorldX,D0			; X attuale (eventualmente gia' aggiornata)
+	MOVE.W	Player+bob_WorldX,D0			; X attuale (eventualmente gia' aggiornata)
 	BSR.W	IsBoxBlocked
 	BNE.S	.y_blocked				; collide con tile, rifiuta movimento Y
 	; Controllo collision con i nemici
 	MOVE.L	#0,A2					; A2=0 -> non escludere nessun BOB
 	BSR.W	IsOverlapEnemies
 	BNE.S	.y_blocked				; overlap con nemico -> rifiuta	
-	CMP.W	PlayerWorldY,D1
-	BEQ.S	.y_blocked				; non si e' mosso (clamp) -> azzera ScrllY
-	MOVE.W	D1,PlayerWorldY
+	CMP.W	Player+bob_WorldY,D1
+	BEQ.S	.y_blocked				; non si e' mosso (set) -> azzera ScrllY
+	MOVE.W	D1,Player+bob_WorldY
 	CLR.W	PlayerGrounded			; movimento verticale riuscito -> player in aria
 	BRA.S	.skipY
 .y_blocked:
@@ -3873,17 +4238,11 @@ UpdatePlayerWorldPos:
 	CLR.W	PlayerVelY
 .skipY:
 
-	; Sync bob_WorldX/Y del Player con le variabili globali
-	; (cosi' Combattimento e altre routine possono leggerle uniformemente)
-	LEA		Player,A2	
-	MOVE.W	PlayerWorldX,bob_WorldX(A2)
-	MOVE.W	PlayerWorldY,bob_WorldY(A2)
-
 	MOVEM.L	(SP)+,D0-D2/A2
 	RTS
 
 *****************************************************************************
-* ComputeCameraFollowY
+* CalcolaInseguimentoCameraY
 *   Solo in modalita' platform (GravityOn=1): scroll verticale per inseguire
 *   il player. In 8-direzioni (GravityOn=0) NON tocca nulla: ScrllY e
 *   VScrollStep sono gia' impostati dall'input (lockstep a 1px).
@@ -3896,17 +4255,17 @@ UpdatePlayerWorldPos:
 *     (passo 1) PixelOffY puo' essere qualsiasi, e cosi' si riallinea liscio.
 *   VScrollStep viene impostato uguale a |ScrllY| cosi' lo shift combacia.
 *
-*   errore = (PlayerWorldY - CENTER_Y) - (TileY*16 + PixelOffY)
+*   errore = (bob_WorldY - CENTER_Y) - (TileY*16 + PixelOffY)
 *   |errore| <= CAM_DEADZONE_Y -> fermo.
 *****************************************************************************
-ComputeCameraFollowY:
+CalcolaInseguimentoCameraY:
 	MOVEM.L	D0-D2,-(SP)
 	TST.W	GravityOn
 	BEQ.W	.skip					; 8-direzioni: gestito dall'input (lockstep)
 	MOVE.W	TileY,D0
 	LSL.W	#4,D0					; TileY*16
 	ADD.W	PixelOffY,D0			; D0 = CameraY corrente (px)
-	MOVE.W	PlayerWorldY,D1
+	MOVE.W	Player+bob_WorldY,D1
 	SUB.W	#CENTER_Y,D1			; D1 = CameraY target
 	SUB.W	D0,D1					; D1 = errore (target - corrente)
 	CMP.W	#CAM_DEADZONE_Y,D1
@@ -3940,20 +4299,20 @@ ComputeCameraFollowY:
 	MOVEM.L	(SP)+,D0-D2
 	RTS
 *****************************************************************************
-* UpdatePlayerScreenPos
+* AggiornaPlayerScreenPos
 *   Calcola bob_X/bob_Y (coordinate schermo del player) come differenza
-*   tra PlayerWorldX/Y (coordinate mondo) e la posizione della camera.
+*   tra bob_WorldX/Y (coordinate mondo) e la posizione della camera.
 *
 *   CameraX_pixel = TileX * 16 + PixelOffX
 *   CameraY_pixel = TileY * 16 + PixelOffY
 *
-*   bob_X = PlayerWorldX - CameraX_pixel
-*   bob_Y = PlayerWorldY - CameraY_pixel
+*   bob_X = bob_WorldX - CameraX_pixel
+*   bob_Y = bob_WorldY - CameraY_pixel
 *
-*   In Fase 1 PlayerWorldX/Y NON cambiano, quindi bob_X/Y resteranno
+*   In Fase 1 bob_WorldX/Y NON cambiano, quindi bob_X/Y resteranno
 *   costanti a (144, 120) come prima -> nessun cambiamento visivo.
 *****************************************************************************
-UpdatePlayerScreenPos:
+AggiornaPlayerScreenPos:
 	MOVEM.L	D0-D1/A0,-(SP)
  
 	LEA		Player,A0
@@ -3962,8 +4321,8 @@ UpdatePlayerScreenPos:
 	MOVE.W	TileX,D0
 	LSL.W	#4,D0					; D0 = TileX * 16
 	ADD.W	PixelOffX,D0			; D0 = CameraX_pixel
-	; bob_X = PlayerWorldX - CameraX
-	MOVE.W	PlayerWorldX,D1
+	; bob_X = bob_WorldX - CameraX
+	MOVE.W	Player+bob_WorldX,D1
 	SUB.W	D0,D1
 	MOVE.W	D1,bob_X(A0)
  
@@ -3971,8 +4330,8 @@ UpdatePlayerScreenPos:
 	MOVE.W	TileY,D0
 	LSL.W	#4,D0					; D0 = TileY * 16
 	ADD.W	PixelOffY,D0			; D0 = CameraY_pixel
-	; bob_Y = PlayerWorldY - CameraY
-	MOVE.W	PlayerWorldY,D1
+	; bob_Y = bob_WorldY - CameraY
+	MOVE.W	Player+bob_WorldY,D1
 	SUB.W	D0,D1
 	MOVE.W	D1,bob_Y(A0)
  
@@ -4010,10 +4369,9 @@ DisegnaBOB:
 	; Layout: ogni frame occupa 2 word (32 pixel) per via del padding nero
 	; che evita di blittare il frame successivo durante lo shift orizzontale.
 	MOVE.W	bob_Direzione(A0),D3
-	MULU.W	#640,D3					; Direzione * 16 righe * 40 byte
+	MULU.W	#OMINO_DIR_STRIDE,D3	; Direzione * BOB_H righe * OMINO_PITCH
 	MOVE.W	bob_AnimFrame(A0),D5
-	ADD.W	D5,D5					; AnimFrame * 2
-	ADD.W	D5,D5					; AnimFrame * 4 (= 2 word, con padding)
+	MULU.W	#BOB_SLOT_BYTES,D5		; AnimFrame * slot (arte + padding)
 	ADD.W	D5,D3					; D3 = offset frame nel plane 0
  
 	; ----------------- A2 = sorgente A (spritesheet plane 0) -----------------
@@ -4021,33 +4379,43 @@ DisegnaBOB:
 	ADDA.W	D3,A2
 	; Applica clip top: sposta A2 in avanti di SkipRows * 40 byte
 	MOVE.W	BobClipSkipRows,D2
-	MULU.W	#40,D2					; D2 = skip * 40 (long)
+	MULU.W	#OMINO_PITCH,D2			; D2 = skip * pitch sheet (long)
 	ADDA.L	D2,A2					; A2 punta alla riga di partenza del frame
- 	; ----------------- A3 = sorgente B (maschera FISSA 16x16) -----------------
-	; La maschera e' la stessa per tutti i frame (BOB e' un quadrato pieno).
-	; NON aggiungiamo D3 (offset frame) perche' non ne ha senso.
-	; Applico anche qui il clip top: salto SkipRows * 4 byte (pitch maschera = 4)
-	LEA		OMINO_MASK_FIXED,A3
+ 	; ----------------- A3 = maschera PER-FRAME (canale A) -----------------
+	; La silhouette del frame, non piu' un quadrato pieno: a 32x32 il quadrato
+	; cancellerebbe lo sfondo su tutto il riquadro. Stesso layout dello sheet,
+	; quindi stesso offset frame (D3) e stesso pitch. La maschera e' UNA sola
+	; per tutti i 5 piani, quindi A3 non avanza nel loop dei piani.
+	MOVE.L	bob_Mask(A0),A3
+	ADDA.W	D3,A3					; stesso offset frame dell'arte
 	MOVE.W	BobClipSkipRows,D2
-	LSL.W	#2,D2					; D2 = skip * 4
-	ADDA.W	D2,A3
+	MULU.W	#OMINO_PITCH,D2			; D2 = skip * pitch sheet
+	ADDA.L	D2,A3
 
 	; ----------------- Calcolo destinazione e shift -----------------
 	; bob_X = posizione X in pixel
 	; D7 = shift = bob_X mod 16
 	; D6 = byte offset (allineato a word) = (bob_X / 16) * 2
 	MOVE.W	bob_X(A0),D6
+	; Path B: i BOB si disegnano sul WORLD buffer, quindi la posizione va
+	; convertita da coordinate SCHERMO a coordinate MONDO sommando la
+	; camera. Senza questo finirebbero sempre nell'angolo alto-sinistro
+	; della mappa invece che davanti al giocatore.
+	ADD.W	PathBCamX,D6
 	MOVE.W	D6,D7
 	AND.W	#15,D7					; D7 = shift (0..15)
 	LSR.W	#3,D6					; D6 = bob_X / 8 (in byte)
 	AND.W	#$FFFE,D6				; D6 allineato a word
  
-	; A1 = destinazione (CurrentDraw + Y*40 + word_offset)
-	MOVE.L	CurrentDraw,A1
+	; Path B: destinazione = world buffer (che E' quello visualizzato),
+	; saltando la guardia del prefetch. Y in coordinate mondo.
+	MOVEA.L	WorldDraw,A1			; si disegna nel buffer NON a video
+	ADDA.L	#DELTA_MAPPAVERA+BG_ORIGIN_OFS,A1
 	MOVE.W	bob_Y(A0),D0
-	MULU.W	#BPSF_PITCH,D0			; D0 = Y * 48 (dest pitch)
+	ADD.W	PathBCamY,D0
+	MULU.W	#SFONDO_PITCH,D0
 	ADD.W	D6,D0
-	ADDA.W	D0,A1					; A1 = posizione plane 0 destinazione
+	ADDA.L	D0,A1
  
 	; ----------------- BLTCON0 = (shift << 12) | $0FCA -----------------
 	; bit 15-12: ASH (shift sorgente A)
@@ -4068,7 +4436,7 @@ DisegnaBOB:
 	; 2 word per riga per gestire lo shift orizzontale.
 	MOVE.W	BobClipNumRows,D4
 	LSL.W	#6,D4					; D4 = NumRows << 6
-	ADDQ.W	#2,D4					; +2 per le 2 word per riga
+	ADD.W	#BOB_BLIT_W,D4			; word per riga
 
 	; ----------------- Registri "fissi" del blit settati una sola volta -----------------
 	; Questi registri sono uguali per tutti i 5 plane, quindi li settiamo PRIMA
@@ -4078,15 +4446,23 @@ DisegnaBOB:
 	MOVE.L	#$ffffffff,$44(A6)		; BLTAFWM/BLTALWM = $FFFF/$FFFF
 	MOVE.W	D5,$40(A6)				; BLTCON0 (con ASH = shift sulla MASCHERA = A)
 	MOVE.W	D6,$42(A6)				; BLTCON1 (BSH = shift sul BOB = B)
-	MOVE.W	#BPSF_PITCH-4,$60(A6)	; BLTCMOD = 48 - 4 (sfondo = dest, pitch 48 byte)
-	MOVE.W	#36,$62(A6)				; BLTBMOD = 40 - 4 (BOB, pitch 40 byte)
-	MOVE.W	#0,$64(A6)				; BLTAMOD = 4 - 4 (MASK fissa 4 byte/riga)
-	MOVE.W	#BPSF_PITCH-4,$66(A6)	; BLTDMOD = 48 - 4 (destinazione, pitch 48 byte)
+	MOVE.W	#DEST_PITCH-BOB_SLOT_BYTES,$60(A6)	; BLTCMOD (sfondo = dest)
+	MOVE.W	#OMINO_PITCH-BOB_SLOT_BYTES,$62(A6)	; BLTBMOD (BOB nello sheet)
+	MOVE.W	#OMINO_PITCH-BOB_SLOT_BYTES,$64(A6)	; BLTAMOD (maschera per-frame)
+	MOVE.W	#DEST_PITCH-BOB_SLOT_BYTES,$66(A6)	; BLTDMOD (destinazione)
  
 	; ----------------- Loop sui 5 bitplane -----------------
 	; L'incremento per passare al plane successivo e' SEMPRE plane_size = 10240 byte.
 	; Il valore di A1/A2 nei registri CPU NON viene modificato dal blitter
 	; (il blitter modifica BLTAPT/BLTBPT/BLTCPT/BLTDPT, registri propri).
+	; annota il rettangolo: il frame prossimo PathBRestoreAll lo ripulira'.
+	; Va fatto ORA, con A1 ancora sul piano 1 e prima che il loop lo faccia
+	; avanzare.
+	MOVE.W	BobClipNumRows,D4
+	BSR.W	PathBRegistraDirty
+	MOVE.W	BobClipNumRows,D4
+	LSL.W	#6,D4
+	ADD.W	#BOB_BLIT_W,D4			; ricostruisce BLTSIZE, che D4 conteneva
 	MOVEQ	#5-1,D0
 .BlittaLoopBob:
 	BSR.W	AspettaBlitter			; aspetta che il blit del plane precedente finisca
@@ -4098,8 +4474,8 @@ DisegnaBOB:
 	MOVE.W	D4,$58(A6)				; BLTSIZE -> avvia blit
  
 
-	ADD.L	#40*256,A2				; prossimo plane sorgente BOB (B): +10240
-	ADD.L	#BG_PLANE_STRIDE,A1		; prossimo plane destinazione BPSFONDO (con padding)
+	ADD.L	#PLANE_SIZE,A2			; prossimo plane sorgente BOB (B)
+	ADD.L	#DEST_PLANE_SZ,A1		; prossimo plane di destinazione
 
 	; A3 (MASCHERA = A) NON avanza: e' una sola per tutti i plane
  
@@ -4114,9 +4490,9 @@ DisegnaBOBPlayer:
 	MOVEM.L	A0,-(SP)
 	; Player non viene mai clippato (ha PLAYER_MAX_X/Y che lo tiene dentro)
 	MOVE.W	#0,BobClipSkipRows
-	MOVE.W	#16,BobClipNumRows
+	MOVE.W	#BOB_H,BobClipNumRows
 
-	; bob_X/bob_Y del Player gia' calcolati da UpdatePlayerScreenPos
+	; bob_X/bob_Y del Player gia' calcolati da AggiornaPlayerScreenPos
 	LEA		Player,A0
 	BSR.W	DisegnaBOB
 	MOVEM.L	(SP)+,A0
@@ -4146,54 +4522,67 @@ DisegnaBOBEnemy:
 .loop:
 	; Skip se nemico non attivo
 	TST.W	bob_Active(A0)
-	BEQ.S	.next
+	BEQ.W	.next
 
 	; ----- Calcolo bob_X e bob_Y schermo (SEMPRE aggiornati per uso esterno) -----
 	MOVE.W	bob_WorldX(A0),D1
 	SUB.W	D2,D1					; D1 = bob_X schermo
-	MOVE.W	D1,bob_X(A0)			; SEMPRE aggiornato (usato da DisegnaBarraVita)
+	MOVE.W	D1,bob_X(A0)			; SEMPRE aggiornato (lo legge DisegnaBOB)
 	MOVE.W	bob_WorldY(A0),D4
 	SUB.W	D3,D4					; D4 = bob_Y schermo
 	MOVE.W	D4,bob_Y(A0)			; SEMPRE aggiornato
 
-	; ----- Cull X: se completamente fuori, skippa rendering -----
-	TST.W	D1
-	BMI.S	.next					; bob_X < 0
-	CMP.W	#305,D1
-	BGE.S	.next					; bob_X >= 305
+	; ----- Cull X -----
+	; In Path B il BOB si disegna alla sua posizione MONDO dentro il world
+	; buffer, ed e' la finestra di display a ritagliarlo: non serve nessun clip
+	; orizzontale, basta non disegnare chi e' del tutto fuori.
+	; Il test precedente scartava il BOB appena bob_X scendeva sotto zero,
+	; quindi ogni nemico che entrava da SINISTRA spariva finche' non era tutto
+	; dentro; e il 305 era 320-16+1, tarato su un BOB largo 16 px.
+	; L'unico vincolo duro e' che la posizione MONDO resti dentro il buffer,
+	; altrimenti il blit scriverebbe prima dell'inizio della riga o oltre la fine.
+	TST.W	bob_WorldX(A0)
+	BMI.S	.next					; world X negativo -> fuori dal buffer
+	CMPI.W	#(MAPPA_COLS*16)-BOB_W,bob_WorldX(A0)
+	BGT.S	.next					; world X oltre il bordo destro della mappa
+	CMP.W	#-BOB_W,D1
+	BLE.S	.next					; tutto a sinistra della finestra
+	CMP.W	#VIS_COLS*16,D1
+	BGE.S	.next					; tutto a destra della finestra
 
 	; ----- Cull Y / preparazione clip Y -----
 	MOVE.W	D4,D1					; D1 = bob_Y (per uso successivo)
-	; Cull se bob_Y < -15 oppure bob_Y >= 256 (BOB completamente fuori)
-	CMP.W	#-15,D1
-	BLT.S	.next
-	CMP.W	#256,D1
+	; Cull se il BOB e' completamente sopra o sotto la FINESTRA (BG_VIS_ROWS).
+	; Prima la soglia bassa era 256: restavano da disegnare BOB gia' invisibili.
+	CMP.W	#-BOB_H,D1
+	BLE.S	.next
+	CMP.W	#BG_VIS_ROWS,D1
 	BGE.S	.next
 
 	; Default: no clip
 	MOVE.W	#0,BobClipSkipRows
-	MOVE.W	#16,BobClipNumRows
+	MOVE.W	#BOB_H,BobClipNumRows
 
-	; Clip TOP: se bob_Y < 0, salta -bob_Y righe e blitta 16+bob_Y righe
+	; Clip TOP: se bob_Y < 0, salta -bob_Y righe e blitta BOB_H+bob_Y righe
 	TST.W	D1
 	BPL.S	.check_bottom
 	; bob_Y < 0: salta righe e parti dalla cima
 	MOVE.W	D1,D4					; D4 = bob_Y (negativo)
 	NEG.W	D4						; D4 = -bob_Y = righe da skippare
 	MOVE.W	D4,BobClipSkipRows
-	MOVE.W	#16,D4
-	ADD.W	D1,D4					; D4 = 16 + bob_Y = righe da blittare
+	MOVE.W	#BOB_H,D4
+	ADD.W	D1,D4					; D4 = BOB_H + bob_Y = righe da blittare
 	MOVE.W	D4,BobClipNumRows
 	MOVE.W	#0,D1					; bob_Y schermo = 0 (parte dalla cima del display)
 	BRA.S	.set_y
 
 .check_bottom:
-	; Clip BOTTOM: se bob_Y > 240, blitta 256-bob_Y righe
-	CMP.W	#240,D1
+	; Clip BOTTOM: se bob_Y > BG_VIS_ROWS-BOB_H, blitta BG_VIS_ROWS-bob_Y righe
+	CMP.W	#BG_VIS_ROWS-BOB_H,D1
 	BLE.S	.set_y
-	; bob_Y > 240
-	MOVE.W	#256,D4
-	SUB.W	D1,D4					; D4 = 256 - bob_Y = righe da blittare
+	; bob_Y oltre il bordo basso
+	MOVE.W	#BG_VIS_ROWS,D4
+	SUB.W	D1,D4					; D4 = righe ancora visibili
 	MOVE.W	D4,BobClipNumRows
 
 .set_y:
@@ -4208,7 +4597,7 @@ DisegnaBOBEnemy:
 	; Renderizza il nemico (A0 e' gia' settato)
 	BSR.W	DisegnaBOB
 
-	; Ripristina bob_Y vero (per DisegnaBarraVita e logica)
+	; Ripristina bob_Y vero (serve alla logica di gioco)
 	MOVE.W	D4,bob_Y(A0)
 
 .next:
@@ -4217,6 +4606,7 @@ DisegnaBOBEnemy:
 
 	MOVEM.L	(SP)+,D0-D4/A0
 	RTS
+
 *****************************************************************************
 * Routine che aspetta il blitter
 *****************************************************************************
@@ -4226,24 +4616,635 @@ AspettaBlitter:
 	BTST	#6,2(a6)		; dmaconr - waitblit
 	BNE.S	.bltw
 	RTS
+;=====================================================================
+; Modulo di stampa testo (font 16x20). Generico e riutilizzabile:
+; pannello, punteggio, messaggi. Vedi Testo.i per l'API.
+;=====================================================================
+	include	"Testo.i"
 
-	SECTION	DATI,DATA
+;=====================================================================
+; Scroll hardware AGA (Path B). ScrollHW.i e' il modulo definitivo;
+; ProtoScroll.i e' solo il banco di prova del passo 1 ed esce dalla
+; build insieme a PROTO_SCROLL=0.
+;=====================================================================
+	include	"ScrollHW.i"
+
+; DISPLAY_FETCH_BYTES e' dichiarato in testa perche' serve al pitch, che si
+; calcola prima di questo include. Qui che SCROLL_FETCH_BYTES esiste, si
+; verifica che i due non siano divergenti: se lo fossero, il puntatore del
+; parallasse finirebbe nel posto sbagliato e tornerebbe la striscia a sinistra.
+	IFNE	SCROLL_FETCH_BYTES-DISPLAY_FETCH_BYTES
+;	FAIL	"DISPLAY_FETCH_BYTES non coincide con SCROLL_FETCH_BYTES"
+	ENDC
+
+; Tabella dei colori del gradiente cielo (una voce per riga raster dell'arte
+; originale). La copperlist vera la genera BuildSkyCopper al boot, ricampionando
+; questa tabella su BG_VIS_ROWS righe. CieloCopper.i, che era la lista statica
+; gia' srotolata, non serve piu' ed e' stato sostituito da questa tabella.
+	include	"CieloGrad.i"
+
+;=====================================================================
+; ScrollPathB - lo scroll del gioco, versione hardware
+;
+; Sostituisce GestisciShiftPixel + CopiaVideo + AggiornaTiles con
+; aritmetica sui puntatori. Il costo per frame passa da centinaia di
+; righe raster a una manciata di istruzioni.
+;
+; La camera in pixel si ricava da quella a tile che il gioco gia'
+; mantiene: CameraX = TileX*16 + PixelOffX, idem per Y. Non serve
+; toccare ControllaBordi, RettangoloScrollNelCentro o CalcolaInseguimentoCameraY:
+; continuano a lavorare come prima, e qui si legge solo il risultato.
+;=====================================================================
+ScrollPathB:
+	MOVEM.L	D0-D5/A0-A2,-(SP)
+
+	MOVE.W	TileX,D0
+	LSL.W	#4,D0
+	ADD.W	PixelOffX,D0			; D0 = CameraX in pixel
+	MOVE.W	TileY,D1
+	LSL.W	#4,D1
+	ADD.W	PixelOffY,D1			; D1 = CameraY in pixel
+
+	IFNE	PATH_B_FREEZE
+	MOVEQ	#0,D0					; camera bloccata: isola lo scroll
+	MOVEQ	#0,D1
+	ENDC
+
+	; La camera EFFETTIVA (dopo l'eventuale freeze) va condivisa: se
+	; MostraProfilo rileggesse TileX/PixelOffX scriverebbe i numeri in una
+	; posizione che si muove mentre il display sta fermo, e si sovrappongono.
+	MOVE.W	D0,PathBCamX
+	MOVE.W	D1,PathBCamY
+
+	; Il RITARDO di BPLCON1 serve a darkplane e parallasse per compensare.
+	; BPLCON1 ritarda TUTTI i piani, ma quei due vivono in coordinate
+	; SCHERMO e non devono scorrere: senza compensazione tremerebbero di
+	; 0-63 px a ogni pixel di scroll fine.
+	; D = ceil(CameraX/64)*64 - CameraX, la stessa di ScrollHWCalc.
+	MOVE.W	D0,D2
+	ADD.W	#63,D2
+	LSR.W	#6,D2
+	LSL.W	#6,D2
+	SUB.W	D0,D2
+	MOVE.W	D2,PathBDelay
+
+	LEA		SFONDOGRANDE,A0			; qui serve solo come base per il calcolo
+	BSR.W	ScrollHWCalc			; -> D2 offset, D3 BPLCON1
+
+	; Col doppio buffer il calcolo resta QUI (la parallasse ha bisogno di
+	; PathBDelay), ma l'APPLICAZIONE va in coda al blocco: si pubblica il
+	; buffer solo quando e' finito. Quindi si mettono da parte i due valori.
+	MOVE.L	D2,WorldPtrOfs			; D2 e' gia' un OFFSET puro, non un indirizzo
+	MOVE.W	D3,WorldBplCon1
+
+	MOVEM.L	(SP)+,D0-D5/A0-A2
+	RTS
+
+*****************************************************************************
+* ScrollPathBApply - pubblica il buffer appena disegnato
+*
+* Da chiamare in CODA al blocco di lavoro, quando il disegno e' finito.
+* Scrive i puntatori dei piani 1-5 su WorldDraw, il piano 6 sul darkplane con
+* lo STESSO offset (deve scorrere insieme, non un frame avanti) e BPLCON1.
+* Poi scambia WorldDraw/WorldShow e i due set di rettangoli sporchi.
+*
+* Il blocco di lavoro scavalca il confine del quadro, quindi questa scrittura
+* cade dopo che il copper ha gia' riletto la copperlist: vale dal quadro
+* successivo. E anche se il blocco finisse cosi' presto da arrivare in tempo
+* per il quadro subito dopo, andrebbe bene lo stesso — il disegno e' concluso.
+* E' sicura in entrambi i casi: e' la proprieta' che rende inutile la corsa
+* col pennello.
+*****************************************************************************
+ScrollPathBApply:
+	MOVEM.L	D0-D5/A0-A2,-(SP)
+	MOVE.L	WorldPtrOfs,D2
+	MOVE.W	WorldBplCon1,D3
+
+	MOVEA.L	WorldDraw,A0			; il buffer appena finito diventa quello a video
+	LEA		BitPlaneTiles,A1
+	LEA		CL_BplCon1,A2
+	MOVEQ	#5,D4					; i 5 piani dello sfondo
+	MOVE.L	#SFONDO_PLANE_SIZE,D5
+	BSR.W	ScrollHWApply
+
+	; Il darkplane e' in coordinate MONDO come i piani 1-5 e usa lo STESSO
+	; offset. Va pubblicato QUI insieme a loro: applicandolo presto scorrerebbe
+	; un frame avanti rispetto alla mappa.
+	LEA		PathBDarkPlane,A0
+	ADDA.L	D2,A0
+	LEA		BitPlaneTiles+5*8,A1	; sesta coppia di MOVE = BPL6PT
+	MOVE.L	A0,D0
+	MOVE.W	D0,6(A1)
+	SWAP	D0
+	MOVE.W	D0,2(A1)
+
+	; La parallasse si pubblica QUI, non presto: il suo contenuto e' compensato
+	; per il ritardo BPLCON1 che stiamo scrivendo due righe sopra, quindi i due
+	; devono entrare in vigore nello stesso quadro. Pubblicandoli in momenti
+	; diversi si sfasano di un frame ed e' il vecchio flash all'innesco.
+	; Con tutto pubblicato insieme, SW smette di essere un vincolo.
+	IFNE	PATH_B_AUX&2
+	BSR.W	SwapParBuffers
+	ENDC
+
+	; --- scambio dei buffer e dei rispettivi set di rettangoli sporchi ---
+	MOVE.L	WorldShow,D0
+	MOVE.L	WorldDraw,D1
+	MOVE.L	D1,WorldShow
+	MOVE.L	D0,WorldDraw
+	MOVE.L	CurDirty,D0
+	CMP.L	#DirtySetA,D0
+	BEQ.S	.toB
+	MOVE.L	#DirtySetA,CurDirty
+	BRA.S	.fatto
+.toB:
+	MOVE.L	#DirtySetB,CurDirty
+.fatto:
+	MOVEM.L	(SP)+,D0-D5/A0-A2
+	RTS
+
+;=====================================================================
+; RESTORE DEI BOB (passo 3b)
+;
+; Senza CopiaVideo nessuno ripulisce piu' lo sfondo dietro ai BOB, che
+; quindi lasciano scie. La soluzione: un BUFFER MASTER con la mappa
+; pulita, copiato una volta all'init, da cui si ripristina il rettangolo
+; di ogni BOB prima di ridisegnarlo.
+;
+; Costa UN blit di restore per piano contro i DUE del save/restore
+; classico (salva-prima, ripristina-dopo), e non serve memoria per i
+; salvataggi: il master c'e' gia'.
+;
+; Ogni BOB registra il proprio rettangolo mentre lo disegna; il frame
+; dopo, PathBRestoreAll li ripulisce tutti e svuota la lista. I
+; rettangoli sono sempre larghi 2 word, perche' e' quanto blittano sia
+; i BOB (16 px + shift) sia le barre vita.
+;=====================================================================
+PATHB_DIRTY_MAX EQU     16              ; 5 BOB + 5 barre, con margine
+
+;---------------------------------------------------------------------
+; PathBRegistraDirty - annota un rettangolo da ripulire al prossimo frame
+; IN: A1 = indirizzo nel world buffer (piano 1), D4.w = righe
+; Preserva tutto. Se la lista e' piena il rettangolo viene ignorato:
+; meglio una scia occasionale che scrivere fuori dall'array.
+;---------------------------------------------------------------------
+PathBRegistraDirty:
+	MOVEM.L	D0-D1/A0-A2,-(SP)
+	MOVEA.L	CurDirty,A2				; set del buffer in cui stiamo disegnando
+	MOVE.W	dirty_Count(A2),D0
+	CMP.W	#PATHB_DIRTY_MAX,D0
+	BGE.S	.pieno
+	; si memorizza l'OFFSET dall'inizio del buffer, non l'indirizzo assoluto
+	MOVE.L	A1,D1
+	SUB.L	WorldDraw,D1
+	LEA		dirty_Ofs(A2),A0
+	MOVE.W	D0,-(SP)
+	ADD.W	D0,D0
+	ADD.W	D0,D0					; *4 = posizione nella lista di long
+	ADDA.W	D0,A0
+	MOVE.L	D1,(A0)
+	MOVE.W	(SP)+,D0
+	LEA		dirty_Rows(A2),A0
+	ADD.W	D0,D0					; *2 = posizione nella lista di word
+	ADDA.W	D0,A0
+	MOVE.W	D4,(A0)
+	ADDQ.W	#1,dirty_Count(A2)
+.pieno:
+	MOVEM.L	(SP)+,D0-D1/A0-A2
+	RTS
+
+;---------------------------------------------------------------------
+; PathBRestoreAll - ripristina dal master tutti i rettangoli sporchi
+; IN: A6 = $DFF000
+;---------------------------------------------------------------------
+PathBRestoreAll:
+	MOVEM.L	D0-D4/A0-A3,-(SP)
+	MOVEA.L	CurDirty,A2
+	MOVE.W	dirty_Count(A2),D0
+	BEQ.W	.fine
+	SUBQ.W	#1,D0
+
+	BSR.W	AspettaBlitter
+	MOVE.W	#$09F0,$40(A6)			; BLTCON0: D = A (copia semplice)
+	MOVE.W	#$0000,$42(A6)			; BLTCON1
+	MOVE.L	#$ffffffff,$44(A6)		; maschere aperte
+	MOVE.W	#SFONDO_PITCH-BOB_SLOT_BYTES,$64(A6)	; BLTAMOD (master)
+	MOVE.W	#SFONDO_PITCH-BOB_SLOT_BYTES,$66(A6)	; BLTDMOD (world)
+
+	; A2 tiene ancora il set corrente: da qui si ricavano le due liste.
+	; A3 PRIMA di A2, perche' la seconda LEA sovrascrive la base.
+	LEA		dirty_Rows(A2),A3
+	LEA		dirty_Ofs(A2),A2		; da qui A2 scorre la lista degli offset
+.rect:
+	MOVE.L	(A2)+,D2				; D2 = offset dall'inizio del buffer
+	MOVE.W	(A3)+,D4				; righe
+	BEQ.S	.next					; rettangolo vuoto: salta
+
+	; con l'offset non serve piu' risalire dall'indirizzo assoluto:
+	; destinazione = buffer in disegno + offset, sorgente = master + offset
+	MOVEA.L	WorldDraw,A1
+	ADDA.L	D2,A1
+	ADD.L	#PathBMaster,D2
+	MOVEA.L	D2,A0
+
+	LSL.W	#6,D4
+	ADD.W	#BOB_BLIT_W,D4			; BLTSIZE = righe<<6 | BOB_BLIT_W word
+
+	MOVEQ	#5-1,D3
+.plane:
+	BSR.W	AspettaBlitter
+	MOVE.L	A0,$50(A6)				; BLTAPT = master
+	MOVE.L	A1,$54(A6)				; BLTDPT = world
+	MOVE.W	D4,$58(A6)				; BLTSIZE -> avvia
+	ADD.L	#SFONDO_PLANE_SIZE,A0
+	ADD.L	#SFONDO_PLANE_SIZE,A1
+	DBRA	D3,.plane
+.next:
+	DBRA	D0,.rect
+	MOVEA.L	CurDirty,A2				; A2 e' stato avanzato: ricarica la base
+	CLR.W	dirty_Count(A2)
+.fine:
+	MOVEM.L	(SP)+,D0-D4/A0-A3
+	RTS
+
+;---------------------------------------------------------------------
+; PathBBuildMaster - copia il world pulito nel master (una volta, init)
+; Va chiamata DOPO DisegnaSfondo e PRIMA che qualcuno disegni BOB.
+;---------------------------------------------------------------------
+; Copia 5 piani da A0 ad A1 col blitter. A0/A1 sono INPUT: serve sia per il
+; master sia per inizializzare il secondo buffer del mondo.
+PathBBuildMaster:
+	MOVEM.L	D0/A0-A1,-(SP)
+	BSR.W	AspettaBlitter
+	MOVE.W	#$09F0,$40(A6)
+	MOVE.W	#$0000,$42(A6)
+	MOVE.L	#$ffffffff,$44(A6)
+	MOVE.W	#0,$64(A6)				; nessun modulo: piano contiguo
+	MOVE.W	#0,$66(A6)
+	MOVEQ	#5-1,D0
+.plane:
+	BSR.W	AspettaBlitter
+	MOVE.L	A0,$50(A6)
+	MOVE.L	A1,$54(A6)
+	; un piano = SFONDO_HEIGHT righe x (SFONDO_PITCH/2) word
+	MOVE.W	#(SFONDO_HEIGHT<<6)|(SFONDO_PITCH/2),$58(A6)
+	ADD.L	#SFONDO_PLANE_SIZE,A0
+	ADD.L	#SFONDO_PLANE_SIZE,A1
+	DBRA	D0,.plane
+	BSR.W	AspettaBlitter
+	MOVEM.L	(SP)+,D0/A0-A1
+	RTS
+
+;=====================================================================
+; DARKPLANE STATICO
+;
+; Le luci sono tutte FISSE: la scansione cerca TILE_LUCE nella mappa e
+; non esiste nessuna luce che segua il player. Quindi il darkplane
+; dipende SOLO dalla camera, e ricalcolarlo ogni frame era lavoro
+; buttato: 18 cerchi da 15 righe raster ciascuno, 302 righe per frame.
+;
+; Ora si disegna UNA VOLTA in coordinate MONDO, con lo stesso layout dei
+; piani 1-5 (pitch SFONDO_PITCH, guardia a sinistra), e scorre con loro
+; muovendo BPL6PT. Il costo per frame diventa ZERO.
+;
+; Va ricostruito solo quando NightMode cambia (tasto N).
+;
+; Spariscono di conseguenza: il fill per frame, il doppio buffer, e la
+; compensazione di BPLCON1 -- il darkplane ora e' in coordinate mondo
+; come i piani 1-5, quindi lo shift lo riguarda esattamente come loro.
+;=====================================================================
+PathBBuildDark:
+	MOVEM.L	D0-D7/A0-A2,-(SP)
+
+	; ----- fill: $FF di notte (tutto scuro), $00 di giorno -----------
+	MOVE.W	#$0100,D1				; BLTCON0: USED, LF=$00 -> D=0
+	TST.B	NightMode
+	BEQ.S	.fillcon_ok
+	MOVE.W	#$01FF,D1				; notte: LF=$FF -> D=$FFFF
+.fillcon_ok:
+	BSR.W	AspettaBlitter
+	MOVE.W	D1,$40(A6)				; BLTCON0
+	MOVE.W	#0,$42(A6)				; BLTCON1
+	MOVE.L	#$FFFFFFFF,$44(A6)
+	MOVE.W	#0,$66(A6)				; BLTDMOD = 0: riga intera, buffer contiguo
+	MOVE.L	#PathBDarkPlane,$54(A6)
+	MOVE.W	#(SFONDO_HEIGHT<<6)|(SFONDO_PITCH/2),$58(A6)
+	BSR.W	AspettaBlitter
+
+	; ----- di giorno non ci sono lampioni: finito -------------------
+	TST.B	NightMode
+	BEQ.W	.done
+
+	; ----- un cerchio per ogni TILE_LUCE, in coordinate MONDO -------
+	; Nessun cull: il buffer copre tutta la mappa, quindi vanno disegnati
+	; TUTTI, non solo quelli che si vedono adesso.
+	MOVEQ	#0,D7					; D7 = riga mappa
+.row:
+	MOVEQ	#0,D3					; D3 = colonna mappa
+	MOVE.W	D7,D2
+	MULU.W	#MAPPA_COLS,D2
+	ADD.W	D2,D2
+	LEA		MAPPA,A0
+	ADDA.W	D2,A0					; A0 = &MAPPA[D7][0]
+.col:
+	MOVE.W	(A0)+,D2
+	CMP.W	#TILE_LUCE,D2
+	BNE.S	.next
+
+	; centro del cerchio in coordinate mondo, +8 = centro della tile
+	MOVE.W	D3,D0
+	LSL.W	#4,D0
+	ADDQ.W	#8,D0					; D0 = cx mondo
+	MOVE.W	D7,D1
+	LSL.W	#4,D1
+	ADDQ.W	#8,D1					; D1 = cy mondo
+	BSR.W	DisegnaCerchioLuceBlitter
+.next:
+	ADDQ.W	#1,D3
+	CMP.W	#MAPPA_COLS,D3
+	BLT.S	.col
+	ADDQ.W	#1,D7
+	CMP.W	#MAPPA_ROWS,D7
+	BLT.S	.row
+.done:
+	BSR.W	AspettaBlitter
+	MOVEM.L	(SP)+,D0-D7/A0-A2
+	RTS
+
+;---------------------------------------------------------------------
+; PathBInit - preparazione una tantum, dopo DisegnaSfondo
+;
+; Piani 6/7/8 su un buffer vuoto con lo STESSO pitch del world: i
+; moduli BPL1MOD/BPL2MOD sono condivisi fra piani pari e dispari, e
+; darkplane e parallasse hanno ancora pitch 48. Restano accesi perche'
+; la contesa DMA a 8 piani deve essere quella vera, e le loro routine
+; continuano a girare perche' il loro costo deve entrare nella misura.
+;---------------------------------------------------------------------
+PathBInit:
+	MOVEM.L	D0-D1/A0-A1,-(SP)
+
+	LEA		CL_Ddf,A1
+	MOVE.W	#SCROLL_DDFSTRT,2(A1)
+	MOVE.W	#SCROLL_DDFSTOP,6(A1)
+	LEA		CL_BplMod,A1
+	MOVE.W	#SCROLL_BPLMOD,2(A1)	; BPL1MOD
+	MOVE.W	#SCROLL_BPLMOD,6(A1)	; BPL2MOD
+
+	; Dirotta su PathBVuoto i piani ausiliari spenti da PATH_B_AUX.
+	MOVE.L	#PathBVuoto,D0
+	IFEQ	PATH_B_AUX&1
+	LEA		BitPlaneTiles+5*8,A1	; 6o piano = darkplane
+	BSR.S	.ptr
+	ENDC
+	IFEQ	PATH_B_AUX&2
+	LEA		BitplaneParall,A1		; 7o
+	BSR.S	.ptr
+	LEA		BitplaneParall+8,A1		; 8o
+	BSR.S	.ptr
+	ENDC
+
+	MOVEM.L	(SP)+,D0-D1/A0-A1
+	RTS
+
+.ptr:	MOVE.W	D0,6(A1)
+	SWAP	D0
+	MOVE.W	D0,2(A1)
+	SWAP	D0
+	RTS
+
+	IFNE	PROTO_SCROLL
+	include	"ProtoScroll.i"
+	ENDC
+
+	IFNE	PROFILING
+;---------------------------------------------------------------------
+; MostraProfilo - stampa i numeri del profilo NELL'AREA DI GIOCO
+;
+; Serve per leggere ProfWorst senza debugger: l'indirizzo delle variabili
+; non e' prevedibile (il loader Amiga riloca le sezioni a ogni avvio),
+; quindi il modo piu' semplice e' che sia il gioco stesso a scriverli.
+;
+; Premi P per mostrarli/nasconderli. Mentre sono mostrati la misura e'
+; CONGELATA, cosi' i valori restano quelli accumulati giocando.
+;
+; Ogni voce e' "XXnnn": 2 lettere di etichetta + 3 cifre = 5 caratteri
+; da 8 px = 40 px. Quattro voci per riga occupano 160 px dei 320: col
+; vecchio font 16x20 erano 80 px a voce e riempivano la riga esatta.
+; Volendo sfruttare tutta la larghezza, PROF_COLS puo' salire a 8.
+;   VB VBLEND     IN INPUT      SC SCROLL    TI TILES
+;   DK DARK       FA FALO       PA PARALLAX  CV COPIAVIDEO
+;   EN ENTITIES   BO BOB        BL BLTDRAIN  WO WORST (totale)
+;   DR DROP (frame persi)
+;
+; POSIZIONE: dentro l'area di gioco. NON sotto: DIWSTOP e' gia' tagliato
+; da CUT_BOTTOM_ROWS, quindi il display si ferma a BG_VIS_ROWS e tutto
+; cio' che sta sotto e' nel buffer ma invisibile.
+; CopiaVideo ridisegna lo sfondo ogni frame, ma MostraProfilo gira DOPO
+; (ultima a scrivere prima dello swap), quindi i numeri restano sopra.
+;
+; Scrive la stessa forma su TUTTI E 5 i piani: colore 31 su fondo 0,
+; leggibile su qualunque sfondo e senza dover pulire prima.
+;---------------------------------------------------------------------
+PROF_VALUES     EQU     PROF_SLOTS+6    ; 11 fasi + WorstLines + DropCount + DDFSTRT + swap + ritardo + offset
+PROF_COLS       EQU     4               ; voci per riga (4 x 80px = 320)
+PROF_ROWS_N     EQU     (PROF_VALUES+PROF_COLS-1)/PROF_COLS
+; Il testo va posizionato in coordinate DISPLAY. In Path B tutto cio' che
+; viene disegnato passa per BG_ORIGIN_OFS, che lo sposta di BG_ORIGIN_Y
+; righe piu' in basso rispetto a dove comincia il display (che parte da
+; SFONDOGRANDE puro, senza origine). Senza compensare, l'ultima riga di
+; testo finisce sotto il bordo visibile: col font 16x20 se ne vedeva
+; ancora la cima, a 8x8 spariva del tutto (era il "DR" che mancava).
+; NB: BG_ORIGIN_Y e' definita SOLO nel ramo PATH_B delle EQU, quindi la
+; compensazione non puo' stare in una formula unica.
+PROF_TEXT_Y     EQU     BG_VIS_ROWS-(PROF_ROWS_N*(FONT_H+1))-2-BG_ORIGIN_Y
+
+MostraProfilo:
+        MOVEM.L D0-D7/A0-A4,-(SP)
+
+        ; Path B: il buffer visualizzato e' SFONDOGRANDE, non CurrentDraw.
+        ; I numeri vanno scritti alla posizione della CAMERA, altrimenti
+        ; scorrono via col mondo. X arrotondata a word per l'allineamento.
+        ; NB: restano impressi sul world buffer (non c'e' piu' CopiaVideo a
+        ; ripulire), quindi muovendosi si sovrappongono. Va bene per leggere
+        ; un numero, non per giocarci.
+        MOVEA.L WorldDraw,A4            ; il pannello va nel buffer in disegno
+        ADDA.L  #DELTA_MAPPAVERA+BG_ORIGIN_OFS,A4
+        MOVE.W  PathBCamY,D0                    ; la camera che usa il DISPLAY
+        ADD.W   #PROF_TEXT_Y,D0
+        MULU.W  #SFONDO_PITCH,D0
+        ADDA.L  D0,A4
+        MOVE.W  PathBCamX,D0
+        LSR.W   #4,D0                           ; -> word
+        ADD.W   D0,D0
+        ADDA.W  D0,A4
+        MOVE.W  #SFONDO_PITCH,D0
+        MOVE.L  #SFONDO_PLANE_SIZE,D2
+;        BRA.S	.parametri
+
+.parametri:
+        MOVE.W  #5,D1                           ; replica sui 5 piani
+
+        ; DDFSTRT non e' leggibile dal registro: lo prendo dalla copperlist,
+        ; che e' la fonte di verita' di cio' che il copper scrive ogni frame.
+        MOVE.W  CL_Ddf+2,ProfDdf
+        MOVE.W  PathBDelay,ProfDelay
+        MOVE.W  par_old,ProfParOfs
+
+
+        LEA     ProfLabels,A3
+        LEA     ProfWorst,A2                    ; WorstLines/DropCount/DDF seguono
+        MOVEA.L A4,A1
+        MOVEQ   #0,D6                           ; colonna corrente
+        MOVEQ   #PROF_VALUES-1,D7
+.valore:
+        MOVEQ   #0,D3                           ; etichetta, 1a lettera
+        MOVE.B  (A3)+,D3
+        BSR.W   TestoChar
+        ADDA.W  #FONT_CW,A1
+        MOVEQ   #0,D3                           ; etichetta, 2a lettera
+        MOVE.B  (A3)+,D3
+        BSR.W   TestoChar
+        ADDA.W  #FONT_CW,A1
+
+        MOVE.W  (A2)+,D3                        ; il valore
+        MOVEQ   #3,D4                           ; 3 cifre
+        BSR.W   TestoNumero
+        ADDA.W  #3*FONT_CW,A1
+
+        ADDQ.W  #1,D6
+        CMP.W   #PROF_COLS,D6
+        BLT.S   .prossimo
+        MOVEQ   #0,D6                           ; a capo
+        ; il salto di riga deve usare il pitch REALE del buffer (D0), non
+        ; una costante: in Path B vale 56 e non 48, e con 48 ogni riga di
+        ; testo finiva 8 byte piu' avanti = 64 px a destra della precedente
+        MOVE.W  D0,D5
+        MULU.W  #FONT_H,D5
+        ADDA.L  D5,A4
+        MOVEA.L A4,A1
+.prossimo:
+        DBRA    D7,.valore
+
+        MOVEM.L (SP)+,D0-D7/A0-A4
+        RTS
+
+; Etichette a 2 lettere, nello stesso ordine di ProfWorst + i due extra.
+; Maiuscole per leggibilita' a 8x8; il font Metal ha anche le minuscole.
+ProfLabels:
+        dc.b    'VBINSCPATIDKFACVENBOBLWODRDFSWDLPO'
+        even
+	ENDC
+
+*****************************************************************************
+
+        SECTION DATI,DATA       ; variabili CPU-only -> fast RAM
+
+; ---- Variabili del profiling harness (vedi EQU PROFILING in testa) ----
+; Sempre presenti anche con PROFILING=0: 8 byte, e cosi' restano
+; ispezionabili dal debugger senza ricompilare con guardie condizionali.
+FrameLines:     dc.w    0       ; righe consumate da QUESTO frame (0..312)
+WorstReset:     dc.w    0       ; scrivici 1 (debugger) per azzerare i worst
+ProfShow:       dc.b    0       ; 1 = numeri a schermo + misura congelata (tasto P)
+ProfKeyPrev:    dc.b    0       ; stato precedente del tasto P (edge detect)
+ResetKeyPrev:   dc.b    0       ; stato precedente del tasto R (edge detect)
+                ds.b    1       ; padding: riallinea a word quel che segue
+
+; Profilo per fase. Indici = PH_xxx (vedi le EQU in testa al file).
+;   ProfRaw   = riga di inizio di ogni fase in questo frame, normalizzata
+;               rispetto al sync (0 = riga VBL_SYNC_LINE)
+;   ProfWorst = peggior COSTO di ogni fase, sticky. E' l'array da guardare.
+; NB: la somma dei ProfWorst non e' il worst totale — i picchi delle singole
+; fasi non cadono nello stesso frame.
+PathBCamX:      dc.w    0       ; camera EFFETTIVA usata dal display in Path B
+PathBCamY:      dc.w    0       ;   (la scrive ScrollPathB, la legge MostraProfilo)
+; --- doppio buffer del mondo ---
+; Al boot si visualizza A e si disegna in B. Scambiati in coda al blocco.
+WorldShow:       dc.l   SFONDOGRANDE     ; buffer attualmente a video
+WorldDraw:       dc.l   SFONDOGRANDE_B   ; buffer in cui si sta disegnando
+
+; Valori calcolati presto da ScrollPathBCalc e applicati in coda da Apply.
+WorldPtrOfs:     dc.l   0                ; offset camera nel buffer, da ScrollHWCalc
+WorldBplCon1:    dc.w   0                ; valore BPLCON1 dello stesso frame
+
+; --- rettangoli sporchi: UN SET PER BUFFER ---
+; Ogni buffer va ripulito da cio' che ci si e' disegnato l'ultima volta che
+; toccava a lui, cioe' DUE blocchi fa: quindi servono due liste, scambiate
+; insieme ai buffer. Si memorizza l'OFFSET dall'inizio del buffer e non
+; l'indirizzo assoluto, cosi' il ripristino e' master+ofs -> buffer+ofs e non
+; dipende da quale dei due si sta usando.
+        RSRESET
+dirty_Count      rs.w   1
+dirty_Pad        rs.w   1                ; allineamento per il campo long
+dirty_Ofs        rs.l   PATHB_DIRTY_MAX
+dirty_Rows       rs.w   PATHB_DIRTY_MAX
+DIRTY_SET_SIZE   rs.b   0
+
+DirtySetA:       ds.b   DIRTY_SET_SIZE
+DirtySetB:       ds.b   DIRTY_SET_SIZE
+CurDirty:        dc.l   DirtySetB        ; set del buffer in cui si disegna (B al boot)
+PathBDelay:     dc.w    0       ; ritardo BPLCON1 del frame: darkplane e
+                                ;   parallasse lo usano per compensare
+
+	IFNE	PROTO_SCROLL
+ProtoCamX:      dc.w    0       ; posizione camera del prototipo, in pixel
+ProtoTuneD:     dc.w    0       ; modo taratura: il ritardo BPLCON1 sotto test
+ProtoCamY:      dc.w    0
+	ENDC
+
+ProfRaw:        ds.w    PROF_SLOTS
+ProfWorst:      ds.w    PROF_SLOTS
+
+; ATTENZIONE ALL'ORDINE: questi due DEVONO restare subito dopo ProfWorst.
+; MostraProfilo li stampa con lo stesso loop, leggendo PROF_SLOTS+2 word
+; consecutive a partire da ProfWorst.
+WorstLines:     dc.w    0       ; peggior caso mai visto - high-water, sticky
+                                ;   <-- QUESTO e' il numero che conta:
+                                ;   margine residuo = 312 - WorstLines
+DropCount:      dc.w    0       ; frame persi dall'ultimo reset
+
+; DF = DDFSTRT come lo scrive davvero il copper. NON si puo' leggere il
+; registro (e' write-only), quindi si legge il valore dentro la copperlist,
+; che e' esattamente cio' che il chip riceve a ogni frame.
+; Atteso $18 = 24 se PathBInit ha patchato il prefetch anticipato;
+; se resta $38 = 56 la patch non e' arrivata e la finestra parte 8 byte
+; prima del dovuto (= 64 px di sfasamento a sinistra).
+; DEVE restare subito dopo DropCount: MostraProfilo legge PROF_VALUES word
+; consecutive a partire da ProfWorst.
+ProfDdf:        dc.w    0       ; DDFSTRT letto dalla copperlist
+
+; SW = riga raster in cui SwapParBuffers pubblica BPL7/8PT nella copperlist.
+; Serve a sapere se arriva PRIMA o DOPO che il copper abbia letto quelle entry
+; (le legge nelle primissime righe del quadro, la copperlist comincia li').
+; Se SW e' alto (dentro il display) il puntatore vale dal frame DOPO, mentre
+; BPLCON1 — scritto da ScrollPathB nel blank — vale da subito: e' quello
+; sfasamento a produrre il frame corrotto quando il ritardo cambia di scatto.
+; DEVE restare subito dopo ProfDdf: MostraProfilo legge word consecutive.
+ProfSwapRaster: dc.w    0       ; SW: righe dopo il sync alla pubblicazione (high-water)
+
+; DL = PathBDelay, cioe' il ritardo BPLCON1 di questo frame (0..63).
+; PO = offset della parallasse dentro la striscia.
+; Servono a leggere la scena INSIEME ai numeri che la producono: la striscia
+; vuota a sinistra compare solo a ritardo grande, e senza sapere quanto vale
+; DL nel momento dello screenshot ogni misura e' ambigua.
+; DEVONO restare consecutive dopo ProfSwapRaster: MostraProfilo legge word di
+; seguito a partire da ProfWorst.
+ProfDelay:      dc.w    0       ; DL: ritardo BPLCON1 del frame
+ProfParOfs:     dc.w    0       ; PO: offset della parallasse
+
 
 ; Palette AGA del title screen (256 colori, format $00RRGGBB long).
 ; Caricata via CPU in LoadAGAPalette256 prima di mostrare la title.
 title_pal:
 	incbin	"title.pal"
 
-CurrentDisplay:
-	dc.l	BPSFONDO_A	; bitplane attualmente visibili
-CurrentDraw:	
-	dc.l	BPSFONDO_B	; bitplane su cui disegnare
-
-; Dark plane (6° bitplane EHB): paralleli a CurrentDisplay/Draw
-CurrentDarkDisplay:
-	dc.l	DARKPLANE_A
+CurrentParDisplay:  
+	dc.l    PARALLASSE_A
+CurrentParDraw:     
+	dc.l    PARALLASSE_B
+; Dark plane (6° bitplane EHB). Il valore iniziale non conta: PathBInit lo
+; riscrive prima di qualunque lettura.
 CurrentDarkDraw:
-	dc.l	DARKPLANE_B
+	dc.l	0
 
 *****************************************************************************
 * TileFlags
@@ -4260,9 +5261,9 @@ TileFlags:
 ;   tile:   0   1   2   3   4   5   6   7   8   9  10  11  12  13  14  15
 	dc.b	0,	0,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	0,	0,	0,	0
 ;   tile:  16  17  18  19  20  21  22  23  24  25  26  27  28  29  30  31
-	dc.b	0,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1
+	dc.b	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0
 ;   tile:  32  33  34  35  36  37  38  39  40  41  42  43  44  45  46  47
-	dc.b	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1
+	dc.b	1,	1,	1,	1,	1,	0,	0,	0,	0,	0,	0,	1,	1,	1,	1,	1
 ;   tile:  48  49  50  51  52  53  54  55  56  57  58  59  60  61  62  63
 	dc.b	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1
 
@@ -4272,52 +5273,39 @@ TileFlags:
 *****************************************************************************
 
 MAPPA:
-;			 0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 ;	 
-	dc.w	 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;0
-	dc.w	 0,32,33,34,35,36,32,33,34,35,36,32,33,34, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;1
-	dc.w	 0, 2, 3, 0, 0, 0, 0, 0, 0,17,18, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;2
-	dc.w	 0, 4, 5, 0, 0, 0, 0, 0, 0,19,20, 0, 0, 0, 0, 0,12,13,14, 0, 0, 0, 0, 0	;3
-	dc.w	 0, 6, 7, 0, 0, 0, 0, 0, 0,21,22, 0, 0, 0, 0, 0,32,33,34, 0, 0, 0, 0, 0	;4
-	dc.w	 0, 8, 9, 0, 0, 0, 0, 0, 0,23,24, 0,12,13,14,15, 0, 0, 0, 0, 0, 0, 0, 0	;5
-	dc.w	 0,10,11, 0, 0, 0, 0, 0, 0,25,26,27,32,33,34,35, 0, 0, 0, 0, 0, 0, 0, 0	;6
-	dc.w	 0, 2, 3,12,13,14,15,16, 0, 0,28,29, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;7
-	dc.w	 0, 4, 5,32,33,34,35,36, 0, 0,30,31, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;8
-	dc.w	 0, 6, 7, 0, 0, 0, 0, 0, 0, 0,37,38, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;9
-	dc.w	 0, 8, 9, 0, 0, 0, 0, 0, 0, 0,39,40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;10
-	dc.w	 0,10,11,12,13,14,15,16,12,13,41,42,16,12,13,14,15,16,12,13,14,15,16, 0	;11
-	dc.w	 0,35,36,32,33,34,35,36,32,33,34,35,36,32,33,34,35,36,32,33,34,35,36, 0	;12
-	dc.w	 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;13
-	dc.w	 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;14
-	dc.w	 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;15
-	dc.w	 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;16
-	dc.w	 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;17
-	dc.w	 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;18
-	dc.w	 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;19
-	dc.w	 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;20
-	dc.w	 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;21
+;			  0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24;	 
+	dc.w	 32,33,34,35,36,32,33,34,35,36,32,33,34, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;0
+	dc.w	  2, 3, 0, 0, 0, 0, 0, 0, 0,17,18, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;1
+	dc.w	  4, 5, 0, 0, 0, 0, 0, 0, 0,19,20, 0, 0, 0, 0, 0,12,13,14, 0, 0, 0, 0, 0, 0	;2
+	dc.w	  6, 7, 0, 0, 0, 0, 0, 0, 0,21,22, 0, 0, 0, 0, 0,32,33,34, 0, 0, 0, 0, 0, 0	;3
+	dc.w	  8, 9, 0, 0, 0, 0, 0, 0, 0,23,24, 0,12,13,14,15, 0, 0, 0, 0, 0, 0, 0, 0, 0	;4
+	dc.w	 10,11, 0, 0, 0, 0, 0, 0, 0,25,26,27,32,33,34,35, 0, 0, 0, 0, 0, 0, 0, 0, 0	;5
+	dc.w	  2, 3,12,13,14,15,16, 0, 0, 0,28,29, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;6
+	dc.w	  4, 5,32,33,34,35,36, 0, 0, 0,30,31, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;7
+	dc.w	  6, 7, 0, 0, 0, 0, 0, 0, 0, 0,37,38, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;8
+	dc.w	  8, 9, 0, 0, 0, 0, 0, 0, 0, 0,39,40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;9
+	dc.w	 10,11,12,13,14,15,16,12,13,14,41,42,16,12,13,14,15,16,12,13,14,15,16, 0, 0	;10
+	dc.w	 35,36,32,33,34,35,36,32,33,34,35,36,32,33,34,35,36,32,32,33,34,35,36, 0, 0	;11
+	dc.w	  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;12
+	dc.w	  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;13
+	dc.w	  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;14
+	dc.w	  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;15
+	dc.w	  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;16
+	dc.w	  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;17
+	dc.w	  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;18
+	dc.w	  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;19
+	dc.w	  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;20
+	dc.w	  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;21
 	
 *****************************************************************************
 * VARIABILI
 *****************************************************************************
-ScrllX:		dc.w	0		; Movimento orizzontale +-1 
-ScrllY:		dc.w	0		; Movimento verticale +-1
-TileX:		dc.w	0
-TileY:		dc.w	0
-PixelOffX:	dc.w	0
-PixelOffY:	dc.w	0
-BufferOffX:	dc.w	0
-BufferOffY:	dc.w	0
-; Coordinate del player nel mondo (in pixel, non tile).
-; Range valido: 0..MAP_WIDTH-16 per X, 0..MAP_HEIGHT-16 per Y
-; Mappa = MAPPA_COLS*16 x MAPPA_ROWS*16 = 384 x 352 pixel
-; Inizializzazione: player parte sopra la tile 18 (porta nel bordo nord)
-;   tile 18 = MAPPA[1][3] -> world pixel (48, 16)
-;   CameraX/Y iniziale = 0, quindi bob_X/Y schermo = (48, 16)
-PlayerWorldX:	dc.w	32
-PlayerWorldY:	dc.w	32
-; Intent dell'utente (movimento desiderato): -1, 0, +1
-; Distinto da ScrllX/Y che invece e' "camera scroll" (gated dal centro schermo).
-; PlayerWorldX += IntentX sempre; ScrllX = IntentX solo se player al centro.
+ScrllX:			dc.w	0		; Movimento orizzontale +-1 
+ScrllY:			dc.w	0		; Movimento verticale +-1
+TileX:			dc.w	0
+TileY:			dc.w	0
+PixelOffX:		dc.w	0
+PixelOffY:		dc.w	0
 IntentX:		dc.w	0
 IntentY:		dc.w	0
 
@@ -4349,7 +5337,6 @@ arrow_rx:	dc.b 	0
 key_space:	dc.b 	0			; 1 se SPACE premuta, 0 altrimenti
 NightMode:	dc.b 	0			; 0 = giorno, 1 = notte (toggle col tasto N)
 NightKeyPrev:	dc.b 	0			; stato precedente del tasto N (per edge detect)
-NightModePrev:	dc.b	0			; ultimo valore "applicato" di NightMode (per rilevare cambi)
 MusicOn:		dc.b	0			; 0 = music off, 1 = music on (toggle col tasto M)
 MusicKeyPrev:	dc.b	0			; stato precedente del tasto M (per edge detect)
 MusicOnPrev:	dc.b	0			; ultimo valore "applicato" di MusicOn
@@ -4427,11 +5414,11 @@ DirLookupTable:
 
 PuntaSfondoGr:
 	dc.l	SFONDOGRANDE
-xmappa:
-	dc.b	0
-ymappa:
-	dc.b	0
 
+par_old:    
+	dc.w    -1      ; offset del frame precedente (-1 = forza il primo blit)
+par_dirty:  
+	dc.w    0
 ; bob
 	rsreset
 bob_Type		rs.W	1		; 1 = Player 
@@ -4442,6 +5429,7 @@ bob_Speed 		rs.W	1		; velocità da 1 a 3
 bob_Direzione	rs.W	1		; 0=E, 1=SE, 2=S, 3=SW, 4=W, 5=NW, 6=N, 7=NE
 bob_AnimFrame	rs.W	1		; 0..7: frame di animazione 
 bob_Gfx			rs.L	1		; puntatore alla grafica
+bob_Mask		rs.L	1		; maschera per-frame di QUESTO sheet (canale A)
 bob_BltSize		rs.W	1		; dimensione del bob
 bob_Larghezza	rs.W	1		; larghezza del bob
 bob_Altezza		rs.W	1		; larghezza del bob
@@ -4463,9 +5451,9 @@ EnemyInitTable:
 ;       WorldX, WorldY, Direzione, Active, AI, PFmax, Damage, InvulnMax
 	dc.w	64,		208,	2,		1,		0,	3,	1,	30
 				; nemico 0: basso a sinistra, fermo, recupero 30 frame
-	dc.w	288,	64,		3,		1,		2,	8,	3,	60
+	dc.w	288,	16,		3,		1,		2,	8,	3,	60
 				; nemico 1: alto a destra, caccia, recupero 60 frame (lento, e' un TANK)
-	dc.w	80,		208,	2,		1,		1,	4,	2,	40
+	dc.w	96,		208,	2,		1,		1,	4,	2,	40
 				; nemico 2: ronda Y, recupero 40 frame
 	dc.w	304,	224,	4,		1,		1,	5,	2,	50
 				; nemico 3: ronda X, recupero 50 frame
@@ -4508,13 +5496,21 @@ TitleCopperList:
 	dc.w	$0100,$0211			; BPLCON0: BPU3=1 (8 BPL) + COLOR + ECSENA (no UHRES)
 	dc.w	$0102,$0000			; BPLCON1
 	dc.w	$0104,$0024			; BPLCON2: PF2P=4, PF1P=4 (come gioco)
-	dc.w	$0106,$0000			; BPLCON3: banca 0, LOCT=0, no offset
+	; BRDRBLNK acceso anche qui: senza, l'area fuori dalla finestra mostra
+	; COLOR00 e il titolo appare dentro una cornice chiara.
+	dc.w	$0106,BPLCON3_BRDRBLNK	; BPLCON3: banca 0, LOCT=0, bordo NERO
 	dc.w	$010c,$0000			; BPLCON4 = 0 (sprite a colori OCS standard 16-31)
 	dc.w	$0108,$0000			; BPL1MOD (sequential layout)
 	dc.w	$010a,$0000			; BPL2MOD
 	dc.w	$0092,$0028			; DDFSTRT lores 8 BPL AGA FMODE=3
 	dc.w	$0094,$00a8			; DDFSTOP (5 fetch FMODE=3 allineati)
-	dc.w	$008e,$2c81			; DIWSTRT
+; La schermata del titolo ha una geometria PROPRIA: DDFSTRT $28 / DDFSTOP $a8,
+; cioe' 5 fetch = 320 px, e non ha ne' parallasse ne' scroll fine. Non deve
+; quindi usare DIW_H_START, che e' tarato sui vincoli del GIOCO (guardia del
+; parallasse e ritardo BPLCON1). Quando ho introdotto quella EQU l'avevo
+; sostituita anche qui per sbaglio, e siccome il DIWSTOP sotto e' cablato la
+; finestra del titolo diventava 160..449 = 289 px invece di 320.
+	dc.w	$008e,$2c81				; DIWSTRT (valore proprio del titolo)
 	dc.w	$0090,$2cc1			; DIWSTOP
 TitleBPL_0:	dc.w	$00e0,$0000,$00e2,$0000	; BPL1PT (high, low)
 TitleBPL_1:	dc.w	$00e4,$0000,$00e6,$0000	; BPL2PT
@@ -4531,14 +5527,18 @@ TitleBPL_7:	dc.w	$00fc,$0000,$00fe,$0000	; BPL8PT
 	dc.w	$FFFF,$FFFE			; FINE COPPERLIST
 
 CopperList:
-	; Il gioco gira a 6 bitplane lores con fetch AGA a 64 bit (FMODE=$0003) per
+	; Il gioco gira a 8 bitplane lores con fetch AGA a 64 bit (FMODE=$0003):
+	; piani 1-5 = sfondo, 6 = dark plane, 7-8 = parallasse (4 colori).
 	; lasciare piu' banda DMA a blitter/CPU. Il "fetch-ahead" a 64 bit in fondo
 	; allo schermo legge oltre i piani: per renderlo innocuo i 5 piani di
 	; BPSFONDO sono distanziati da BG_PLANE_STRIDE (con righe di padding vuote
 	; tra un piano e l'altro), cosi' il prefetch pesca righe blank invece dei
 	; dati del piano successivo. Vedi BG_PLANE_STRIDE / BG_PAD_ROWS.
 	dc.w	$01fc,$0003			; FMODE = BPL32 + BPAGEM (fetch 64-bit AGA)
-	dc.w	$0100,%0110001010000001		; BPLCON0: 6 bitplane, EHB on, ECSENA on
+	dc.w	$0100,%0000001000010001		; BPLCON0: 8 bitplane (BPU3=1, lookup 256 colori), color burst + ECSENA
+									; (via anche il bit 7 UHRES che ci trascinavamo). L'EHB non c'entra:
+									; il dimezzamento notturno lo fanno i colori 32..63, e i piani 7-8
+									; portano il parallasse a 4 colori (vedi InitPalette8BPL).
 				  ;5432109876543210	
 ; bit 15		HiRes
 ; bit 14-12		Numero di Bitplanes
@@ -4546,23 +5546,26 @@ CopperList:
 ; bit 10 		Dual Playfield
 ; bit 9			Color burst
 ; bit 8			GENLOCK AUDIO
-; bit 7			EHB (Extra Half-Brite) — il 6° plane dimezza luminosita'
+; bit 7			UHRES (NON e' EHB! L'EHB non ha un bit: scatta solo con BPU=6)
 ; bit 6-4		non utilizzati
 ; bit 3			Light Pen
 ; bit 2			LACE
 ; bit 1			External Resync
 ; bit 0 		non utilizzato (ECSENA per AGA palette)
 
-	dc.w	$102,0			; BplCon1
+CL_BplCon1:
+	dc.w	$102,0			; BplCon1 (patchato per frame dallo scroll hardware)
 	dc.w	$104,$0024		; BPLCON2 = PF2P=4, PF1P=4 (sprite 0-3 davanti al playfield)
 							; bit 5-3 = PF2P, bit 2-0 = PF1P (4 = primi 4 sprite davanti)
 	; Nota: BPLCON3 e BPLCON4 NON sono qui perche' la PALETTE section piu' avanti
 	; gia' imposta BPLCON3 (con LOCT alternato) e nessuno modifica BPLCON4 a runtime.
 	; Settarli qui rompe la palette degli sprite hardware (es. falo' diventa verde).
+CL_BplMod:
 	dc.w	$108,BPSF_PITCH-40	; BPL1MOD = 48-40 = 8 (pitch 48, mostra 20 word/riga)
 	dc.w	$10A,BPSF_PITCH-40	; BPL2MOD = 48-40 = 8
+CL_Ddf:
 	dc.w 	$0092,$0038,$0094,$00b8 ; DdfStrt - DdfStop (5 fetch FMODE=3 allineati)
-	dc.w	$008e,$2c81,$0090,(($2C-CUT_BOTTOM_ROWS)<<8)|$C1	; DiwStrt - DiwStop (display 256-CUT righe)
+	dc.w	$008e,($2C<<8)|DIW_H_START,$0090,((($2C+BG_VIS_ROWS)&$FF)<<8)|DIW_H_STOP	; DiwStrt - DiwStop
 
 BitPlaneTiles:
 	dc.w 	$e0,$0000,$e2,$0000	;primo   bitplane - BPL0PT
@@ -4571,6 +5574,10 @@ BitPlaneTiles:
 	dc.w 	$ec,$0000,$ee,$0000	;quarto  bitplane - BPL3PT
 	dc.w 	$f0,$0000,$f2,$0000	;quinto  bitplane - BPL4PT
 	dc.w 	$f4,$0000,$f6,$0000	;sesto   bitplane - BPL5PT (EHB dark mask)
+
+BitplaneParall:
+	dc.w 	$f8,$0000,$fa,$0000	;settimo bitplane - BPL6PT (parallasse bit BASSO)
+	dc.w 	$fc,$0000,$fe,$0000	;ottavo  bitplane - BPL7PT (parallasse bit ALTO)
 
 Sprites:
 	dc.w	$120,0,$122,0			; SPR0PT (InitSprites scrive l'indirizzo)
@@ -4622,9 +5629,18 @@ PALETTE:
 ;	dc.w	$010c,$1000			; BPLCON4 = ESPRM=$10, OSPRM=$00
 
 	; ----- Blocco 1: nibble ALTI (LOCT=0) -----
-	dc.w	$0106,$0c00			; BPLCON3 = LOCT=0
-
-	dc.w 	$0180,$0000,$0182,$0fff,$0184,$0040,$0186,$0070	
+	dc.w	$0106,BPLCON3_LOCT0		; BPLCON3 = LOCT=0
+GamePalHi:
+	; COLOR00: durante il profiling diventa un NO-OP copper ($1fe), altrimenti
+	; il copper lo riporterebbe a nero in cima a ogni frame cancellando la
+	; fascia BLU scritta dalla CPU nel blanking precedente.
+	IFNE	PROFILING*PROF_KILL_SKY
+	dc.w	$01fe,$0000			; NO-OP: COLOR00 riservato alle fasce
+	ENDC
+	IFEQ	PROFILING*PROF_KILL_SKY
+	dc.w	$0180,$0000			; COLOR00 = nero (sfondo di gioco)
+	ENDC
+	dc.w 	$0182,$0fff,$0184,$0040,$0186,$0070	
 	dc.w 	$0188,$00c0,$018a,$0410,$018c,$0621,$018e,$0850	
 	dc.w 	$0190,$00b6,$0192,$00dd,$0194,$00af,$0196,$007c
 	dc.w 	$0198,$000f,$019a,$070f,$019c,$0c0e,$019e,$0c08
@@ -4632,10 +5648,16 @@ PALETTE:
 	dc.w 	$01a8,$0000,$01aa,$0444,$01ac,$0555,$01ae,$0666
 	dc.w 	$01b0,$0777,$01b2,$0888,$01b4,$0999,$01b6,$0aaa
 	dc.w 	$01b8,$0ccc,$01ba,$0ddd,$01bc,$0eee,$01be,$0fff
-
 	; ----- Blocco 2: nibble BASSI (LOCT=1) -----
-	dc.w	$0106,$0e00			; BPLCON3 = LOCT=1
-	dc.w 	$0180,$0000,$0182,$0fff,$0184,$0040,$0186,$0070
+	dc.w	$0106,BPLCON3_LOCT1		; BPLCON3 = LOCT=1
+GamePalLo:
+	IFNE	PROFILING*PROF_KILL_SKY
+	dc.w	$01fe,$0000			; NO-OP (vedi GamePalHi)
+	ENDC
+	IFEQ	PROFILING*PROF_KILL_SKY
+	dc.w	$0180,$0000
+	ENDC
+	dc.w 	$0182,$0fff,$0184,$0040,$0186,$0070
 	dc.w 	$0188,$00c0,$018a,$0410,$018c,$0621,$018e,$0880
 	dc.w 	$0190,$00b6,$0192,$00dd,$0194,$00af,$0196,$007c
 	dc.w 	$0198,$000f,$019a,$070f,$019c,$0c0e,$019e,$0c08
@@ -4645,11 +5667,31 @@ PALETTE:
 	dc.w 	$01b8,$0ccc,$01ba,$0ddd,$01bc,$0eee,$01be,$0fff
 
 	; Ripristino BPLCON3 a default LOCT=0 (per il prossimo frame)
-	dc.w	$0106,$0c00
+	dc.w	$0106,BPLCON3_LOCT0
 
-; include dell'effetto di gradiente cielo, che e' parte della copperlist perche' 
-; scrive a BPL1PT..BPL5PT.
-	include "CieloCopper.i"		; gradiente cielo 
+; Gradiente cielo: e' parte della copperlist perche' cambia COLOR00 riga per
+; riga, in sincrono col pennello.
+;
+; VERIFICATO sul contenuto di CieloCopper.i: scrive SOLO due registri, BPLCON3
+; ($106, per alternare LOCT fra nibble alti e bassi) e COLOR00 ($180). NON
+; tocca i puntatori bitplane, quindi non interferisce con lo scroll hardware
+; che riscrive BPL1PT..BPL6PT a ogni frame. Il vecchio commento qui diceva che
+; scriveva a BPL1PT..BPL5PT: era falso.
+; Copre esattamente le righe visibili, da $2c a $2c+BG_VIS_ROWS-1, perche' la
+; lista e' generata su misura. Lascia BPLCON3 a LOCT=0 in coda.
+;
+; Va ESCLUSO solo se si vuole leggere il costo delle fasi dalle fasce colorate
+; a bordo schermo (PROF_KILL_SKY=1): riscrivendo COLOR00 su ogni riga le
+; coprirebbe nell'area di gioco. La misura numerica del pannello P non ne
+; risente in nessun caso.
+	IFEQ	PROFILING*PROF_KILL_SKY
+	; Il gradiente NON e' piu' un include statico: BuildSkyCopper riempie questo
+	; spazio al boot ricampionando SkyGradient su BG_VIS_ROWS righe, cosi' resta
+	; interamente visibile qualunque sia CUT_BOTTOM_ROWS. Lo spazio sta QUI, in
+	; linea nella copperlist, per non cambiare nulla di dove vive la lista.
+SkyCopper:
+	ds.w	SKY_COPPER_WORDS
+	ENDC
 
 ; Spegne il DMA bitplane in fondo allo schermo. Senza questo, WinUAE
 ; (e hardware reale in overscan) continua a fetchare oltre BPSFONDO
@@ -4684,67 +5726,74 @@ TILES:
 	incbin	"Tiles.raw"	
 
 OMINO:
-	incbin	"Omino.raw"	
+	incbin	"Omino32.raw"	
 
 NEMICO:
-	incbin	"Nemico.raw"	
+	incbin	"Nemico32.raw"	
 
-*****************************************************************************
-* OMINO_MASK_FIXED: maschera fissa 16x16 per il cookie cut del BOB.
-* Il BOB e' un quadrato pieno (no buchi interni), quindi la maschera e':
-*   - prima word ($FFFF): 16 pixel "presenza BOB"
-*   - seconda word ($0000): 16 pixel padding (zona "no BOB")
-*   - per 16 righe
-* Stessa maschera valida per TUTTI i frame e TUTTI i bitplane.
-* Pitch maschera: 4 byte/riga -> BLTBMOD = 0.
-*****************************************************************************
-OMINO_MASK_FIXED:
-	dc.w	$FFFF,$0000	; riga 0
-	dc.w	$FFFF,$0000	; riga 1
-	dc.w	$FFFF,$0000	; riga 2
-	dc.w	$FFFF,$0000	; riga 3
-	dc.w	$FFFF,$0000	; riga 4
-	dc.w	$FFFF,$0000	; riga 5
-	dc.w	$FFFF,$0000	; riga 6
-	dc.w	$FFFF,$0000	; riga 7
-	dc.w	$FFFF,$0000	; riga 8
-	dc.w	$FFFF,$0000	; riga 9
-	dc.w	$FFFF,$0000	; riga 10
-	dc.w	$FFFF,$0000	; riga 11
-	dc.w	$FFFF,$0000	; riga 12
-	dc.w	$FFFF,$0000	; riga 13
-	dc.w	$FFFF,$0000	; riga 14
-	dc.w	$FFFF,$0000	; riga 15	
 *****************************************************************************
 
 	SECTION	PLANEVUOTO,BSS_C
 
-	cnop	0,8				; allinea a 8 byte per AGA FMODE=3
-BPSFONDO_A:
-	ds.b	5*BG_PLANE_STRIDE	; 5 piani con padding inter-piano (vedi BG_PAD_ROWS)
+	IFNE	PROTO_SCROLL
+; --- Buffer del prototipo scroll (Path B passo 1) --------------------
+; Pitch 56 = 48 + 8 byte di guardia a sinistra, richiesti dal prefetch
+; di un blocco FMODE=3. La mappa vera comincia all'offset 8 di ogni riga.
+; 5 piani x 56 x 352 = 98560 byte. ProtoVuoto tiene i piani 6/7/8 accesi
+; (contesa DMA realistica) senza sporcare la lettura della griglia.
+	cnop	0,8
+ProtoBuffer:
+	ds.b	5*PROTO_PLANE_SIZE
+	cnop	0,8
+ProtoVuoto:
+	ds.b	PROTO_PLANE_SIZE
+	ENDC
+
+	cnop	0,8
+; Piano vuoto col pitch dei piani 1-5: ci puntano i piani ausiliari
+; disattivati da PATH_B_AUX.
+PathBVuoto:
+	ds.b	AUX_PITCH*DARK_ROWS
+	cnop	0,8
+; Copia pulita della mappa, sorgente del restore dietro ai BOB.
+PathBMaster:
+	ds.b	5*SFONDO_PLANE_SIZE
+	cnop	0,8
+; Darkplane STATICO: stesso layout dei piani 1-5, disegnato una volta in
+; coordinate mondo e fatto scorrere con loro. Sostituisce DARKPLANE_A/B.
+PathBDarkPlane:
+	ds.b	SFONDO_PLANE_SIZE
 
 	cnop	0,8				; allinea a 8 byte per AGA FMODE=3
-BPSFONDO_B:
-	ds.b	5*BG_PLANE_STRIDE	; idem
-
 	cnop	0,8				; allinea a 8 byte per AGA FMODE=3
+	cnop	0,8				; allinea a 8 byte per AGA FMODE=3
+; DOPPIO BUFFER DEL MONDO. Si disegna in WorldDraw e si visualizza WorldShow,
+; scambiati in coda al blocco di lavoro da ScrollPathBApply. Serve perche' il
+; blocco SCAVALCA il confine del quadro: senza secondo buffer il pennello puo'
+; raggiungere un BOB ancora in corso di disegno e mostrarlo tagliato.
 SFONDOGRANDE:
-	ds.b	5*SFONDO_PLANE_SIZE	; 5 plane * 48 byte/riga * 288 righe = 69120 byte
+	ds.b	5*SFONDO_PLANE_SIZE	; 5 plane * SFONDO_PITCH * SFONDO_HEIGHT
 
 	cnop	0,8
+SFONDOGRANDE_B:
+	ds.b	5*SFONDO_PLANE_SIZE	; secondo buffer del mondo, stesso layout di SFONDOGRANDE
 
-; Dark plane sui buffer di display (= cosa viene effettivamente mostrato).
-; Double-buffered come BPSFONDO_A/B. Riempito ad ogni frame da UpdateDarkPlane:
-; 1. Fill con $00 (giorno) o $FF (notte)
-; 2. Scansione viewport: per ogni tile=TILE_LAMPIONE, disegna cerchio di luce
-
-DARKPLANE_A:
-	ds.b	BPSF_PITCH*DARK_ROWS	; 256 righe visibili + padding anti over-fetch (pitch 48)
-
+	; I due buffer di parallasse sono puntati da BPL7PT/BPL8PT: con FMODE=3 il
+	; puntatore deve essere allineato a 8 byte. Finora reggeva per ACCUMULO,
+	; perche' 5*SFONDO_PLANE_SIZE e 2*PAR_PLANE_STRIDE sono entrambi multipli di
+	; 8 — ma bastava cambiare SFONDO_HEIGHT, il pitch o PAR_PLANE_STRIDE per
+	; romperlo IN SILENZIO. Meglio dichiararlo che sperarci.
 	cnop	0,8
-DARKPLANE_B:
-	ds.b	BPSF_PITCH*DARK_ROWS
-
+PARALLASSE_A:
+    ds.b    2*PAR_PLANE_STRIDE
+	cnop	0,8
+PARALLASSE_B:
+    ds.b    2*PAR_PLANE_STRIDE
+	cnop	0,8
+PARALLAX_STRIP:
+    ds.b    2*PARALLAX_STRIP_PLANE_SZ    ; 2 piani paddati, ~61 KB chip
+    cnop    0,8
+	cnop	0,8
 	cnop	0,8
 ; Maschera del disco di luce (bit=1 dentro). Sorgente A del blitter in
 ; DisegnaCerchioLuceBlitter. In chip RAM (la DMA del blitter la legge).
@@ -4756,7 +5805,14 @@ LightMask:
 ; come OR dei 5 bitplane dello spritesheet originale.
 ; Il blitter la usa come canale B per il cookie-cut nei BOB.
 OMINO_MASK:
-	ds.b	40*256			; 1 plane mask (stesso pitch di OMINO)
+	ds.b	PLANE_SIZE			; 1 plane mask (stesso pitch di OMINO)
+
+; Maschera del NEMICO: i nemici usano lo stesso DisegnaBOB ma un altro sheet,
+; quindi serve la loro silhouette, non quella dell'omino.
+NEMICO_MASK:
+	ds.b	PLANE_SIZE			; 1 plane mask (stesso pitch di NEMICO)
+
+*****************************************************************************
 
 	SECTION	SpritesData,data_c
 	cnop	0,8				; allineamento sprite
@@ -4774,6 +5830,14 @@ ANTIRIAD_MOD:
 	cnop	0,8					; allineamento AGA FMODE=3
 title_bpl:
 	incbin	"title.raw"
+
+;----------------------------------------------------------------------------
+; Parallasse  : 2 bitplane AGA, 640x256, sequential layout.
+; DEVE essere in CHIP RAM per la display DMA.
+;----------------------------------------------------------------------------
+	cnop	0,8					; allineamento AGA FMODE=3
+parallasse:
+	incbin	"parallasse.raw"
 
 ;----------------------------------------------------------------------------
 ; Sound effects samples (8-bit signed PCM raw mono).
@@ -4896,6 +5960,8 @@ BulletSprite:
 	dc.w	$0000,$0000				; riga F
 	dc.w	$0000,$0000				; terminator
 
+*****************************************************************************
+
 	SECTION	Entities,BSS
 
 	EVEN
@@ -4903,6 +5969,9 @@ Player:
 	ds.b	bob_Length		  		; alloca la struct player
 Enemies:
 	ds.b	bob_Length*ENEMY_COUNT	; arrey di nemici
+
+*****************************************************************************
+
 ;----------------------------------------------------------------------------
 ; PT PLAYER di Frank Wille (rinominato ptplayer.i per evitare la
 ; compilazione automatica dell'extension vscode-amiga-assembly).

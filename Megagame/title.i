@@ -11,8 +11,7 @@ TITLE_TOTAL_SIZE     EQU     81920       ; byte totali di tutto il blocco RAW
 TITLE_PALETTE_SIZE   EQU     1024         ; byte totali della palette
 
 ; Layout RAW: SEQUENTIAL
-; Formato palette: AGA $00RRGGBB long
-;
+; Formato palette: AGA $00RRGGBB long;
 ; Esempio di uso:
 ;
 ;     SECTION GfxData,DATA_C   ; CHIP RAM per i bitplane
