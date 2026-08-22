@@ -239,7 +239,7 @@ SFONDO_PLANE_SIZE 	EQU		SFONDO_PITCH*SFONDO_HEIGHT	; byte/plane
 ; ---- Parallasse: 1 layer su 2 bitplane = 4 colori (valore 0..3 per pixel) ----
 ;
 ; UNICI due valori da toccare: SRC_W e SRC_H, che devono descrivere il file
-; caricato dall'incbin "parallasse.raw". Tutto il resto e' derivato: prima
+; caricato dall'incbin "grafica/parallasse.raw". Tutto il resto e' derivato: prima
 ; STRIP_W e STRIP_PITCH erano scritti a mano (976 e 122) e non seguivano
 ; SRC_W, quindi cambiare la larghezza dell'arte produceva uno skew diagonale
 ; silenzioso. Se cambi SRC_W, non c'e' piu' niente altro da aggiornare.
@@ -1012,7 +1012,19 @@ START:
 	MOVE.W	#$0000,$10c(A6)			; BPLCON4 default
 
 	; ----- PT Player: installa interrupt CIA-B -----
-	SUBA.L	A0,A0					; VectorBase = 0 (68000)
+	; VectorBase: _mt_install NON cerca la tabella dei vettori da solo, si fida
+	; di A0 e scrive il proprio handler di livello 6 in VectorBase+$78. Dal
+	; 68010 in su la tabella non sta piu' per forza in 0: il registro VBR dice
+	; dove sta, e SetPatch su 68020+ con fast RAM la sposta li' per risparmiare
+	; cicli a ogni interrupt. Con A0=0 su una macchina col VBR spostato ptplayer
+	; scriverebbe in $78 mentre il processore legge da VBR+$78: il Timer A del
+	; CIA-B continua a scadere ma salta all'handler vecchio, mt_music non gira
+	; mai e la musica non parte (silenzio, o una nota appesa).
+	; Startup2 il VBR lo legge gia' - col MOVEC assemblato a mano - e ci salva
+	; sopra i sei vettori di sistema; qui si riusa lo stesso valore invece di
+	; contraddirlo. Su 68000 BaseVBR resta lo 0 con cui nasce, quindi dove oggi
+	; funziona il comportamento e' identico bit per bit.
+	MOVE.L	BaseVBR,A0				; VectorBase vero (0 su 68000, VBR su 68010+)
 	MOVEQ	#1,D0					; PAL flag = 1
 	JSR		_mt_install
 	MOVE.W	#$E000,$DFF09A			; abilita INT level 6 (EXTER) + master enable
@@ -5728,7 +5740,7 @@ ProfParOfs:     dc.w    0       ; PO: offset della parallasse
 ; Palette AGA del title screen (256 colori, format $00RRGGBB long).
 ; Caricata via CPU in LoadAGAPalette256 prima di mostrare la title.
 title_pal:
-	incbin	"title.pal"
+	incbin	"grafica/title.pal"
 
 CurrentParDisplay:  
 	dc.l    PARALLASSE_A
@@ -6342,16 +6354,16 @@ BitplanePannello:
 *****************************************************************************
 	
 TILES:
-	incbin	"Tiles.raw"	
+	incbin	"grafica/Tiles.raw"	
 
 OMINO:
-	incbin	"Omino32.raw"	
+	incbin	"grafica/Omino32.raw"	
 
 NEMICO:
-	incbin	"Nemico32.raw"	
+	incbin	"grafica/Nemico32.raw"	
 
 PIETRA:
-	incbin	"Pietra.raw"	
+	incbin	"grafica/Pietra.raw"	
 
 *****************************************************************************
 
@@ -6454,7 +6466,7 @@ PIETRA_MASK:
 ;----------------------------------------------------------------------------
 	cnop	0,4
 ANTIRIAD_MOD:
-	incbin	"antiriad.amiga.mod"
+	incbin	"suono/antiriad.amiga.mod"
 
 ;----------------------------------------------------------------------------
 ; Title screen image: 8 bitplane AGA, 320x256, sequential layout.
@@ -6462,7 +6474,7 @@ ANTIRIAD_MOD:
 ;----------------------------------------------------------------------------
 	cnop	0,8					; allineamento AGA FMODE=3
 title_bpl:
-	incbin	"title.raw"
+	incbin	"grafica/title.raw"
 
 ;----------------------------------------------------------------------------
 ; Parallasse  : 2 bitplane AGA, 640x256, sequential layout.
@@ -6470,7 +6482,7 @@ title_bpl:
 ;----------------------------------------------------------------------------
 	cnop	0,8					; allineamento AGA FMODE=3
 parallasse:
-	incbin	"parallasse.raw"
+	incbin	"grafica/parallasse.raw"
 
 ;----------------------------------------------------------------------------
 ; Pannello  : 4 bitplane AGA, 320x80, sequential layout.
@@ -6478,7 +6490,7 @@ parallasse:
 ;----------------------------------------------------------------------------
 	cnop	0,8					; allineamento AGA FMODE=3
 pannello:
-	incbin	"pannello.raw"
+	incbin	"grafica/Pannello.raw"
 
 ;----------------------------------------------------------------------------
 ; Sound effects samples (8-bit signed PCM raw mono).
@@ -6489,31 +6501,31 @@ pannello:
 ;----------------------------------------------------------------------------
 	cnop	0,4
 SparoSample:
-	incbin	"Sparo.raw"
+	incbin	"suono/Sparo.raw"
 SparoSampleEnd:
 SPARO_LEN		EQU	(SparoSampleEnd-SparoSample)/2
 
 	cnop	0,4
 PassoSample:
-	incbin	"passo.raw"
+	incbin	"suono/passo.raw"
 PassoSampleEnd:
 PASSO_LEN		EQU	(PassoSampleEnd-PassoSample)/2
 
 	cnop	0,4
 NemicoColpitoSample:
-	incbin	"nemico_colpito.raw"
+	incbin	"suono/nemico_colpito.raw"
 NemicoColpitoSampleEnd:
 NEMICO_COLPITO_LEN	EQU	(NemicoColpitoSampleEnd-NemicoColpitoSample)/2
 
 	cnop	0,4
 HitPlayerSample:
-	incbin	"HitPlayer.raw"
+	incbin	"suono/HitPlayer.raw"
 HitPlayerSampleEnd:
 HITPLAYER_LEN	EQU	(HitPlayerSampleEnd-HitPlayerSample)/2
 
 	cnop	0,4
 NemicoMortoSample:
-	incbin	"nemico_morto.raw"
+	incbin	"suono/nemico_morto.raw"
 NemicoMortoSampleEnd:
 NEMICO_MORTO_LEN	EQU	(NemicoMortoSampleEnd-NemicoMortoSample)/2
 
@@ -6530,37 +6542,37 @@ NEMICO_MORTO_LEN	EQU	(NemicoMortoSampleEnd-NemicoMortoSample)/2
 ; ============================================================================
 FuocoFrame_0:
 	dc.w	$0000,$0000				; SPRPOS, SPRCTL (runtime)
-	incbin	"Fuoco_Data.raw",0,64	; offset 0, 64 byte (frame 0)
+	incbin	"grafica/Fuoco_Data.raw",0,64	; offset 0, 64 byte (frame 0)
 	dc.w	0,0						; terminator
 
 	cnop	0,4
 FuocoFrame_1:
 	dc.w	$0000,$0000
-	incbin	"Fuoco_Data.raw",64,64
+	incbin	"grafica/Fuoco_Data.raw",64,64
 	dc.w	0,0
 
 	cnop	0,4
 FuocoFrame_2:
 	dc.w	$0000,$0000
-	incbin	"Fuoco_Data.raw",128,64
+	incbin	"grafica/Fuoco_Data.raw",128,64
 	dc.w	0,0
 
 	cnop	0,4
 FuocoFrame_3:
 	dc.w	$0000,$0000
-	incbin	"Fuoco_Data.raw",192,64
+	incbin	"grafica/Fuoco_Data.raw",192,64
 	dc.w	0,0
 
 	cnop	0,4
 FuocoFrame_4:
 	dc.w	$0000,$0000
-	incbin	"Fuoco_Data.raw",256,64
+	incbin	"grafica/Fuoco_Data.raw",256,64
 	dc.w	0,0
 
 	cnop	0,4
 FuocoFrame_5:
 	dc.w	$0000,$0000
-	incbin	"Fuoco_Data.raw",320,64
+	incbin	"grafica/Fuoco_Data.raw",320,64
 	dc.w	0,0
 
 	cnop	0,8
