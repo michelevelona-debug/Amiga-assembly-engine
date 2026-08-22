@@ -116,5 +116,5 @@ TestoNumero:
 ; non il blitter).
 ;---------------------------------------------------------------------
 FontData:
-        incbin  "Metal.fnt"
+        incbin  "grafica/Metal.fnt"
         even
