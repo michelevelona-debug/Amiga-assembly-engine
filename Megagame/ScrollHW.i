@@ -87,13 +87,10 @@ SCROLL_PITCH        EQU     SFONDO_PITCH            ; byte per riga del buffer
 ;   $38 - 32 = $18
 ; Con $28 (32 px di anticipo) il prefetch si esaurisce a ritardo 32, ed
 ; e' esattamente li' che si vedevano sparire due tile a sinistra.
-SCROLL_DDFSTRT      EQU     $38-32          ; = $18. Un fetch intero = 64 px
-; DDFSTOP allargato di UN blocco ($b8 -> $d8) per coprire la finestra piu'
-; larga. Con FMODE=3 in lores il passo di fetch e' 32 color clock e ogni fetch
-; porta 8 byte = 64 px, quindi il numero di fetch e' (STOP-STRT)/32+1.
-SCROLL_DDFSTOP      EQU     $d8
-SCROLL_FETCHES      EQU     ((SCROLL_DDFSTOP-SCROLL_DDFSTRT)/32)+1
-SCROLL_FETCH_BYTES  EQU     SCROLL_FETCHES*8        ; byte letti per riga e per piano
+; SCROLL_DDFSTRT/DDFSTOP/FETCHES/FETCH_BYTES sono definite in testa a
+; Gioco.s, perche' il pitch dello sfondo ne discende e si calcola prima di
+; questo include. Qui si usano e basta: erano due catene identiche in due
+; file, tenute allineate da una guardia.
 ; BPLxMOD = pitch - byte fetchati per riga. I fetch sono 6 blocchi da 8
 ; byte = 48 (320 px visibili + 64 di prefetch), quindi il modulo segue il
 ; pitch: con 56 valeva 8, con 64 vale 16. Va tenuto derivato, non fisso.

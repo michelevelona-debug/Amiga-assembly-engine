@@ -25,21 +25,45 @@
 ; L'interruttore PATH_B e' stato tolto il 19 agosto 2026: valeva 1 e non
 ; esisteva piu' nessun ramo alternativo. Il vecchio blocco descriveva lo
 ; stato del "passo 2", superato da un pezzo.
+;
+; Stessa sorte per SWITCH_PIANI il 22 agosto 2026: serviva a mostrare
+; darkplane e parallasse UNO ALLA VOLTA per capire quale dei due avesse
+; fatto esplodere il costo al passo 2b (WORST da 193 a 392). La misura e'
+; stata fatta, valeva 3 da allora, e con 3 i due blocchi che dirottavano i
+; piani ausiliari su PathBVuoto erano codice morto mentre il
+; BSR SwapParBuffers stava dentro un condizionale attorno a una chiamata
+; che deve avvenire sempre. Per rifare quella misura oggi si usa
+; PAR_DISABLE, che e' l'interruttore rimasto e fa la stessa cosa.
 ;=====================================================================
 
-; SWITCH_PIANI: quali piani ausiliari sono ATTIVI a video.
-;   0 = nessuno (darkplane e parallasse su buffer vuoto, come al passo 2)
-;   1 = solo darkplane
-;   2 = solo parallasse
-;   3 = entrambi
-; Il passo 2b li ha riattivati insieme e il costo e' esploso (WORST da 193
-; a 392): con due variabili in gioco non si capisce quale. Questo permette
-; di misurarli UNO ALLA VOLTA. Le loro routine girano comunque sempre,
-; quindi il costo di calcolo resta nella misura in ogni caso: cambia solo
-; chi finisce a video, e quindi quanto lavora il DMA display.
-SWITCH_PIANI      EQU     3
+;=====================================================================
+; TITLE SCREEN - misure del file grafica/title.raw
+;
+; Stavano in title.i, generato da png2amiga.py, ed e' stato tolto: di otto
+; EQU ne serviva UNA (TITLE_PLANE_SIZE), i valori erano letterali invece che
+; derivati (la stessa forma che su Pietra e' arrivata sbagliata dal
+; convertitore, bit invece di byte), e meta' file era un esempio d'uso che
+; non corrisponde al codice. Ora seguono il pattern degli altri asset:
+; si dichiarano le misure VERE del file e il resto si deriva.
+;
+; VINCOLO: title.raw deve essere TITLE_PLANE_SIZE*TITLE_PIANI byte. Qui il
+; numero di piani e la geometria sono dichiarati, il file no: se lo riesporti
+; diverso, ShowTitle legge oltre la fine e nessuno se ne accorge.
+;=====================================================================
+TITLE_W				EQU		320				; px, larghezza del file
+TITLE_H				EQU		256				; righe del file
+TITLE_PIANI			EQU		8				; bitplane, layout SEQUENTIAL
+TITLE_BYTES_PER_ROW	EQU		TITLE_W/8
+TITLE_PLANE_SIZE	EQU		TITLE_BYTES_PER_ROW*TITLE_H	; byte per bitplane
 
-	include	"title.i"			; Costanti title screen (TITLE_WIDTH, ...)
+; PROVA A COSTANTI NOTE sui piani della title. Riempie title_bpl con valori
+; noti PRIMA di mostrarlo, cosi' si separa "percorso di display rotto" da
+; "contenuto o palette sbagliati". Da rimettere a 0 quando hai finito.
+;   0 = normale, si vede l'arte
+;   1 = tutti i piani a ZERO      -> schermo piatto del colore 0
+;   2 = solo il piano 0 acceso    -> schermo piatto del colore 1
+;   3 = una banda per piano       -> 8 bande da 32 righe, indici 1,2,4..128
+TITLE_TEST_FILL		EQU		0
 
 *****************************************************************************
 	include	"Startup2.i"		; Startup completo AGA + VBR + cache clear
@@ -67,30 +91,21 @@ BOB_H            	EQU     32				; altezza frame (px)
 OMINO_FRAMES     	EQU     8				; frame di animazione per direzione
 OMINO_DIR	      	EQU     8				; bande verticali (vedi DirectionDeltas)
 
-; Dimensioni REALI del file, quelle che si leggono con un ls: Omino32.raw e
-; Nemico32.raw sono 61440 byte = 384x256 px a 5 piani, cioe' 12288 byte per
-; piano. Servono in fase di ASSEMBLAGGIO, dove la struct non esiste ancora:
-; dimensionano OMINO_MASK/NEMICO_MASK con ds.b e vanno passate a BuildBobMask.
-; La catena BOB_WORDS -> BOB_BLIT_W -> BOB_SLOT_BYTES -> OMINO_PITCH ->
-; OMINO_ROWS che portava qui e' stata tolta il 19 agosto 2026: ripeteva in
-; aritmetica di EQU le stesse cinque operazioni che DisegnaBOB fa a runtime
-; leggendo la struct, quindi la stessa formula viveva in due posti.
-OMINO_SHEET_W    	EQU     384				; px, larghezza del file
-OMINO_SHEET_H    	EQU     256				; righe del file
+; Dimensioni REALI del file: Omino32.raw e Nemico32.raw sono 61440 byte,
+; cioe' 384x256 px a 5 piani = 12288 byte per piano. Servono in fase di
+; ASSEMBLAGGIO, dove la struct non esiste ancora: dimensionano OMINO_MASK e
+; NEMICO_MASK con ds.b e vanno passate a BuildBobMask.
+;
+; NON sono due numeri da tenere allineati a mano con la geometria: SONO la
+; geometria. Una riga di sheet porta un frame per ogni fotogramma, e un frame
+; occupa (larghezza/16+1) word, perche' la word in piu' e' lo stacco su cui si
+; spalma lo shift orizzontale. L'altezza e' una banda per direzione. Cambia
+; BOB_W, BOB_H, OMINO_FRAMES o OMINO_DIR e queste seguono da sole: prima
+; erano dichiarate a parte e una guardia verificava che le due strade si
+; incontrassero, adesso la strada e' una.
+OMINO_SHEET_W      EQU     (BOB_W/16+1)*2*OMINO_FRAMES*8	; px, larghezza del file
+OMINO_SHEET_H      EQU     BOB_H*OMINO_DIR					; righe del file
 PLANE_SIZE       	EQU     (OMINO_SHEET_W/8)*OMINO_SHEET_H	; byte per bitplane
-
-; GUARDIA: le dimensioni dichiarate del file e quelle che discendono dai frame
-; devono coincidere. Se cambi BOB_W, BOB_H, OMINO_FRAMES o OMINO_DIR senza
-; rifare l'arte (o viceversa), l'assemblaggio si ferma qui invece di produrre
-; un gioco che legge i frame agli offset sbagliati. E' la stessa rete gia'
-; messa sulla pietra, ed e' il difetto che ha morso piu' volte questo progetto:
-; un valore aggiornato e il file no.
-OMINO_PITCH_DERIVATO	EQU	(BOB_W/16+1)*2*OMINO_FRAMES		; byte per riga
-OMINO_ROWS_DERIVATE		EQU	BOB_H*OMINO_DIR					; righe
-ERRORE_OMINO_SHEET_NON_COERENTE	EQU	(OMINO_PITCH_DERIVATO-OMINO_SHEET_W/8)+(OMINO_ROWS_DERIVATE-OMINO_SHEET_H)
-	IFNE	ERRORE_OMINO_SHEET_NON_COERENTE
-GUARDIA_OMINO_SHEET		EQU	1/0
-	ENDC
 
 ; Volume di COLLISIONE, deliberatamente separato dalla grafica: la grafica e'
 ; 32x32 ma il box resta 16x16, cosi' il livello e gli spawn tarati sul box
@@ -130,7 +145,19 @@ DELTA_MAPPAVERA		EQU		8
 ; di ScrollHW.i, che pero' e' incluso DOPO e qui serve gia' per il pitch.
 ; Piu' sotto, dopo l'include, c'e' un controllo che ferma l'assemblaggio se i
 ; due valori divergono.
-DISPLAY_FETCH_BYTES	EQU		56
+; Byte che il display fetcha per riga e per piano. NON e' un numero scritto a
+; mano: discende dalla finestra di fetch, esattamente come in ScrollHW.i, che
+; adesso legge queste invece di ridefinirle. Prima erano due catene separate
+; che finivano sullo stesso numero, con una guardia in mezzo a controllare che
+; ci finissero davvero - e la copia esisteva solo perche' ScrollHW.i viene
+; incluso DOPO, e il pitch serviva prima.
+; Con FMODE=3 in lores il passo di fetch e' 32 color clock e ogni fetch porta
+; 8 byte = 64 px, quindi i fetch sono (STOP-STRT)/32+1.
+SCROLL_DDFSTRT		EQU		$38-32			; = $18. Un fetch intero = 64 px
+SCROLL_DDFSTOP		EQU		$d8				; allargato di un blocco per la finestra piu' larga
+SCROLL_FETCHES		EQU		((SCROLL_DDFSTOP-SCROLL_DDFSTRT)/32)+1
+SCROLL_FETCH_BYTES	EQU		SCROLL_FETCHES*8
+DISPLAY_FETCH_BYTES	EQU		SCROLL_FETCH_BYTES
 
 ; A che byte della riga punta il display per i piani 7-8 (parallasse).
 ; NON e' un dettaglio: davanti al puntatore serve una GUARDIA che ospiti
@@ -173,13 +200,11 @@ SFONDO_PITCH		EQU		((SFONDO_ROW_NEED+7)/8)*8
 ; piani 1-5: BPL1MOD e BPL2MOD sono condivisi fra piani dispari (1,3,5,7)
 ; e pari (2,4,6,8), quindi un pitch diverso farebbe slittare ogni riga.
 AUX_PITCH			EQU		SFONDO_PITCH
-; Dove finiscono i BOB: in Path B sul world buffer visualizzato.
-DEST_PITCH			EQU		SFONDO_PITCH
-DEST_PLANE_SZ		EQU		SFONDO_PLANE_SIZE
-; Limiti del buffer darkplane, che in Path B e' grande come la mappa e
-; non come lo schermo. Erano 11 e 256 scritti a mano.
-DARK_MAX_WORDX		EQU		(AUX_PITCH/2)-LIGHT_MASK_W-1
-DARK_MAX_ROWS		EQU		SFONDO_HEIGHT
+; DEST_PITCH/DEST_PLANE_SZ e il blocco DARK_* stavano qui. Sono stati spostati
+; piu' in basso, dopo i simboli da cui dipendono: Devpac valuta le EQU in UNA
+; passata e su un riferimento in avanti da "absolute expression must evaluate",
+; mentre vasm lo risolve in silenzio. Il sorgente deve andare bene a entrambi.
+; Vedi tools/controlla-forward.py, che rifa' questo controllo su tutto il file.
 ; ORIGINE DEL MONDO nel buffer, sui due assi SEPARATAMENTE.
 ;
 ; In Path A CopiaVideo leggeva da SFONDOGRANDE+16*SFONDO_PITCH+2, cioe'
@@ -235,6 +260,10 @@ BUFFER_ROWS			EQU		MAPPA_ROWS+1	; tutta la mappa + 1 tile di margine
 											; sopra (vedi BG_ORIGIN_OFS)
 SFONDO_HEIGHT		EQU		BUFFER_ROWS*16	; altezza SFONDOGRANDE in righe
 SFONDO_PLANE_SIZE 	EQU		SFONDO_PITCH*SFONDO_HEIGHT	; byte/plane
+; Dove finiscono i BOB: in Path B sul world buffer visualizzato. Stanno QUI e
+; non piu' su, perche' DEST_PLANE_SZ ha bisogno di SFONDO_PLANE_SIZE.
+DEST_PITCH			EQU		SFONDO_PITCH
+DEST_PLANE_SZ		EQU		SFONDO_PLANE_SIZE
 
 ; ---- Parallasse: 1 layer su 2 bitplane = 4 colori (valore 0..3 per pixel) ----
 ;
@@ -263,31 +292,25 @@ PARALLAX_SRC_PITCH	EQU		PARALLAX_SRC_W/8		; byte per riga, per piano
 ; parte sempre dalla riga 0 della striscia). Se un giorno le si desse uno
 ; scroll Y, la striscia dovra' tornare alta PARALLAX_SRC_H.
 ; VINCOLO: PARALLAX_SRC_H >= BG_VIS_ROWS (l'arte deve coprire l'area visibile).
-; 24 word = i 48 byte che il display fetcha per riga (40 di finestra + 8 di
-; prefetch FMODE=3), piu' 1 word di guardia per lo shift = 25.
-; Con 21 il blit copriva solo 40 byte: appena BPLCON1 introduceva un ritardo,
-; il bordo sinistro pescava nel blocco di prefetch mai scritto -> i primi ~64
-; px si riempivano di spazzatura e della word di guardia.
-; La larghezza del blit deve coprire ESATTAMENTE i byte che il display fetcha
-; per riga (SCROLL_FETCH_BYTES), piu' 1 word di guardia per lo shift.
-; Era 25 quando il fetch era di 48 byte; allargando DDF a 56 byte restavano
-; scoperti gli ultimi 8 byte = 64 px, che comparivano come margine a destra.
-; ScrollHW.i e' incluso dopo, quindi qui il valore va tenuto allineato a mano:
-; PARALLAX_BLIT_W = SCROLL_FETCH_BYTES/2 + 1 = 56/2 + 1 = 29
-; Larghezza del blit di parallasse, in word. Copre TUTTA la riga del buffer
-; (AUX_PITCH = 64 byte = 32 word), non solo la parte che il display "dovrebbe"
-; leggere.
+; Larghezza del blit di parallasse, in WORD. Copre TUTTA la riga del buffer
+; (AUX_PITCH = 72 byte = 36 word), non solo la parte che il display
+; "dovrebbe" leggere.
 ; MOTIVO: con ritardo BPLCON1 grande il display ARRETRA oltre il puntatore.
 ; Il primo pixel visibile e' buffer_pixel(64 + Pf - D) e con Pf~48 a D=63
-; diventa il pixel 49, cioe' il byte 6 — che era proprio la word di GUARDIA,
+; diventa il pixel 49, cioe' il byte 6: che era proprio la word di GUARDIA,
 ; l'unica che il blitter riempie di spazzatura. Da qui la striscia sporca a
 ; sinistra, presente solo per D>=48 cioe' CameraX da 1 a 16, e assente da
 ; fermo (D=0) e a scroll avviato (D<48). Scrivendo tutta la riga, qualunque
 ; arretramento trova dati validi.
-PARALLAX_BLIT_W         EQU     AUX_PITCH/2
-PARALLAX_WRAP_W         EQU     PARALLAX_BLIT_W*16      ; 512 px = una blittata
-PARALLAX_STRIP_W        EQU     PARALLAX_SRC_W+PARALLAX_WRAP_W		; 1152
-PARALLAX_STRIP_PITCH    EQU     PARALLAX_STRIP_W/8      ; 144
+; STORIA (non piu' vera, tenuta per non riproporla): il blit e' stato prima
+; 21, poi 24+1=25 word (i 48 byte fetchati con DDF stretto), poi
+; SCROLL_FETCH_BYTES/2+1 = 29. Ogni volta restava scoperto un pezzo di riga
+; e tornava una striscia sporca a un bordo. Da quando vale AUX_PITCH/2 la
+; riga e' coperta per intero e il legame con DDF non esiste piu'.
+PARALLAX_BLIT_W         EQU     AUX_PITCH/2             ; 36 word = 72 byte
+PARALLAX_WRAP_W         EQU     PARALLAX_BLIT_W*16      ; 576 px = una blittata
+PARALLAX_STRIP_W        EQU     PARALLAX_SRC_W+PARALLAX_WRAP_W		; 1216
+PARALLAX_STRIP_PITCH    EQU     PARALLAX_STRIP_W/8      ; 152
 PARALLAX_STRIP_ROWS     EQU     BG_VIS_ROWS             ; righe effettivamente blittate
 PARALLAX_STRIP_PLANE_SZ EQU     PARALLAX_STRIP_PITCH*PARALLAX_STRIP_ROWS	; un piano della striscia
 ; Da quale riga dell'arte comincia la striscia. La striscia e' alta
@@ -345,19 +368,7 @@ PARALLAX_SRC_HEAD       EQU     PARALLAX_SRC_PITCH*PARALLAX_SRC_ROW0	; righe sal
 ; i quattro colori del fondale mescolati.
 PARALLAX_SRC_SKIP       EQU     PARALLAX_SRC_PITCH*(PARALLAX_SRC_H-PARALLAX_STRIP_ROWS)	; coda non copiata
 
-; PROVA DI MICHELE: il blitter lascia dati sporchi nella prima colonna quando
-; fa lo shift fine. A 1 l'offset viene arrotondato a multipli di 16, quindi
-; ASH vale sempre 0 e il blit NON shifta: non c'e' nulla da far entrare da
-; sinistra e la prima word non puo' essere sporca.
-;   la striscia SPARISCE -> confermato, e' il primo word del blit shiftato.
-;                           Si risolve spostando la guardia piu' a sinistra,
-;                           non rinunciando allo shift fine.
-;   la striscia RESTA     -> non e' il blit, e il difetto e' altrove.
-; PREZZO durante la prova: la parallasse si muove a scatti di 16 px invece che
-; fluida. E' brutta ma serve solo a rispondere alla domanda.
-PARALLAX_NO_FINE        EQU     0
-
-; PROVA SUCCESSIVA: a 1 i piani 7-8 vengono puntati su PathBVuoto invece che
+; PROVA: a 1 i piani 7-8 vengono puntati su PathBVuoto invece che
 ; sul buffer di parallasse, cioe' la parallasse e' SPENTA. Serve a capire da
 ; quali piani venga davvero la striscia sporca a sinistra, come si era fatto
 ; col darkplane.
@@ -411,19 +422,235 @@ PAR_TEST_MODE           EQU     2
 ; giusto e' 57-k. La larghezza del residuo E' l'errore.
 
 ; --- gradiente cielo generato al boot -------------------------------------
-; Un cambio colore per riga visibile. Ogni passo sono 10 word:
-;   WAIT(riga)  +  BPLCON3 LOCT=1 + COLOR00 basso  +  BPLCON3 LOCT=0 + COLOR00 alto
-; piu' 2 word in coda per lasciare BPLCON3 a LOCT=0 (stato di riposo).
+; Un cambio colore per riga visibile. Il passo BASE sono 10 word:
+;   WAIT(riga) + BPLCON3 BANK=0/LOCT=1 + COLOR00 basso
+;              + BPLCON3 BANK=0/LOCT=0 + COLOR00 alto
+; piu' 2 word in coda per lasciare BPLCON3 a BANK=0/LOCT=0 (stato di riposo).
+;
+; I tre colori del layer di parallasse (valori 1/2/3 dei suoi 2 bitplane).
+; Sono la voce 0 dei banchi 2, 4 e 6 della palette: InitPalette8BPL li scrive
+; una volta al boot, e il copper puo' riscriverli riga per riga su COLOR00
+; cambiando i bit BANK di BPLCON3.
+; Erano definiti accanto a InitPalette8BPL; stanno qui perche' ora li legge
+; anche BuildSkyCopper, che sta piu' su nel file.
+SKYLINE_C1_RGB          EQU     $182838         ; corpo del ramo, il piu' scuro
+SKYLINE_C2_RGB          EQU     $2a3a52         ; mezzatinta
+SKYLINE_C3_RGB          EQU     $46608c         ; bordo illuminato del ramo
+;
+; SKYLINE_MIX_n: quanto la tinta n segue il colore del CIELO di quella riga,
+; in ottavi:   tinta_n(riga) = (SKYLINE_Cn_RGB*(8-mix) + cielo(riga)*mix) / 8
+; Mix 0 = la tinta non si muove e il copper NON la scrive: costo zero.
+; Mix 8 = la tinta diventa il cielo e la sagoma sparisce.
+;
+; SONO TUTTI A ZERO, ED E' UNA SCELTA MISURATA, NON UNA DIMENTICANZA.
+; Provato il 22 agosto 2026 con 2/4/6 e scartato guardando il risultato.
+; Il motivo: parallasse.raw NON e' uno skyline lontano, nonostante i nomi che
+; queste EQU si portavano dietro ("cresta", "foschia"). Sono ALBERI SECCHI IN
+; PRIMO PIANO: i tre valori sono presenti su TUTTE e 176 le righe visibili e
+; coprono il 32% dei pixel. Un primo piano deve STAGLIARSI sul cielo, non
+; fondersi: col mix i rami si scioglievano, e all'altezza dell'orizzonte, dove
+; il cielo e' chiaro, sparivano.
+;
+; LEZIONE DA NON RIPETERE: la misura che avevo portato a sostegno del mix era
+; il dL* fra righe adiacenti, e diceva il vero (le tinte bandavano MENO del
+; cielo). Era la grandezza sbagliata. Per una sagoma quello che conta e' il
+; CONTRASTO COL FONDO, che il mix distrugge per costruzione. Prima di misurare,
+; decidere quale grandezza risponde alla domanda.
+;
+; SE UN GIORNO SERVE: su un secondo layer davvero lontano il meccanismo torna
+; buono. Per QUESTI alberi l'unica variante che reggeva era 0/0/6, cioe'
+; muovere solo il valore 3 (il bordo illuminato) lasciando neri i corpi: una
+; luce di taglio che segue il tramonto.
+SKYLINE_MIX_1           EQU     0               ; corpo del ramo
+SKYLINE_MIX_2           EQU     0               ; mezzatinta
+SKYLINE_MIX_3           EQU     0               ; bordo illuminato
+
+; Quante tinte il copper riscrive a ogni riga. NON e' una manopola: si DERIVA
+; dai mix, perche' una tinta con mix 0 e' identica alla costante gia' scritta
+; da InitPalette8BPL e riscriverla ogni riga sarebbe lavoro per niente.
+; (mix+7)/8 vale 0 per mix=0 e 1 per mix da 1 a 8.
+SKYLINE_MOBILE_1        EQU     (SKYLINE_MIX_1+7)/8
+SKYLINE_MOBILE_2        EQU     (SKYLINE_MIX_2+7)/8
+SKYLINE_MOBILE_3        EQU     (SKYLINE_MIX_3+7)/8
+SKYLINE_TINTE_MOBILI    EQU     SKYLINE_MOBILE_1+SKYLINE_MOBILE_2+SKYLINE_MOBILE_3
+;
+; VINCOLO DI TEMPO, da rileggere PRIMA di alzare un mix: il colore deve essere
+; scritto prima del primo pixel visibile, che con DIW_H_START $81 cade al color
+; clock 64 (129 pixel lores / 2). Ogni MOVE del copper costa 2 cc, quindi il
+; blocco vale 8 cc con zero tinte mobili, 16 con una, 24 con due, 32 con tre,
+; piu' la contesa col DMA bitplane che parte a DDFSTRT = $18 = 24.
+; Il cielo si scrive per PRIMO apposta: uno sforamento colpirebbe solo le tinte
+; e si vedrebbe come banda di colore sul bordo SINISTRO della parallasse, mai
+; sul cielo. Se non entrasse, la leva e' spostare il WAIT a fine della riga
+; PRECEDENTE (H=$DC), come fa gia' il blocco del pannello, cosi' le scritture
+; cadono nel blank orizzontale invece che sotto il fetch.
+
 SKY_STEPS               EQU     BG_VIS_ROWS
-SKY_WORDS_PER_STEP      EQU     10
+SKY_WORDS_PER_STEP      EQU     10+8*SKYLINE_TINTE_MOBILI
 SKY_COPPER_WORDS        EQU     SKY_STEPS*SKY_WORDS_PER_STEP+2
+
+; ============================================================
+; ROTELLA DEL PUNTEGGIO - grafica/rotella_punteggio.raw
+; ============================================================
+; Striscia 320x16 a 2 piani SEPARATI, com'esce dall'editor: prima tutto il
+; piano 0, poi tutto il piano 1. Una riga e' larga quanto la STRISCIA, non
+; quanto un fotogramma.
+;
+; Griglia di fotogrammi 8x8 su due righe:
+;   riga 0: dieci cifre, ognuna col suo rotolamento verso la successiva.
+;           Il fotogramma 0 di ogni cifra e' la cifra FERMA: la cifra N sta
+;           alla colonna N*ROTELLA_PASSI.
+;   riga 1: i fotogrammi della rotazione veloce. Non indicano un numero, danno
+;           il senso della velocita' quando il punteggio fa un salto grosso.
+ROTELLA_W			EQU		8			; lato di un fotogramma (px)
+ROTELLA_H			EQU		8
+ROTELLA_PIANI		EQU		2
+ROTELLA_CIFRE		EQU		10
+ROTELLA_PASSI		EQU		4			; fotogrammi da una cifra alla successiva
+ROTELLA_VELOCI		EQU		4			; fotogrammi della rotazione veloce
+ROTELLA_RIGHE		EQU		2			; righe di celle nella striscia
+; Da qui in giu' e' tutto derivato: la striscia e' fatta cosi' perche' i
+; fotogrammi sono quelli, non viceversa.
+ROTELLA_CELL_W		EQU		ROTELLA_W*2		; 8 di arte + 8 di stacco per lo shift
+ROTELLA_COLONNE		EQU		ROTELLA_CIFRE*ROTELLA_PASSI
+ROTELLA_STRIP_W		EQU		ROTELLA_COLONNE*ROTELLA_CELL_W
+ROTELLA_STRIP_H		EQU		ROTELLA_RIGHE*ROTELLA_H
+ROTELLA_ROWB		EQU		ROTELLA_STRIP_W/8				; byte per riga PER PIANO
+ROTELLA_PLANE_SZ	EQU		ROTELLA_ROWB*ROTELLA_STRIP_H 	; byte per piano
+ROTELLA_PIANI_PAN	EQU		4
+ROTELLA_SHEET_SZ	EQU		ROTELLA_PLANE_SZ*ROTELLA_PIANI_PAN
+; Riquadro del punteggio dentro l'arte del pannello, MISURATO sui pixel di
+; Pannello.raw: l'interno pieno (indice 15) e' x 70..113, y 23..30, cioe'
+; 44x8. Le cinque cifre da 8 px ci stanno centrate con 2 px di margine.
+; Sono coordinate relative all'ANGOLO DEL PANNELLO, non allo schermo.
+PUNTEGGIO_CIFRE		EQU		5
+PUNTEGGIO_BOX_X		EQU		70			; primo px pieno del riquadro
+PUNTEGGIO_BOX_W		EQU		44
+PUNTEGGIO_Y			EQU		23
+PUNTEGGIO_X			EQU		PUNTEGGIO_BOX_X+(PUNTEGGIO_BOX_W-PUNTEGGIO_CIFRE*ROTELLA_W)/2
+; ATTENZIONE: questo conto DEVE dare un multiplo di 8. E' il fatto che ogni
+; cifra cada su un byte intero a permettere di scriverla con una MOVE.B invece
+; che col blitter, che qui vorrebbe maschera, shift e un minterm a tre canali.
+; Oggi da' 72 e torna. Cambiando la larghezza del riquadro o il numero di cifre
+; puo' non tornare piu': in quel caso non si aggiusta la routine, si sposta il
+; RIQUADRO nell'arte finche' il conto non torna.
+; Lo stacco fra una cifra e l'altra sta nell'ARTE e non nel passo: l'ultima
+; colonna di ogni cella e' vuota. Le colonne 0 e 7 di ogni cifra non hanno mai
+; un pixel di tratto - solo fondo - quindi spegnerne una non tocca i numeri.
+; Un passo di 9 px darebbe lo stesso stacco ma manderebbe le cifre 2, 3, 4 e 5
+; fuori dal confine di byte, e servirebbe uno shifter software.
+; Il massimo che ci sta nelle cifre che si vedono. Non e' un tetto scelto a
+; gusto: e' PUNTEGGIO_CIFRE nove di fila. Regge anche il vincolo della DIVU in
+; DisegnaPunteggio, che vuole il quoziente in 16 bit: 99999/10 = 9999, ci sta.
+; Con una cifra in piu' il primo giro di DIVU sborderebbe e quella routine
+; andrebbe rifatta a long. Se cambi PUNTEGGIO_CIFRE, cambia anche questo.
+PUNTEGGIO_MAX		EQU		99999
+; Punti per nemico abbattuto. Il colpo che non uccide non da' punti.
+PUNTI_NEMICO		EQU		100
+; Di quanti FOTOGRAMMI il numero mostrato si avvicina a quello vero a ogni
+; frame. Non sono punti: il contatore della rotella e' in scala ROTELLA_PASSI,
+; quindi un punto vale 4 passi. E' un parametro, non un interruttore.
+;   velocita' = PUNTEGGIO_PASSO * 50 / ROTELLA_PASSI punti al secondo
+;   con 1 -> 12,5 punti/s, e si vedono tutti e quattro i fotogrammi
+;   con 2 -> 25 punti/s, se ne vedono due su quattro
+;   con 4 -> 50 punti/s ma la fase e' sempre 0: si torna allo scatto netto
+; Sopra 1 il rotolamento perde fotogrammi, e con 3 li mostra pure fuori ordine
+; (0,3,2,1): se serve piu' velocita' la strada giusta e' la rotazione veloce
+; della riga 1 dello sheet, che e' disegnata apposta per i salti grossi.
+; A 0 il punteggio non arriverebbe mai: non metterlo a 0.
+PUNTEGGIO_PASSO		EQU		1
+
+; ============================================================
+; INDICATORI DI SINISTRA - grafica/indicatore.raw
+; ============================================================
+; Griglia 9 colonne x 11 righe di celle 48x8, arte 40x8 nei primi 40 px della
+; cella. Le RIGHE sono gli 11 livelli di riempimento (0, 4, 8 ... 40 px). Le
+; COLONNE sono un'animazione a riposo: la punta gonfia in avanti (1,2,3) e poi
+; rientra (4..8), con le scintille che scorrono. Oggi si usa solo la colonna 0,
+; che e' la posa ferma ed e' l'unica presente a TUTTI gli undici livelli: alla
+; riga 0 mancano le 4..8 (sotto lo zero non si rientra) e alla riga 10 mancano
+; le 1..3 (oltre il pieno non si gonfia).
+INDIC_W				EQU		40			; larghezza dell'arte (px)
+INDIC_H				EQU		8
+INDIC_PIANI			EQU		2			; piani dell'arte, come esce dall'editor
+INDIC_LIVELLI		EQU		11			; righe della griglia: livelli 0..10
+INDIC_CELL_W		EQU		48			; passo orizzontale di una cella (px)
+; Le colonne di una riga non sono animazioni qualsiasi: sono la posa a riposo
+; e le due TRANSIZIONI che partono dal livello di quella riga.
+;   colonne 0..2     ferma, con le bolle che salgono: un ciclo che gira sempre
+;   colonne 3..7     la barra che SALE verso il livello successivo
+;   colonne 8..12    la barra che SCENDE verso il livello precedente
+; E' anche la spiegazione dei due buchi nella griglia: alla riga 10 mancano le
+; colonne della salita perche' dal pieno non si sale, e alla riga 0 quelle
+; della discesa perche' dal vuoto non si scende. La macchina a stati non le
+; chiede mai, ed e' un invariante da verificare quando la si tocca.
+INDIC_FASI_FERMA	EQU		3						; colonne 0..2, le bolle
+INDIC_FASI_SU		EQU		5						; colonne 3..7
+INDIC_FASI_GIU		EQU		5						; colonne 8..12
+INDIC_FASE_SU		EQU		INDIC_FASI_FERMA		; prima colonna della salita
+INDIC_FASE_GIU		EQU		INDIC_FASE_SU+INDIC_FASI_SU	; prima colonna della discesa
+INDIC_FOTOGRAMMI	EQU		INDIC_FASE_GIU+INDIC_FASI_GIU	; colonne di una riga
+; Quanti frame dura un fotogramma. Un livello costa INDIC_RITMO*INDIC_FASI_SU+1
+; frame a salire e altrettanti a scendere - il +1 e' il frame in cui la
+; transizione parte. Con 3 sono 16 frame (0,32 s) per livello nei due versi, e
+; la barra si riempie da zero in poco piu' di 3 secondi.
+; Le bolle vanno per conto loro e piu' adagio: sono una cosa che respira, non
+; una transizione. Con 8 il ciclo delle tre bolle dura mezzo secondo.
+; Nessuno dei due va messo a 0: l'animazione non avanzerebbe mai.
+INDIC_RITMO			EQU		3
+INDIC_RITMO_BOLLE	EQU		8
+; Da qui in giu' e' tutto derivato dalla griglia.
+INDIC_BYTE_W		EQU		INDIC_W/8			; 5 byte: l'arte e' larga un numero
+												; intero di byte, ed e' il motivo
+												; per cui la disegna la CPU
+INDIC_STRIP_W		EQU		INDIC_FOTOGRAMMI*INDIC_CELL_W
+INDIC_ROWB			EQU		INDIC_STRIP_W/8		; byte per riga PER PIANO
+INDIC_PLANE_SZ		EQU		INDIC_ROWB*INDIC_H*INDIC_LIVELLI
+INDIC_PIANI_PAN		EQU		4
+INDIC_SHEET_SZ		EQU		INDIC_PLANE_SZ*INDIC_PIANI_PAN
+
+; Posizione dei due riquadri, MISURATA sui pixel di Pannello.raw dopo che i
+; buchi sono stati portati a x 24..63: 40 px esatti e allineati al byte, che e'
+; quello che permette di scrivere con la CPU invece che col blitter.
+; Sono coordinate relative all'ANGOLO DEL PANNELLO, non allo schermo.
+INDIC_X				EQU		24			; primo px del buco (multiplo di 8)
+INDIC_ALTO_Y		EQU		14			; riquadro in alto: energia
+INDIC_BASSO_Y		EQU		32			; riquadro in basso: vita del player
+; INDIC_BASSO_RASTER sta piu' in basso, sotto PANNELLO_ART_RASTER da cui
+; discende: Devpac valuta le EQU dove le incontra e non tollera un riferimento
+; in avanti.
+
+; Fondo scala dei due valori. Il livello mostrato si ricava, non si conta:
+;   livello = valore * (INDIC_LIVELLI-1) / massimo
+; Cambiando un massimo la barra si ritara da sola.
+PLAYER_PF_MAX		EQU		20			; punti ferita del player a inizio partita
+ENERGIA_MAX			EQU		20			; stessa scala, per ora: l'energia non ha
+										; ancora un uso nel gioco
+
+; --- scontro al contatto (vedi Combattimento) ---
+; I nemici hanno danno e recupero nella loro EnemyInitTable, il player no:
+; sono questi due. Il recupero e' in frame, quindi a 50 Hz.
+PLAYER_DANNO		EQU		1			; quanto toglie a un nemico toccandolo
+PLAYER_INVULN_MAX	EQU		50			; un secondo di respiro dopo un colpo preso.
+										; Se fosse 0 il contatto toglierebbe un
+										; punto ferita a OGNI frame.
 
 ; ============================================================
 ; Pannello.i - generato da png2amiga.py
 ; ============================================================
 PANNELLO_HEIGHT			EQU     80
 PANNELLO_BITPLANES		EQU     4
-PANNELLO_BYTES_PER_ROW	EQU     40
+; Finestra di display orizzontale. Sta qui perche' la larghezza del pannello
+; ne discende: il pannello copre esattamente la finestra, non un numero suo.
+DIW_H_START			EQU		$81
+DIW_H_STOP			EQU		$C1				; +256 = 449, quindi finestra 
+											; 129..449 = 320 px
+DIW_WIDTH			EQU		(DIW_H_STOP+256)-DIW_H_START	; px visibili
+
+; Il pannello e' largo QUANTO LA FINESTRA. Prima erano 40 byte scritti a mano
+; e una guardia controllava che 40*8 facesse 320: adesso i 40 byte escono
+; dalla finestra e non c'e' piu' un secondo numero che possa divergere.
+PANNELLO_BYTES_PER_ROW	EQU		DIW_WIDTH/8
 ; Era il letterale 3200, cioe' 40*80 gia' fatto a mano: lo stesso genere di
 ; numero scritto una volta e poi mai piu' ricontrollato che su Pietra.raw
 ; era arrivato sbagliato (bit invece di byte). Ora discende dalle due misure.
@@ -449,6 +676,12 @@ PANNELLO_SEP_ROWS		EQU		2
 PANNELLO_ART_RASTER		EQU		PANNELLO_TOP_RASTER+PANNELLO_SEP_ROWS
 PANNELLO_BOT_RASTER		EQU		PANNELLO_ART_RASTER+PANNELLO_HEIGHT
 
+; Riga raster della prima riga del riquadro BASSO degli indicatori: e' li' che
+; il copper cambia il colore della barra, cosi' i due riquadri possono mostrare
+; fasce diverse nello stesso quadro. Sta qui e non con le altre INDIC_* perche'
+; discende da PANNELLO_ART_RASTER, e Devpac valuta le EQU dove le incontra.
+INDIC_BASSO_RASTER		EQU		PANNELLO_ART_RASTER+INDIC_BASSO_Y
+
 ; Il buffer di visualizzazione ha lo STESSO pitch del mondo, non 40 byte: cosi'
 ; il display usa gli stessi BPLxMOD e la stessa geometria DDF/DIW, e al confine
 ; bastano i puntatori e il numero di piani.
@@ -458,14 +691,6 @@ PANNELLO_BOT_RASTER		EQU		PANNELLO_ART_RASTER+PANNELLO_HEIGHT
 PANNELLO_BUF_PITCH		EQU		SFONDO_PITCH
 PANNELLO_BUF_PLANE		EQU		PANNELLO_BUF_PITCH*PANNELLO_HEIGHT
 
-; PROVA: colore di fondo della fascia pannello, scritto dal copper.
-; A $0F0F (magenta acceso) serve a capire se il copper ARRIVA al blocco:
-;   fascia MAGENTA -> il copper esegue il blocco e la finestra copre la zona,
-;                     quindi il difetto e' nel bitmap o nei puntatori
-;   fascia NERA    -> il copper non ci arriva, oppure la finestra verticale
-;                     non copre quelle righe: si guarda DIWSTOP e il WAIT
-; Valore definitivo: $0000 (nero).
-; PROVA: a 1 il pannello viene riempito con costanti invece che con l'arte.
 ; Byte dall'inizio della riga a cui viene messa l'arte dentro PannelloBuf.
 ; MISURATO con la prova a costanti: riempiendo da DELTA_MAPPAVERA restavano
 ; 61 px a sinistra col solo piano 0, cioe' circa 8 byte non coperti. La
@@ -475,40 +700,186 @@ PANNELLO_BUF_PLANE		EQU		PANNELLO_BUF_PITCH*PANNELLO_HEIGHT
 ; esattamente quanto va aggiunto a questo valore.
 PANNELLO_ART_BYTE_OFS	EQU		0
 
-; Posizione orizzontale del WAIT che precede la scrittura dei puntatori del
-; pannello. E' il valore piu' delicato del blocco, e va spiegato.
-; MISURATO: invertendo l'ordine di scrittura dei quattro puntatori, i piani
-; che sparivano si sono invertiti anche loro. Quindi e' una CORSA col DMA e a
-; perdere sono sempre i PRIMI scritti: prendono un incremento di 8 byte, che
-; a schermo sono i 64 px mancanti.
-; PERCHE': DDFSTOP e' $d8 = 216 e con 8 bitplane in FMODE=3 l'ultimo blocco ha
-; 8 accessi, circa 16 cc, quindi finisce verso 232. La linea PAL ne ha 227:
-; il fetch della riga precedente SFORA di ~5 cc dentro la riga del pannello.
-; La finestra tranquilla va quindi da cc 5 a DDFSTRT (24): 19 cc, cioe' 9 MOVE.
-; Servono esattamente 9 MOVE: BPLCON0 piu' i quattro puntatori.
-; TARATURA: se mancano ancora dei piani, ALZARE questo valore di 2 alla volta
-; (il fetch precedente finisce piu' tardi del previsto); se invece si rompe
-; tutto, ABBASSARLO (le scritture non fanno in tempo prima di DDFSTRT).
-PANNELLO_PTR_WAIT_H		EQU		$E0
-
-; COMPENSAZIONE DELLA CORSA COL DMA.
-; MISURATO due volte, e la seconda con l'ordine invertito che ha spostato il
-; difetto sugli altri piani: i primi PANNELLO_PTR_RACE_N puntatori scritti dal
-; copper prendono un incremento di PANNELLO_PTR_RACE_ADJ byte, perche' il DMA
-; bitplane della riga precedente non ha ancora finito. A schermo sono i 64 px
-; in cui quei piani mancano.
-; Non riesco a spostare le scritture in una finestra sicura senza bloccare la
-; macchina, quindi si compensa: ai primi N puntatori si sottrae in partenza
-; esattamente quello che il DMA aggiungera'.
-; TARATURA: se restano px con piani mancanti a DESTRA, alzare RACE_N; se
-; compaiono a SINISTRA, abbassarlo. A 0 la compensazione e' disattivata.
-PANNELLO_PTR_RACE_N		EQU		0	; non serve piu': le righe di separazione non fanno fetch
-PANNELLO_PTR_RACE_ADJ	EQU		8
-
 ; PROVA a costanti invece dell'arte: vedi DisegnaPannello. A 0 disegna l'arte.
 PANNELLO_TEST_FILL		EQU		0	; 1 = costanti al posto dell'arte (diagnostica)
 
-PANNELLO_TEST_COLOR		EQU		$0000	; nero: il gradiente cielo finisce sopra
+; ============================================================
+; STRUMENTI DEL PANNELLO - schermo, spie, quadrante
+; ============================================================
+; Tre strisce a 2 piani con la STESSA convenzione: il valore 0 e' TRASPARENTE,
+; e al montaggio si tiene il pixel del PANNELLO che sta sotto. Non e' un vezzo,
+; e' quello che permette a una cella di essere piu' grande del buco nero senza
+; rovinare la carrozzeria intorno: serve perche' questi tre buchi non stanno
+; sulla griglia dei byte, e a differenza dei riquadri delle barre e del
+; punteggio non basta spostarli.
+;
+; MISURE PRESE SUI PIXEL di grafica/Pannello.raw (componenti connesse di indice
+; 15), non sulle note in scala 336:
+;     schermo    x141..184 y23..44   44x22   rettangolo
+;     quadrante  x215..256 y10..46   42x37   cerchio
+;     spie       x264..276 e x282..294 y40..48
+;                x255..267 e x273..285 y48..58     tredici px di diametro
+;
+; PERCHE' SPOSTARE I BUCHI NON BASTA:
+;   - nei quattro buchi delle spie NON esiste nessun quadrato 8x8 allineato al
+;     byte tutto nero: il massimo sono 4 righe, e per due dei quattro sono
+;     zero. Un cerchio da 13 px inscrive un quadrato da 9,2 solo se e'
+;     CENTRATO, e nessuno dei quattro ha il centro dove servirebbe.
+;   - nel quadrante il rettangolo nero allineato piu' grande e' 24x28 dentro un
+;     buco da 42x37: la lancetta resterebbe un moncone, raggio 10 contro 21.
+;
+; A RUNTIME non cambia niente rispetto a punteggio e barre: la cella si scrive
+; con MOVE.B di byte pieni. Niente maschera, niente shift, niente blitter. La
+; composizione con lo sfondo si paga una volta sola al boot, in ComponiSheet.
+;
+; L'arte la genera tools/genera-strumenti.py, che TAGLIA ogni tinta sulla
+; maschera del buco letta da Pannello.raw e conta i pixel fuori: nessuna tinta
+; puo' finire sopra la carrozzeria. Lo stesso script stampa le posizioni che
+; sono ricopiate qui sotto e in SpieTab.
+
+; --- le tinte: quali voci di palette usano gli strumenti ------------------
+; Schermo e quadrante stanno su righe raster che si sovrappongono a quelle
+; della rotella del punteggio, quindi non possono avere voci loro: si prendono
+; gli stessi tre grigi. Le spie stanno tutte SOTTO il riquadro basso degli
+; indicatori, e da li' in giu' le tre voci degli indicatori non le usa piu'
+; nessuno: il copper le ridipinge di giallo (vedi la banda in CopperList).
+STRUM_TINTA1		EQU		4			; $334  grigio scuro
+STRUM_TINTA2		EQU		5			; $99a  grigio medio
+STRUM_TINTA3		EQU		6			; $eee  quasi bianco
+SPIA_TINTA1			EQU		2			; le tre voci degli indicatori, che da
+SPIA_TINTA2			EQU		13			; SPIA_RASTER in giu' diventano gialle
+SPIA_TINTA3			EQU		14
+; I gialli non sono misurati su niente: sono scelti qui. Cambiandoli cambia
+; solo la banda copper, l'arte non li conosce.
+SPIA_COL1			EQU		$0631		; ambra scura
+SPIA_COL2			EQU		$0ea2		; ambra
+SPIA_COL3			EQU		$0fe6		; giallo vivo
+
+; --- schermo centrale -----------------------------------------------------
+; Riga 0 della griglia: gli 8 fotogrammi della neve. Riga 1: le 5 immagini
+; degli eventi, per ora segnaposto numerati, e 3 celle libere.
+SCHERMO_W			EQU		40			; px dell'arte, che qui e' anche la cella
+SCHERMO_H			EQU		16
+SCHERMO_NEVE		EQU		8			; colonne usate della riga 0
+SCHERMO_IMMAGINI	EQU		5			; colonne usate della riga 1
+SCHERMO_COLONNE		EQU		8
+SCHERMO_RIGHE		EQU		2
+SCHERMO_X			EQU		144			; multiplo di 8, e il blocco 40x16 sta
+SCHERMO_Y			EQU		26			; tutto dentro il buco x141..184 y23..44
+; Frame che dura un fotogramma. A 1 la neve cambia a ogni quadro. NON metterlo
+; a 0: il contatore non scatterebbe mai.
+SCHERMO_RITMO		EQU		2
+SCHERMO_BYTE_W		EQU		SCHERMO_W/8
+SCHERMO_ROWB		EQU		SCHERMO_COLONNE*SCHERMO_BYTE_W
+SCHERMO_PLANE_SZ	EQU		SCHERMO_ROWB*SCHERMO_H*SCHERMO_RIGHE
+SCHERMO_SHEET_SZ	EQU		SCHERMO_PLANE_SZ*PANNELLO_BITPLANES
+
+; --- spie in basso a destra -----------------------------------------------
+; Le RIGHE della griglia sono le quattro spie, non un'animazione: ognuna ha il
+; disco a uno scostamento diverso dentro la cella da 2 byte, perche' nessuno
+; dei quattro buchi ha il centro su un multiplo di 8. Lo scostamento lo fa lo
+; script, cosi' il montaggio non deve spostare bit. Le COLONNE sono
+; l'accensione che sfarfalla: la 0 e' spenta, l'ultima e' accesa a regime.
+SPIA_W				EQU		16			; px della cella (il disco e' 8)
+SPIA_H				EQU		8
+SPIA_FASI			EQU		8			; colonne
+SPIA_GIALLE			EQU		4			; righe della griglia gialla, una per spia
+SPIA_RITMO			EQU		2			; frame per fotogramma dell'accensione
+SPIA_BYTE_W			EQU		SPIA_W/8
+SPIA_ROWB			EQU		SPIA_FASI*SPIA_BYTE_W
+SPIA_PLANE_SZ		EQU		SPIA_ROWB*SPIA_H*SPIA_GIALLE
+SPIA_SHEET_SZ		EQU		SPIA_PLANE_SZ*PANNELLO_BITPLANES
+; Prima riga di pannello occupata da una spia: da qui in giu' il copper porta
+; al giallo le tre voci degli indicatori.
+SPIA_Y0				EQU		40
+SPIA_RASTER			EQU		PANNELLO_ART_RASTER+SPIA_Y0
+	IFLT	SPIA_RASTER-256
+; Il WAIT delle spie nella copperlist presuppone la riga OLTRE la 255: usa
+; l'arma del V8 e sottrae 256. Se la fascia del pannello si sposta piu' in su,
+; quel WAIT va riscritto nella forma normale.
+GUARDIA_SPIA_RASTER	EQU		1/0
+	ENDC
+
+; --- la quinta spia, ROSSA, nel cerchio sotto la lancetta -----------------
+; Stessa arte delle altre quattro - stessi dischi, stesse fasi - ma in un file
+; suo, e il motivo non e' la grafica: e' la PALETTE. Sta sulle stesse righe
+; delle due spie gialle in basso (y49..56), quindi non puo' usare le loro tre
+; voci. Usa i grigi 4/5/6, che da ROSSA_RASTER in giu' il copper porta al rosso:
+; li' sotto non li vuole piu' nessuno, il quadrante finisce a y46 e lo schermo
+; a y41. Mappa diversa vuol dire descrittore diverso, e un descrittore legge un
+; file solo: da qui il secondo .raw.
+; Il disco cade a x224..231, che e' allineato al byte ED e' tutto nero: la
+; composizione con lo sfondo serve solo per la meta' destra della cella.
+ROSSA_RIGHE			EQU		1
+ROSSA_TINTA1		EQU		4			; le tre voci della rotella, che da
+ROSSA_TINTA2		EQU		5			; ROSSA_RASTER in giu' diventano rosse
+ROSSA_TINTA3		EQU		6
+ROSSA_COL1			EQU		$0400		; rosso cupo
+ROSSA_COL2			EQU		$0b22		; rosso
+ROSSA_COL3			EQU		$0f55		; rosso vivo
+ROSSA_X				EQU		224			; multiplo di 8
+ROSSA_Y				EQU		49
+ROSSA_PLANE_SZ		EQU		SPIA_ROWB*SPIA_H*ROSSA_RIGHE
+ROSSA_SHEET_SZ		EQU		ROSSA_PLANE_SZ*PANNELLO_BITPLANES
+; Prima riga in cui i grigi diventano rossi. Sta DOPO l'ultima riga del
+; quadrante (y46) e prima della prima riga della spia rossa (y49).
+ROSSA_Y0			EQU		47
+ROSSA_RASTER		EQU		PANNELLO_ART_RASTER+ROSSA_Y0
+	IFLT	ROSSA_RASTER-256
+GUARDIA_ROSSA_RASTER	EQU		1/0
+	ENDC
+; Quante spie ci sono in tutto: e' il numero di righe di SpieTab, il numero di
+; bit utili di SpieAccese e il giro di DisegnaSpie. Non e' un numero a parte.
+SPIE_TOT			EQU		SPIA_GIALLE+ROSSA_RIGHE
+
+; --- la lettera nel quadrato all'estrema destra ---------------------------
+; Un carattere del font, disegnato solo quando cambia. Il buco e' x282..294
+; y23..30 e NON contiene nessun quadrato 8x8 allineato al byte: l'unica
+; posizione del glifo tutta nera e' x285..292, che sta a cavallo di due byte.
+; Quindi la cella e' larga 2 byte (x280..295) e il glifo ci sta dentro spostato
+; di LETTERA_OFS px. Qui lo spostamento lo fa il codice e non uno script,
+; perche' il glifo lo si sceglie a runtime.
+LETTERA_X			EQU		280			; primo byte della cella (multiplo di 8)
+LETTERA_Y			EQU		23
+LETTERA_OFS			EQU		5			; px del glifo dentro la cella
+LETTERA_TINTA		EQU		6			; $eee: qui i grigi sono ancora grigi
+	IFGT	LETTERA_OFS-8
+; Il glifo si porta in posizione con una LSL.W: oltre gli 8 px servirebbe un
+; verso di scorrimento diverso.
+GUARDIA_LETTERA_OFS	EQU		1/0
+	ENDC
+
+; --- quadrante grande a destra --------------------------------------------
+; La cella e' il buco INTERO, non il rettangolo nero: fuori dal cerchio l'arte
+; e' trasparente e il montaggio ci rimette lo sfondo del pannello.
+; Le colonne sono i 16 angoli da 22,5 gradi, numerati come una bussola: 0 e'
+; nord e si gira in senso orario. Le righe sono la lancetta pulita piu' le tre
+; fasi dello sbuffo di vapore.
+QUAD_W				EQU		40			; px, cioe' il buco x216..255
+QUAD_H				EQU		37			;                   y10..46
+QUAD_ANGOLI			EQU		16			; colonne, 360/16 = 22,5 gradi
+QUAD_RIGHE			EQU		4			; 0 = pulita, 1..3 = lo sbuffo
+QUAD_SBUFFI			EQU		QUAD_RIGHE-1
+QUAD_X				EQU		216			; multiplo di 8
+QUAD_Y				EQU		10
+; Frame per passo di rotazione. Le fasi dello sbuffo entrano una per frame
+; dentro il passo, quindi tenerlo uguale a QUAD_SBUFFI le mostra tutte e tre.
+QUAD_RITMO			EQU		3
+QUAD_BYTE_W			EQU		QUAD_W/8
+QUAD_ROWB			EQU		QUAD_ANGOLI*QUAD_BYTE_W
+QUAD_PLANE_SZ		EQU		QUAD_ROWB*QUAD_H*QUAD_RIGHE
+QUAD_SHEET_SZ		EQU		QUAD_PLANE_SZ*PANNELLO_BITPLANES
+; Le quattro posizioni di riposo, come indici di bussola.
+QUAD_POS_NORD		EQU		0
+QUAD_POS_EST		EQU		4
+QUAD_POS_SSE		EQU		7
+QUAD_POS_OVEST		EQU		12
+
+	IFNE	(SCHERMO_PLANE_SZ&3)|(SPIA_PLANE_SZ&3)|(QUAD_PLANE_SZ&3)|(ROSSA_PLANE_SZ&3)
+; ComponiSheet percorre il piano a long: la sua dimensione deve essere un
+; multiplo di 4. Discende dalla griglia, quindi qui si controlla la griglia.
+GUARDIA_STRUM_LONG	EQU		1/0
+	ENDC
 
 ; ============================================================
 ; pietra.i - generato da png2amiga.py
@@ -522,34 +893,26 @@ PANNELLO_TEST_COLOR		EQU		$0000	; nero: il gradiente cielo finisce sopra
 ; destro completamente vuoto (stessa convenzione di Omino32/Nemico32),
 ; UNA sola banda (nessuna direzione), indici di palette usati 24/25/27
 ; (grigi $0777/$0888/$0aaa della rampa 20-31 in Tiles.cop).
-; Dimensioni REALI del file, come per lo sheet dell'omino: Pietra.raw e'
-; 2560 byte = 256x16 px a 5 piani, cioe' 512 byte per piano.
-PIETRA_SHEET_W        EQU     256				; px, larghezza del file
-PIETRA_SHEET_H        EQU     16				; righe del file
-PIETRA_BYTES_PER_ROW  EQU     PIETRA_SHEET_W/8			; 32 byte per riga
-PIETRA_PLANE_SIZE     EQU     PIETRA_BYTES_PER_ROW*PIETRA_SHEET_H	; 512 byte/piano
-
 ; --- Descrizione dell'ASSET: e' da qui che InitPietra riempie la struct ---
 ; L'arte occupa i primi 16 px dello slot; il resto e' lo stacco che serve
 ; allo shift orizzontale, esattamente come per BOB_W nello sheet dell'omino.
-; PIETRA_H era scritta come alias di PIETRA_HEIGHT: coincidono solo perche'
-; lo sheet ha UNA banda, quindi altezza del file e altezza del fotogramma
-; sono lo stesso numero per caso, non per regola. Ora sono separate.
+; PIETRA_H e l'altezza del FOTOGRAMMA: coincide con l'altezza del file solo
+; perche' lo sheet ha una banda sola, e questo e' un caso, non una regola.
 PIETRA_W			EQU		16				; larghezza arte (px)
 PIETRA_H			EQU		16				; altezza arte (px)
 PIETRA_FRAMES		EQU		8				; frame di animazione (potenza di 2)
 PIETRA_BANDE		EQU		1				; una sola banda: nessuna direzione
 
-; GUARDIA: stessa rete dell'omino. La precedente confrontava SOLO il pitch;
-; le righe no, quindi un PIETRA_BANDE sbagliato sarebbe passato liscio e i
-; frame sarebbero finiti a offset buoni su una sheet alta il doppio.
-PIETRA_PITCH_DERIVATO	EQU	(PIETRA_W/16+1)*2*PIETRA_FRAMES		; byte per riga
-PIETRA_ROWS_DERIVATE	EQU	PIETRA_H*PIETRA_BANDE				; righe
-ERRORE_PIETRA_SHEET_NON_COERENTE	EQU	(PIETRA_PITCH_DERIVATO-PIETRA_BYTES_PER_ROW)+(PIETRA_ROWS_DERIVATE-PIETRA_SHEET_H)
-	IFNE	ERRORE_PIETRA_SHEET_NON_COERENTE
-GUARDIA_PIETRA_SHEET	EQU	1/0
-	ENDC
-
+; Le misure REALI del file non sono numeri da tenere allineati a mano con
+; l'asset: DISCENDONO dall'asset. Una riga di sheet porta un frame per ogni
+; fotogramma e un frame occupa (larghezza/16+1) word, perche' la word in piu'
+; e' lo stacco su cui si spalma lo shift. L'altezza e' una banda per ogni
+; direzione. Prima erano dichiarate a parte e una guardia verificava che le
+; due strade si incontrassero; adesso la strada e' una.
+PIETRA_SHEET_W        EQU     (PIETRA_W/16+1)*2*PIETRA_FRAMES*8	; px, larghezza del file
+PIETRA_SHEET_H        EQU     PIETRA_H*PIETRA_BANDE				; righe del file
+PIETRA_BYTES_PER_ROW  EQU     PIETRA_SHEET_W/8			; 32 byte per riga
+PIETRA_PLANE_SIZE     EQU     PIETRA_BYTES_PER_ROW*PIETRA_SHEET_H	; 512 byte/piano
 
 ; MAPPA_COLS / MAPPA_ROWS sono definite PIU' SU (prima di SFONDO_PITCH, che
 ; ora ne discende). Qui restano solo le costanti che dipendono da loro.
@@ -626,8 +989,6 @@ BUFFER_COLS			EQU		MAPPA_COLS		; Path B: il buffer contiene TUTTA la mappa
 ; Riga raster in cui apre la finestra. Gli sprite ci si agganciano: VSTART
 ; e HSTART si misurano da qui, non da valori cablati.
 DIW_V_START			EQU		$2C
-DIW_H_START			EQU		$81
-DIW_H_STOP			EQU		$C1				; +256 = 449, quindi finestra 129..449 = 320 px
 ; DERIVATA dalla finestra, non piu' cablata: e' la larghezza visibile in tile.
 ; Non dice quanto si DISEGNA (il mondo e' disegnato tutto e il fetch porta 448
 ; px per riga): dice alla logica quanto si VEDE, e da qui dipendono TILEXMAX,
@@ -635,14 +996,6 @@ DIW_H_STOP			EQU		$C1				; +256 = 449, quindi finestra 129..449 = 320 px
 ; scorre oltre il bordo mappa e il cull sbaglia.
 VIS_COLS			EQU		(DIW_H_STOP+256-DIW_H_START)/16
 
-; GUARDIA: l'arte del pannello deve essere larga esattamente quanto la
-; finestra visibile. Piu' stretta lascia una striscia di COLOR00 a destra,
-; piu' larga fa leggere oltre la riga. Sta QUI e non nel blocco del pannello
-; perche' DIW_H_START/STOP sono definite piu' su ma VIS_COLS le riassume.
-ERRORE_PANNELLO_LARGO_DIVERSO_DALLA_FINESTRA	EQU	PANNELLO_BYTES_PER_ROW*8-(DIW_H_STOP+256-DIW_H_START)
-	IFNE	ERRORE_PANNELLO_LARGO_DIVERSO_DALLA_FINESTRA
-GUARDIA_PANNELLO_LARGHEZZA	EQU	1/0
-	ENDC
 
 ; TILEXMAX / TILEYMAX = numero massimo che TileX/TileY puo' raggiungere.
 ; Il buffer carica MAPPA[TileY..TileY+BUFFER_ROWS-1][TileX..TileX+BUFFER_COLS-1],
@@ -700,11 +1053,18 @@ RAWKEY_M			EQU 	$37			; rawkey del tasto M (toggle musica)
 RAWKEY_G			EQU 	$24			; rawkey del tasto G (toggle gravita' / 8-direzioni)
 RAWKEY_P			EQU 	$19			; rawkey del tasto P (mostra/nascondi i numeri del profilo)
 RAWKEY_R			EQU 	$13			; rawkey del tasto R (azzera gli high-water del profilo)
+RAWKEY_Q			EQU 	$10			; rawkey del tasto Q (posizione della lancetta)
+RAWKEY_S			EQU 	$21			; rawkey del tasto S (cosa mostra lo schermo)
+RAWKEY_L			EQU 	$28			; rawkey del tasto L (quante spie accese)
+RAWKEY_A			EQU 	$20			; rawkey del tasto A (lettera nel quadrato)
 
 KEY_RELEASE_BIT 	EQU 	7	   		; bit 7 del keycode decodificato
 ; Passo di animazione di DEFAULT, copiato in bob_AnimDelay dalle Init. Non e'
 ; piu' la legge per tutti: ogni bob puo' avere il suo.
 ANIM_DELAY			EQU 	3
+; Terza posizione di bob_IsMoving: il fotogramma lo decide il proprietario
+; del bob e DisegnaBOB non lo tocca. Vedi il blocco Animazione in DisegnaBOB.
+ANIM_ESTERNA	EQU		-1
 
 ; ----- Bullet (proiettile sprite hardware) -----
 BULLET_COOLDOWNC	EQU		10			; frame di cooldown tra due spari
@@ -780,7 +1140,7 @@ BULLET_DEBUG_Y		EQU		80
 
 ; ----- Illuminazione (EHB) -----
 TILE_LUCE			EQU		50			; numero tile = sorgente di luce
-RAGGIO_LUCE			EQU		64			; raggio in pixel della luce (tile 19)
+RAGGIO_LUCE			EQU		64			; raggio in pixel della luce (vedi TILE_LUCE)
 
 ; Maschera statica del disco di luce per il blit del cerchio (vedi
 ; BuildLightMask / DisegnaCerchioLuceBlitter). Larga 8 word (128px) + 1 word
@@ -789,6 +1149,24 @@ RAGGIO_LUCE			EQU		64			; raggio in pixel della luce (tile 19)
 LIGHT_MASK_W		EQU		9			; word per riga (8 disco + 1 per lo shift)
 LIGHT_MASK_H		EQU		128			; righe
 LIGHT_MASK_BANDA	EQU		LIGHT_MASK_W*2	; 18 byte per riga
+
+; Limiti del buffer darkplane, che in Path B e' grande come la mappa e non
+; come lo schermo. Stanno QUI e non fra le EQU dello sfondo perche'
+; DARK_MAX_WORDX ha bisogno di LIGHT_MASK_W (due righe sopra) e DARK_MAX_ROWS
+; di SFONDO_HEIGHT: Devpac non accetta riferimenti in avanti in una EQU.
+; Limiti del buffer darkplane, che in Path B e' grande come la mappa e
+; non come lo schermo. Erano 11 e 256 scritti a mano.
+; I limiti sono relativi a CurrentDarkDraw, che punta gia' oltre la guardia
+; (PathBDarkPlane + DELTA_MAPPAVERA + BG_ORIGIN_OFS): la riga utile e' quindi
+; lunga AUX_PITCH-DELTA_MAPPAVERA-BG_ORIGIN_X byte, non AUX_PITCH.
+; Ultima word in cui la maschera (LIGHT_MASK_W word) ci sta per intero.
+; Prima era calcolata su AUX_PITCH intero e ignorava la guardia: con la
+; sorgente di luce all'estremo destro il blit sarebbe finito 6 byte dentro
+; la riga successiva. Nella mappa attuale il caso non si presenta.
+DARK_ROW_BYTES		EQU		AUX_PITCH-DELTA_MAPPAVERA-BG_ORIGIN_X
+DARK_MAX_WORDX		EQU		(DARK_ROW_BYTES/2)-LIGHT_MASK_W
+DARK_MAX_X			EQU		DARK_ROW_BYTES*8-1
+DARK_MAX_ROWS		EQU		SFONDO_HEIGHT
 
 ; Righe di "padding" extra sotto le 256 visibili nel dark plane: assorbono
 ; un eventuale over-fetch di 1+ righe in fondo, evitando che la DMA legga
@@ -836,12 +1214,92 @@ PAR_PLANE_BANDA	EQU		AUX_PITCH*(256+BG_PAD_ROWS)
 ; >>> perche' BUFFER_ROWS/SFONDO_HEIGHT/SFONDO_PLANE_SIZE derivano da lei e
 ; >>> vanno risolte prima. Qui resta solo la documentazione del perche'.
 
+; ============================================================
+; FALO' - striscia 512x16 a 2 piani, da grafica/falo_16x16_3col.raw
+; ============================================================
+; L'arte e' 16 frame di 16x16, ma nella striscia ogni frame occupa 32 px:
+; i 16 di destra sono vuoti. Il .raw e' la conversione DIRETTA del PNG
+; (verificata pixel per pixel), quindi ha il layout dell'immagine e non
+; quello dello sprite:
+;   - i piani sono SEPARATI: prima tutto il piano 0, poi tutto il piano 1
+;   - una riga e' larga quanto la STRISCIA (64 byte), non quanto un frame
+; Lo sprite hardware vuole l'opposto: per ogni riga una word di piano 0 e
+; una di piano 1, di seguito. La conversione la fa BuildFaloSheet al boot,
+; cosi' la fonte di verita' resta il file che esce dal tuo editor: ridisegni
+; il PNG, riesporti il .raw, e non c'e' nessun passo intermedio da ricordare.
+FALO_FRAMES			EQU		16
+FALO_W				EQU		16			; pixel davvero usati per frame
+FALO_H				EQU		16
+FALO_PIANI			EQU		2
+
+; La cella di un frame nella striscia NON e' un numero a parte: e' lo slot che
+; DisegnaBOB si aspetta. Per un'arte da 16 px lo slot e' 2 word, cioe' 32 px:
+; 16 di arte e 16 di stacco, che e' dove si spalma lo shift orizzontale. Il
+; PNG e' esportato cosi', e derivandolo qui il pitch della striscia e quello
+; che DisegnaBOB calcola a runtime non possono piu' divergere. Prima erano due
+; strade separate con una guardia in mezzo.
+FALO_BLITW			EQU		FALO_W/16+1		; word per riga che il blit legge
+FALO_SLOT			EQU		FALO_BLITW*2	; byte di uno slot (arte + stacco)
+FALO_CELL_W			EQU		FALO_SLOT*8		; passo orizzontale di un frame (px)
+FALO_STRIP_W		EQU		FALO_CELL_W*FALO_FRAMES
+FALO_ROWB			EQU		FALO_STRIP_W/8	; byte per riga PER PIANO
+FALO_PLANE_SZ		EQU		FALO_ROWB*FALO_H	; distanza fra piano 0 e piano 1
+FALO_CELL_B			EQU		FALO_CELL_W/8	; byte di un frame dentro una riga
+
+; Due vincoli del codice, non del formato, quindi non c'e' niente da derivare:
+; BuildFaloSheet copia UNA word per riga e per piano, quindi l'arte deve essere
+; larga 16 px; e DisegnaBOB fa il wrap del fotogramma con un AND, quindi
+; FALO_FRAMES deve essere una potenza di due. Se cambi l'arte, cambia anche il
+; codice che la legge.
+
+; ---- I colori: tre voci di palette prese fra quelle LIBERE ----
+; Misurato sull'arte a 5 piani che esiste (Tiles, Omino32, Nemico32, Pietra):
+; gli indici 9-15, 21-23, 26 e 28-31 non compaiono in NESSUN pixel. Il falo'
+; si prende 13, 14, 15, che erano tre viola mai usati.
+;
+; La scelta di 12 come base non e' estetica, e' quello che rende la
+; conversione quasi gratis: l'indice vale 12+v, cioe' in binario %011vv, e
+; quindi il piano 0 e il piano 1 dello sheet sono COPIE dei due piani
+; dell'arte, i piani 2 e 3 sono la sagoma (piano0 OR piano1) e il piano 4 e'
+; sempre spento. Nessuna mappa di colori da percorrere pixel per pixel.
+FALO_PAL_BASE		EQU		12
+; Colori a 24 bit, uguali a quelli del PNG. La palette del gioco e' scritta
+; in due blocchi copper (nibble alti e bassi): le due word si derivano da qui,
+; cosi' il colore compare UNA volta sola nel sorgente.
+FALO_C1_RGB			EQU		$fff7c2		; nucleo chiaro   -> indice 13
+FALO_C2_RGB			EQU		$ffb347		; mezzatinta      -> indice 14
+FALO_C3_RGB			EQU		$b23a1a		; bordo scuro     -> indice 15
+; nibble alti e bassi, derivati: il colore non va ricopiato a mano in due posti
+FALO_C1_HI	EQU	((((FALO_C1_RGB>>20)&15)<<8)|(((FALO_C1_RGB>>12)&15)<<4)|((FALO_C1_RGB>>4)&15))
+FALO_C1_LO	EQU	((((FALO_C1_RGB>>16)&15)<<8)|(((FALO_C1_RGB>>8)&15)<<4)|(FALO_C1_RGB&15))
+FALO_C2_HI	EQU	((((FALO_C2_RGB>>20)&15)<<8)|(((FALO_C2_RGB>>12)&15)<<4)|((FALO_C2_RGB>>4)&15))
+FALO_C2_LO	EQU	((((FALO_C2_RGB>>16)&15)<<8)|(((FALO_C2_RGB>>8)&15)<<4)|(FALO_C2_RGB&15))
+FALO_C3_HI	EQU	((((FALO_C3_RGB>>20)&15)<<8)|(((FALO_C3_RGB>>12)&15)<<4)|((FALO_C3_RGB>>4)&15))
+FALO_C3_LO	EQU	((((FALO_C3_RGB>>16)&15)<<8)|(((FALO_C3_RGB>>8)&15)<<4)|(FALO_C3_RGB&15))
+
+; ORDINE DEI FRAME: nel file il frame 1 e' la fiamma piena e il 16 la brace.
+; L'animazione li percorre quindi A RITROSO: parte dalla brace e sale, che e'
+; l'accensione, poi cicla sui frame di regime. I numeri qui sono quelli
+; dell'arte (1..FALO_FRAMES), non gli indici interni.
+FALO_INTRO_PRIMO	EQU		16			; da dove parte l'accensione
+FALO_LOOP_PRIMO		EQU		10			; da dove riparte il ciclo, per sempre
+; Entrambi vanno tenuti in 1..FALO_FRAMES: sono numeri dell'arte.
+; indici interni, 0-based
+FALO_INTRO_IDX		EQU		FALO_INTRO_PRIMO-1
+FALO_LOOP_IDX		EQU		FALO_LOOP_PRIMO-1
+
+; La POSIZIONE del falo' non e' una EQU: viene dalla mappa. La mette TrovaFalo
+; cercando TILE_LUCE, che e' la stessa tile su cui PathBBuildDark accende il
+; cerchio di luce. Prima erano due cose scollegate - la luce dalla mappa, il
+; fuoco da due numeri cablati - e bastava spostare la tile per vedere il
+; cerchio da una parte e il falo' dall'altra.
+
 FaloAnimSpeed		EQU		5			; ogni N frame avanza animazione
 ENEMY_COUNT			EQU		4			; numero massimo di nemici
 ; Quanti bob percorre il ciclo di disegno: i nemici, il player, la pietra.
 ; Vive qui e non nella SECTION Entities perche' le EQU vanno definite prima
 ; dell'uso, e DisegnaBOBs sta molto piu' su nel file.
-BOB_TOTALI			EQU		ENEMY_COUNT+2
+BOB_TOTALI			EQU		ENEMY_COUNT+3	; nemici + player + pietra + falo'
 
 ; PT Player: modalita' standard (VBLANK_MUSIC=0, default).
 ; Timer A gestisce il tick musicale automaticamente via interrupt CIA-B.
@@ -895,9 +1353,6 @@ PASSO_INTERVALLO		EQU		12
 ; quel valore e' il tuo margine reale. Riferimento: 1 riga raster = 227
 ; cicli di colore, il BOB 32x32 costa ~6 righe in piu' del 16x16.
 ;=====================================================================
-PROTO_SCROLL    EQU     0       ; 1 = parte il PROTOTIPO dello scroll hardware
-                                ;     (Path B passo 1) al posto del gioco.
-                                ;     Rimetti 0 e torna tutto come prima.
 PROFILING       EQU     1       ; 0 = harness completamente fuori dalla build
 ; PROF_COLORS: TUTTA la strumentazione che scrive COLOR00 — sia le barre di
 ; PROFMARK a ogni marca di fase, sia le tre fasce di fine frame (rosso pieno =
@@ -957,6 +1412,7 @@ RASTER_LINES    EQU     313     ; PAL (NTSC = 262)
 PH_VBLEND       EQU     0       ; GestisciMusica + SwapBuffers (subito dopo il sync)
 PH_INPUT        EQU     1       ; input + fisica + camera + bordi
 PH_SCROLL       EQU     2       ; GestisciShiftPixel  (treadmill)
+PH_PARALLAX     EQU     3       ; AggiornaParallax    (piani 7-8, da ScrllX)
 PH_TILES        EQU     4       ; AggiornaTiles       (AddColonna/AddRiga)
 PH_DARK         EQU     5       ; UpdateDarkPlane
 PH_FALO         EQU     6       ; AnimaFalo
@@ -965,12 +1421,15 @@ PH_FALO         EQU     6       ; AnimaFalo
 ; distanza dal marker SUCCESSIVO nell'array: se un latch arriva fuori ordine
 ; la differenza va negativa, la logica di wrap ci somma un frame intero e il
 ; totale si gonfia di ~313 righe (WO falsato e DR che sale anche da fermo).
-; PH_PARALLAX e' passata da 6 a 9 quando AggiornaParallax e' stata spostata
-; dopo il disegno dei BOB.
+; Le righe qui sotto stanno in ordine di indice, che e' anche quello
+; cronologico: e' l'unico modo di vedere a colpo d'occhio se l'invariante
+; vale ancora. PH_PARALLAX era finita in fondo alla lista con un commento
+; che la dava dopo i BOB, mentre AggiornaParallax gira prima: il valore
+; era giusto, la posizione e il commento no, e per capirlo bisognava
+; andare a contare le PROFMARK nel main loop.
 PH_COPIAVIDEO   EQU     7       ; (CopiaVideo non esiste piu': fase a costo zero)
 PH_ENTITIES     EQU     8       ; screenpos + nemici + combattimento + proiettile
 PH_BOB          EQU     9       ; restore + DisegnaBOB*
-PH_PARALLAX     EQU     3       ; AggiornaParallax (DOPO i BOB, vedi main loop)
 PH_BLTDRAIN     EQU     10      ; AspettaBlitter (attesa pura: se e' grossa, il
                                 ;   blitter e' il collo di bottiglia, non la CPU)
 PROF_SLOTS      EQU     11
@@ -978,7 +1437,7 @@ PROF_SLOTS      EQU     11
 ;---------------------------------------------------------------------
 ; PROFMARK <indice fase>,<colore>
 ;   Marca l'inizio di una fase: colora COLOR00 e latcha la riga raster.
-;   Salva la riga ASSOLUTA (0..312): la normalizzazione rispetto al sync
+;   Salva la riga ASSOLUTA come la da' il pennello: la normalizzazione
 ;   la fa FineLavoro, cosi' la macro resta senza salti e senza label
 ;   (niente \@, massima compatibilita' fra assemblatori).
 ;   Indirizzamento assoluto e non A6: funziona anche dove A6 non e' caricato.
@@ -1092,8 +1551,8 @@ START:
 ;	MOVE.W	#$1000,$10c(A6)			; BPLCON4: ESPRM=$10 (SPR0 falo' a COLOR17-19 arancione), OSPRM/BPLAM=$00
 	; ----- DEBUG: scrivi SPR0PT direttamente nei registri custom -----
 	; In caso la copperlist non riesca ad aggiornare i puntatori sprite,
-	; settiamo manualmente SPR0PT su FuocoFrame_0 e SPR1..7 su EmptySprite.
-	MOVE.L	#FuocoFrame_0,$120(A6)	; SPR0PT (scrittura long su $120 = high+low)
+	; settiamo manualmente SPR0PT sul primo frame e SPR1..7 su EmptySprite.
+	MOVE.L	#EmptySprite,$120(A6)	; SPR0PT: il falo' e' un BOB, nessuno sprite acceso
 	MOVE.L	#EmptySprite,$124(A6)	; SPR1PT
 	MOVE.L	#EmptySprite,$128(A6)	; SPR2PT
 	MOVE.L	#EmptySprite,$12c(A6)	; SPR3PT
@@ -1106,6 +1565,14 @@ START:
 	BSR.W   InitEnemies				; <-- INIZIALIZZA I NEMICI
 	BSR.W	InitPietra				; <-- INIZIALIZZA IL PROIETTILE (BOB pietra)
 	BSR.W	BuildBobMasks			; Genera le maschere di OMINO/NEMICO/PIETRA al boot
+	BSR.W	BuildFaloSheet			; espande la striscia del falo' a 5 piani
+	BSR.W	BuildRotellaSheet		; espande la striscia della rotella a 5 piani
+	BSR.W	BuildIndicSheet			; espande la striscia degli indicatori a 4 piani
+	BSR.W	ComponiSheets			; schermo, spie e quadrante: espansione a 4
+									; piani PIU' lo sfondo del pannello sotto
+	LEA		ScrittaMessaggio,A0
+	BSR.W	ImpostaScritta			; il messaggio che scorre sotto il monitor
+	BSR.W	InitFalo				; il falo' e' un BOB come tutti gli altri
 	IFEQ	PROFILING*PROF_KILL_SKY
 	BSR.W	BuildSkyCopper			; genera il gradiente cielo su BG_VIS_ROWS righe
 	ENDC							; (con PROF_KILL_SKY=1 lo spazio non e' riservato)
@@ -1148,13 +1615,6 @@ START:
 	BSR.W	PathBBuildDark			; darkplane statico, una volta sola
 	BSR.W	BuildLightMask			; costruisce una volta la maschera del disco di luce
 
-	IFNE	PROTO_SCROLL
-	; --- PROTOTIPO SCROLL HARDWARE (Path B, passo 1) --------------
-	; Salta il gioco: usa startup, copperlist, palette e input appena
-	; inizializzati, ma sostituisce il rendering con la griglia di test.
-	BSR.W	ProtoScrollMain
-	BRA.W	GameCleanup
-	ENDC
 .mainloop:
 *****************************************************************************
 	PROFMARK PH_INPUT,$0404			; viola scuro
@@ -1212,7 +1672,7 @@ START:
 	; lo legge -> tearing visibile sul bordo del cerchio (lo "sfarfallio in basso").
 
 	PROFMARK PH_FALO,$0088			; ciano scuro
-	BSR.W	AnimaFalo				; anima sprite falò e lo posiziona su tile 19
+	BSR.W	AnimaFalo				; anima sprite falo' e lo mette a col 5 riga 15 (posizione cablata)
 	PROFMARK PH_COPIAVIDEO,$0F0F	; magenta
 	PROFMARK PH_ENTITIES,$0808		; viola medio
 	BSR.W	AggiornaPlayerScreenPos	; Calcola bob_X/Y dalle coord. mondo 
@@ -1225,6 +1685,7 @@ START:
 	PROFMARK PH_BOB,$00FF			; ciano acceso
 	BSR.W	PathBRestoreAll			; ripulisce lo sfondo dietro ai BOB del frame scorso
 	BSR.W	DisegnaBOBs				; nemici + player + pietra, in un ciclo solo
+
 ; --- Sincronizzazione e swap ---
 	PROFMARK PH_BLTDRAIN,$0FF8		; giallo pallido = attesa pura del blitter
 									; (era $0840, indistinguibile dal rosso
@@ -1235,6 +1696,19 @@ START:
 	; si scambia con l'altro. Prima di qui il pennello non ha mai visto un
 	; buffer a meta'.
 	BSR.W	ScrollPathBApply
+
+	; Il pannello non e' doppio bufferizzato e i suoi puntatori nella
+	; copperlist sono fissi dal boot: si puo' scrivere quando capita, e qui
+	; capita a lavoro finito. Nei frame in cui il punteggio non cambia costa
+	; un confronto. Sta DENTRO la zona misurata apposta: se un giorno
+	; costasse, si vedrebbe nel margine invece di nascondersi.
+	BSR.W	DisegnaPunteggio
+	BSR.W	DisegnaIndicatori
+	BSR.W	DisegnaSchermo
+	BSR.W	DisegnaSpie
+	BSR.W	DisegnaQuadrante
+	BSR.W	DisegnaLettera
+	BSR.W	DisegnaScritta
 
 	IFNE	PROFILING
 	BSR.W	FineLavoro			; misura margine + high-water + frame persi
@@ -1249,20 +1723,19 @@ START:
 	PROFMARK PH_VBLEND,$0008		; BLU = inizio lavoro (musica + swap)
  	BSR.W	GestisciMusica			; start/stop + tick PT Player (chiama _mt_music ogni VBL)
 	; Ora SwapParBuffers torna: scrive BPL7PT/BPL8PT sul parallasse vero,
-	; che ha finalmente il pitch giusto. Il darkplane invece ha il suo
-	; doppio buffer dentro SwapBuffers, che in Path B non gira: lo scambio
-	; lo fa PathBSwapDark qui sotto.
-	; NB: PathBSwapDark non serve piu'. Il darkplane e' statico e non fa
-	; doppio buffering: il suo BPL6PT lo aggiorna ScrollPathB insieme ai
-	; puntatori dei piani 1-5, perche' ora scorre come loro.
+	; che ha finalmente il pitch giusto. Il darkplane non ha doppio buffer:
+	; e' statico, e il suo BPL6PT lo aggiorna ScrollPathB insieme ai puntatori
+	; dei piani 1-5, perche' scorre come loro.
 
 	BTST.B	#6,$bfe001				; tasto sx del mouse premuto?
 	BNE.W	.mainloop
 
-; Label GLOBALE e non locale: il salto dal prototipo e' un forward
-; reference e il linker non risolveva ".cleanup" nello scope di START.
-; Sicuro da mettere qui: fra questa label e l'RTS non ci sono label
-; locali, quindi nessuno scope cambia sotto i piedi al codice esistente.
+; Ci si arriva per CADUTA quando il loop esce (tasto sinistro del mouse).
+; La label e' GLOBALE per un motivo storico: il prototipo di scroll ci
+; saltava dentro con un forward reference che il linker non risolveva come
+; ".cleanup" nello scope di START. Quel salto non esiste piu' (PROTO_SCROLL
+; tolto il 22 agosto 2026), ma la label globale non da' fastidio: fra qui e
+; l'RTS non ci sono label locali, quindi nessuno scope cambia.
 GameCleanup:
 	; ----- Cleanup PT Player prima di tornare all'OS -----
 	LEA		$DFF000,A6
@@ -1276,9 +1749,12 @@ AspettaVBL:
 	MOVEM.L D0-D2,-(SP)
 
 	MOVE.L  #$1ff00,D1
-	MOVE.L  #(VBL_SYNC_LINE<<8),D2	  ; linea VBL_SYNC_LINE ($108 = 264)
-									  ; NON scrivere il numero a mano: FineLavoro
-									  ; misura a partire da questa stessa EQU.
+	MOVE.L  #(VBL_SYNC_LINE<<8),D2	  ; riga di sincronismo, oggi 220: e' dove
+									  ; finisce il display del mondo e comincia
+									  ; il pannello. NON scrivere il numero a
+									  ; mano: FineLavoro misura a partire da
+									  ; questa stessa EQU, e le due scollate
+									  ; sfasano la misura senza dirlo.
 .wait:
 	MOVE.L  $dff004,D0		  ; VPOSR
 	AND.L   D1,D0
@@ -1324,13 +1800,14 @@ AggiornaCopperBPL:
 AggiornaCopperParallasse:               ; D0 = base buffer parallasse da mostrare
     MOVEM.L D0-D1/A1,-(SP)
     LEA     BitplaneParall,A1
-    ; Il blit di AggiornaParallax scrive la guardia a word 3 (byte 6-7) e il
-    ; contenuto da byte 8. Il display ha un prefetch di 8 byte, quindi
-    ; puntando base+8 fetcha i byte 8..55: esattamente il contenuto scritto,
-    ; guardia esclusa. Serve pero' che il blit sia largo BLIT_W=25 word, cioe'
-    ; copra tutti e 48 i byte fetchati: con 21 restavano scoperti gli ultimi
-    ; 8 byte (troncatura a destra), e togliendo il +8 si scopriva il prefetch
-    ; a sinistra. Le due cose vanno insieme.
+    ; Il puntatore del copper e' base+PAR_PTR_OFS (16 byte = word 8), lo
+    ; stesso scostamento con cui il mondo indirizza la mappa vera. Il blit di
+    ; AggiornaParallax scrive TUTTA la riga del buffer (PARALLAX_BLIT_W =
+    ; AUX_PITCH/2 = 36 word = 72 byte) partendo dalla word 0, quindi qualunque
+    ; arretramento del display dovuto al ritardo BPLCON1 trova dati validi.
+    ; STORIA: quando il blit era stretto (21 e poi 25 word) e il puntatore era
+    ; base+8, restavano scoperti o gli ultimi byte a destra o il blocco di
+    ; prefetch a sinistra, e le due cose andavano sempre insieme.
     IFNE    PAR_DISABLE
     MOVE.L  #PathBVuoto,D0               ; prova: parallasse spenta, piani 7-8 vuoti
     ENDC
@@ -1401,30 +1878,25 @@ GestisciMusica:
 *****************************************************************************
 * AggiornaCopperSPR
 *   Aggiorna gli sprite pointer nella copperlist (entry "Sprites").
-*   - SPR0 -> frame corrente del falò (FuocoFrame_N, secondo FaloAnimFrame)
-*   - SPR1..SPR7 -> EmptySprite (= disattivati)
+*   - SPR0..SPR7 -> EmptySprite (tutti disattivati)
+*
+*   Il falo' era l'ultimo cliente dello sprite hardware ed e' diventato un BOB:
+*   qui non resta nessuno sprite acceso. La routine e' tenuta finche' non si
+*   smonta il resto dell'impianto (tabella Sprites nella copperlist, SPREN in
+*   DMACON, BPLCON4): e' la seconda meta' della decisione del 18 agosto.
 * DISTRUGGE: D0/D1/A0/A1 (preserva tramite stack)
 *****************************************************************************
 AggiornaCopperSPR:
 	MOVEM.L D0-D1/A0-A1,-(SP)
 
-	; --- SPR0: punta al frame corrente del falò ---
-	LEA		FaloFrameTable,A0
-	MOVE.W	FaloAnimFrame,D0
-	ANDI.W	#7,D0					; sicurezza: 0..7
-	LSL.W	#2,D0					; *4 (long per entry)
-	MOVE.L	(A0,D0.W),D0			; D0 = indirizzo FuocoFrame_N
-	LEA		Sprites,A1
-	; SPR0PT: i registri sono (reg_high, val_high, reg_low, val_low)
-	; A1+2 = val_high (parte alta), A1+6 = val_low (parte bassa)
-	MOVE.W	D0,6(A1)				; word bassa
-	SWAP	D0
-	MOVE.W	D0,2(A1)				; word alta
-
-	; --- SPR1..SPR7: tutti puntano a EmptySprite ---
+	; --- SPR0..SPR7: tutti puntano a EmptySprite ---
+	; SPR0 compreso: prima lo saltava perche' ci stava il falo', e lasciarlo
+	; fuori adesso significherebbe lasciare nella copperlist il suo valore
+	; iniziale, che e' ZERO. Uno sprite puntato all'indirizzo 0 legge l'inizio
+	; della chip RAM e disegna spazzatura.
 	MOVE.L	#EmptySprite,D0
-	LEA		Sprites+8,A1			; SPR1PT entry
-	MOVEQ	#7-1,D1					; 7 sprite da disattivare
+	LEA		Sprites,A1				; SPR0PT entry
+	MOVEQ	#8-1,D1					; 8 sprite da disattivare
 .loop:
 	MOVE.W	D0,6(A1)
 	SWAP	D0
@@ -1437,18 +1909,294 @@ AggiornaCopperSPR:
 	RTS 
 
 *****************************************************************************
-* FaloFrameTable
-*   Indirizzi dei 6 frame del falò (per indicizzazione veloce).
+* BuildFaloSheet - dalla striscia a 2 piani allo spritesheet a 5 piani
+*
+*   Gira UNA VOLTA al boot. L'indice di colore del falo' vale FALO_PAL_BASE+v
+*   con v = 1..3 preso dall'arte, cioe' in binario %011vv. Da questo esce
+*   tutta la conversione, senza percorrere i pixel uno per uno:
+*     piano 0 = piano 0 dell'arte      (bit 0 dell'indice)
+*     piano 1 = piano 1 dell'arte      (bit 1)
+*     piano 2 = sagoma = p0 OR p1      (bit 2, acceso su ogni pixel non vuoto)
+*     piano 3 = sagoma                 (bit 3)
+*     piano 4 = sempre spento          (bit 4)
+*   Lo stacco fra i frame resta nero su tutti i piani, quindi la maschera che
+*   BuildBobMask ricava come OR dei cinque piani esce gia' giusta.
+*
+*   DISTRUGGE: nulla (salva tutto).
 *****************************************************************************
-FaloFrameTable:
-	dc.l	FuocoFrame_0
-	dc.l	FuocoFrame_1
-	dc.l	FuocoFrame_2
-	dc.l	FuocoFrame_3
-	dc.l	FuocoFrame_4
-	dc.l	FuocoFrame_5
-	dc.l	FuocoFrame_0			; padding per ANDI #7 sicurezza
-	dc.l	FuocoFrame_0
+BuildFaloSheet:
+	MOVEM.L	D0-D2/A0-A1,-(SP)
+	LEA		falo_strip,A0
+	LEA		FaloSheet,A1
+	MOVE.W	#FALO_PLANE_SZ/4-1,D0	; il piano si percorre a long
+.espandi:
+	MOVE.L	(A0),D1					; piano 0 dell'arte
+	MOVE.L	FALO_PLANE_SZ(A0),D2	; piano 1 dell'arte
+	MOVE.L	D1,(A1)
+	MOVE.L	D2,FALO_PLANE_SZ(A1)
+	OR.L	D2,D1					; D1 = sagoma
+	MOVE.L	D1,2*FALO_PLANE_SZ(A1)
+	MOVE.L	D1,3*FALO_PLANE_SZ(A1)
+	CLR.L	4*FALO_PLANE_SZ(A1)
+	ADDQ.L	#4,A0
+	ADDQ.L	#4,A1
+	DBRA	D0,.espandi
+
+	; ----- la maschera si fa QUI, e non e' un vezzo di ordine -----
+	; Gli altri sheet arrivano da un incbin e ci sono gia' quando gira
+	; BuildBobMasks. Questo no: prima di questa routine FaloSheet e' una BSS
+	; azzerata, e una maschera presa li' sarebbe l'OR di cinque piani vuoti,
+	; cioe' tutta zero. Con la maschera a zero il cookie-cut vale D = C, il
+	; fondo resta com'e' e il bob non si vede: nessun artefatto, nessun
+	; errore, semplicemente niente. E' successo davvero.
+	LEA		FaloSheet,A1
+	LEA		FALO_MASK,A0
+	MOVE.L	#FALO_PLANE_SZ,D2
+	BSR.W	BuildBobMask
+
+	MOVEM.L	(SP)+,D0-D2/A0-A1
+	RTS
+*****************************************************************************
+* BuildRotellaSheet - dalla striscia a 2 piani allo spritesheet a 5 piani
+*
+*   L'indice di palette non e' base+v come per il falo': il fondo va sul nero
+*   che il riquadro del punteggio ha gia' (15) e le tre tinte sulle voci
+*   liberate (4, 5, 6). In binario 1111, 0100, 0101, 0110, e da li' escono
+*   quattro operazioni logiche sui due piani dell'arte:
+*     piano 0 = NOT p0
+*     piano 1 = NOT (p0 EOR p1)
+*     piano 2 = sempre acceso
+*     piano 3 = NOT (p0 OR p1)
+*   Lo stacco vuoto fra i fotogrammi diventa indice 15, cioe' nero: quando
+*   una cifra scorre di 8 px si porta dietro il nero del riquadro.
+*
+*   Cambiando quei quattro indici vanno riscritte queste quattro operazioni:
+*   non si derivano da una EQU, sono la mappa stessa.
+*****************************************************************************
+BuildRotellaSheet:
+	MOVEM.L	D0-D3/A0-A1,-(SP)
+	LEA		rotella_strip,A0
+	LEA		RotellaSheet,A1
+	MOVE.W	#ROTELLA_PLANE_SZ/4-1,D0	; il piano si percorre a long
+.espandi:
+	MOVE.L	(A0),D1						; p0 dell'arte
+	MOVE.L	ROTELLA_PLANE_SZ(A0),D2		; p1 dell'arte
+	MOVE.L	D1,D3
+	EOR.L	D2,D3
+	NOT.L	D3							; XNOR
+	MOVE.L	D3,1*ROTELLA_PLANE_SZ(A1)	; piano 1
+	MOVE.L	D1,D3
+	OR.L	D2,D3
+	NOT.L	D3							; NOT sagoma
+	MOVE.L	D3,3*ROTELLA_PLANE_SZ(A1)	; piano 3
+	NOT.L	D1
+	MOVE.L	D1,(A1)						; piano 0
+	MOVE.L	#-1,2*ROTELLA_PLANE_SZ(A1)	; piano 2: sempre acceso
+	ADDQ.L	#4,A0
+	ADDQ.L	#4,A1
+	DBRA	D0,.espandi
+	MOVEM.L	(SP)+,D0-D3/A0-A1
+	RTS
+*****************************************************************************
+* BuildIndicSheet - dalla striscia a 2 piani allo spritesheet a 4 piani
+*
+*   Stessa idea di BuildRotellaSheet, mappa diversa. I quattro valori dell'arte
+*   vanno sulle voci del PANNELLO cosi':
+*     0 fondo        -> 15  %1111   il nero che il riquadro ha gia'
+*     1 traccia      ->  2  %0010
+*     2 barra scura  -> 13  %1101
+*     3 barra viva   -> 14  %1110
+*   e da quei quattro indici escono tre operazioni logiche sui due piani
+*   dell'arte (il piano 3 e' uguale al 2):
+*     piano 0 = NOT p0
+*     piano 1 = (NOT p1) OR p0
+*     piano 2 = (NOT p0) OR p1
+*     piano 3 = piano 2
+*   Cambiando quegli indici vanno riscritte queste operazioni: non si derivano
+*   da una EQU, sono la mappa stessa.
+*
+*   La barra vera e propria (13 e 14) la ricolora il copper a ogni livello:
+*   qui si decide solo QUALI voci di palette usare, non che colore hanno.
+*
+*   DISTRUGGE: nulla (salva tutto).
+*****************************************************************************
+BuildIndicSheet:
+	MOVEM.L	D0-D3/A0-A1,-(SP)
+	LEA		indicatore_strip,A0
+	LEA		IndicSheet,A1
+	MOVE.W	#INDIC_PLANE_SZ/4-1,D0		; il piano si percorre a long
+.espandi:
+	MOVE.L	(A0),D1						; p0 dell'arte
+	MOVE.L	INDIC_PLANE_SZ(A0),D2		; p1 dell'arte
+
+	MOVE.L	D1,D3
+	NOT.L	D3
+	MOVE.L	D3,(A1)						; piano 0 = NOT p0
+
+	MOVE.L	D2,D3
+	NOT.L	D3
+	OR.L	D1,D3
+	MOVE.L	D3,1*INDIC_PLANE_SZ(A1)		; piano 1 = (NOT p1) OR p0
+
+	MOVE.L	D1,D3
+	NOT.L	D3
+	OR.L	D2,D3
+	MOVE.L	D3,2*INDIC_PLANE_SZ(A1)		; piano 2 = (NOT p0) OR p1
+	MOVE.L	D3,3*INDIC_PLANE_SZ(A1)		; piano 3 = piano 2
+
+	ADDQ.L	#4,A0
+	ADDQ.L	#4,A1
+	DBRA	D0,.espandi
+	MOVEM.L	(SP)+,D0-D3/A0-A1
+	RTS
+
+*****************************************************************************
+* ComponiSheets - monta i fogli dei tre strumenti, una riga di tabella l'uno
+*****************************************************************************
+ComponiSheets:
+	MOVEM.L	D7/A4,-(SP)
+	LEA		StrumentiTab,A4
+	MOVEQ	#STRUM_QUANTI-1,D7
+.uno:
+	BSR.W	ComponiSheet
+	LEA		shd_Length(A4),A4
+	DBRA	D7,.uno
+	MOVEM.L	(SP)+,D7/A4
+	RTS
+
+*****************************************************************************
+* ComponiSheet - dalla striscia a 2 piani al foglio a 4 piani, con lo SFONDO
+*                del pannello sotto ai pixel trasparenti
+*
+*   IN:  A4 = riga di StrumentiTab
+*
+*   Perche' due passate e non una: in una sola servivano piu' registri di
+*   quanti ce ne sono. La prima scrive le TINTE (e zero dove l'arte e'
+*   trasparente), la seconda ci mette sotto lo SFONDO. Gira una volta al boot,
+*   quindi il conto che conta e' quello dei registri, non quello dei cicli.
+*
+*   PASSATA 1 - le tinte
+*   Dai due piani dell'arte escono le tre maschere dei tre valori:
+*       m1 = p0 AND NOT p1      m2 = p1 AND NOT p0      m3 = p0 AND p1
+*   e quali di queste accendono un piano lo dice la MAPPA: dodici long, tre per
+*   piano, tutti a uno o tutti a zero. La mappa non e' scritta a mano, la
+*   genera la macro MAPPA_TINTE dai tre indici di palette, un bit alla volta:
+*   cambiando un indice si rifa' da sola.
+*       piano = (m1 AND M1) OR (m2 AND M2) OR (m3 AND M3)
+*
+*   PASSATA 2 - lo sfondo
+*       piano = piano OR (sfondo AND NOT (p0 OR p1))
+*   Lo sfondo e' il rettangolo del PANNELLO su cui la cella verra' posata, e
+*   viene da 'pannello', l'arte incbinata. E' la fonte di verita': ri-esportando
+*   il pannello gli strumenti si ricompongono da soli al boot, che e' proprio
+*   quello che NON succederebbe cuocendo lo sfondo dentro i .raw con uno script.
+*   Tutte le colonne di una riga di celle mostrano LO STESSO posto del pannello
+*   (sono fotogrammi alternativi della stessa cosa), quindi lo sfondo dipende
+*   solo dalla riga e dentro la riga si ripete a ogni colonna.
+*
+*   Il piano si percorre a long nella passata 1: lo garantisce
+*   GUARDIA_STRUM_LONG. La passata 2 va a byte perche' la cella e' larga 2 o 5.
+*
+*   DISTRUGGE: nulla (salva tutto).
+*****************************************************************************
+ComponiSheet:
+	MOVEM.L	D0-D7/A0-A5,-(SP)
+
+	; --- misure, tutte derivate dalla griglia della striscia ---
+	MOVE.W	shd_Colonne(A4),D6
+	MULU	shd_CellB(A4),D6			; D6 = byte per riga della striscia
+	MOVE.W	shd_CellH(A4),D7
+	MULU	shd_Righe(A4),D7
+	MULU	D6,D7						; D7 = byte di UN piano
+	MOVE.W	shd_CellH(A4),D3
+	MULU	D6,D3						; D3 = byte di UNA riga di celle
+
+	; ===== passata 1: le tinte ==========================================
+	MOVEA.L	shd_Arte(A4),A0
+	MOVEA.L	shd_Sheet(A4),A1
+	MOVEA.L	shd_Mappa(A4),A3
+	MOVEQ	#PANNELLO_BITPLANES-1,D5
+.p1_piano:
+	MOVEA.L	A0,A5						; l'arte si rilegge per ogni piano
+	MOVE.L	D7,D4
+	LSR.L	#2,D4
+	SUBQ.L	#1,D4						; long del piano
+.p1_long:
+	MOVE.L	(A5),D0						; p0
+	MOVE.L	0(A5,D7.L),D1				; p1
+	MOVE.L	D0,D2
+	AND.L	D1,D2						; D2 = m3 = p0 AND p1
+	EOR.L	D2,D0						; D0 = m1 = p0 AND NOT p1
+	EOR.L	D2,D1						; D1 = m2 = p1 AND NOT p0
+	AND.L	(A3),D0
+	AND.L	4(A3),D1
+	AND.L	8(A3),D2
+	OR.L	D1,D0
+	OR.L	D2,D0
+	MOVE.L	D0,(A1)+
+	ADDQ.L	#4,A5
+	SUBQ.L	#1,D4
+	BPL.S	.p1_long
+	LEA		12(A3),A3					; i tre long della mappa del piano dopo
+	DBRA	D5,.p1_piano
+
+	; ===== passata 2: lo sfondo sotto ai pixel trasparenti ==============
+	MOVEQ	#0,D5						; indice della riga di celle
+.p2_riga:
+	; dove sta, nel pannello, lo sfondo di questa riga di celle
+	MOVEA.L	shd_Pos(A4),A2
+	MOVE.W	shd_PosPasso(A4),D0
+	MULU	D5,D0
+	ADDA.W	D0,A2						; A2 -> la coppia (byte x, riga y)
+	MOVE.W	2(A2),D0
+	MULU	#PANNELLO_BYTES_PER_ROW,D0
+	ADD.W	(A2),D0
+	LEA		pannello,A2
+	ADDA.L	D0,A2						; A2 = sfondo, piano 0, prima riga
+
+	; dove comincia questa riga di celle nell'arte e nel foglio
+	MOVE.W	D5,D0
+	MULU	D3,D0
+	MOVEA.L	shd_Arte(A4),A5
+	ADDA.L	D0,A5
+	MOVEA.L	shd_Sheet(A4),A1
+	ADDA.L	D0,A1
+
+	MOVEQ	#PANNELLO_BITPLANES-1,D4
+.p2_piano:
+	MOVEA.L	A2,A0						; sfondo, riga di pixel corrente
+	MOVE.W	shd_CellH(A4),D6
+	SUBQ.W	#1,D6
+.p2_rigapx:
+	MOVE.W	shd_Colonne(A4),D1
+	SUBQ.W	#1,D1
+.p2_colonna:
+	MOVEA.L	A0,A3						; ogni colonna rilegge la STESSA riga
+	MOVE.W	shd_CellB(A4),D2
+	SUBQ.W	#1,D2
+.p2_byte:
+	MOVE.B	(A5)+,D0					; p0
+	OR.B	-1(A5,D7.L),D0				; OR p1 = la sagoma dell'arte
+	NOT.B	D0
+	AND.B	(A3)+,D0					; sfondo dove l'arte e' trasparente
+	OR.B	D0,(A1)+
+	DBRA	D2,.p2_byte
+	DBRA	D1,.p2_colonna
+	ADDA.W	#PANNELLO_BYTES_PER_ROW,A0	; riga successiva dello sfondo
+	DBRA	D6,.p2_rigapx
+	; piano successivo: l'arte torna indietro, il foglio va avanti di un piano
+	SUBA.L	D3,A5
+	ADDA.L	D7,A1
+	SUBA.L	D3,A1
+	ADDA.L	#PANNELLO_PLANE_SIZE,A2
+	DBRA	D4,.p2_piano
+
+	ADDQ.W	#1,D5
+	CMP.W	shd_Righe(A4),D5
+	BCS.W	.p2_riga
+
+	MOVEM.L	(SP)+,D0-D7/A0-A5
+	RTS
 
 	IFNE	PROFILING
 ;---------------------------------------------------------------------
@@ -1464,24 +2212,41 @@ LeggiRiga:
         rts
 
 ;---------------------------------------------------------------------
-; FineLavoro — da chiamare subito dopo AspettaBlitter, PRIMA di AspettaVBL.
+; FineLavoro - da chiamare subito dopo AspettaBlitter, PRIMA di AspettaVBL.
 ;
-; Misura quante righe raster ha consumato il lavoro di questo frame,
-; tiene il peggior caso mai visto (high-water) e rileva i frame persi.
+; Misura quante righe raster ha consumato il lavoro di questo frame, tiene
+; il peggior caso mai visto (high-water) e conta i frame persi.
 ;
-; RILEVAMENTO FRAME PERSO — perche' non serve l'interrupt VERTB:
-;   Il lavoro parte sempre alla riga VBL_SYNC_LINE (264), subito dopo
-;   AspettaVBL. Da lì il raster sale a 312, wrappa a 0 e continua.
-;   Quindi FrameLines = (riga_attuale - 264) mod 313, cioe' 0..312 dove
-;   312 = frame interamente consumato.
-;   Se il lavoro sfora il frame, il contatore wrappa e FrameLines ricade
-;   nella finestra 0..48. Ma un lavoro davvero durato 1..48 righe e'
-;   fisicamente impossibile per questo gioco (solo CopiaVideo su 5 piani
-;   ne costa molte di piu'). Quindi FrameLines < 49 non e' un frame
-;   veloce: e' un frame che ha sforato.
-;   LIMITE: uno sforo superiore a 361 righe torna in finestra "plausibile"
-;   e non viene contato — ma in quel caso la barra e' TUTTA blu e si vede
-;   a occhio, quindi non e' un buco cieco.
+; DA DOVE SI CONTA
+;   Il lavoro parte alla riga VBL_SYNC_LINE, subito dopo AspettaVBL. Quella
+;   riga e' DERIVATA ($2C+BG_VIS_ROWS) e si sposta da sola se cambia
+;   CUT_BOTTOM_ROWS: per questo qui non c'e' scritto il suo valore. La
+;   versione precedente di questo commento ne riportava uno, ed era
+;   sbagliato di 44 righe.
+;
+; RILEVAMENTO FRAME PERSO, senza interrupt VERTB
+;   Il primo conto, (riga_attuale - VBL_SYNC_LINE) mod RASTER_LINES, sta
+;   per forza fra 0 e RASTER_LINES-1, e da solo NON distingue un frame
+;   appena rientrato da uno che ha sforato: dopo il wrap i due danno lo
+;   stesso numero.
+;   La durata VERA si ricostruisce al punto .ptot contando i wrap. I latch
+;   delle fasi crescono in modo monotono finche' il frame sta dentro un
+;   giro di raster, quindi ogni delta NEGATIVO fra due latch consecutivi
+;   e' un wrap: d5 li conta e la durata e'
+;       d5 * RASTER_LINES + righe_dal_sync
+;   che PUO' superare RASTER_LINES. Il frame e' perso quando la supera, ed
+;   e' un confronto diretto: niente finestre di plausibilita'.
+;   Il conteggio dei wrap regge perche' tutte e PROF_SLOTS le PROFMARK
+;   stanno sul percorso dritto del main loop, nessuna dentro un ramo:
+;   nessun latch resta fermo al valore del frame precedente, e nessun
+;   delta negativo e' finto. Aggiungendo una PROFMARK dentro un IF questa
+;   garanzia salta.
+;   Il limite di questa ricostruzione e' descritto al punto 2 qui sotto.
+;
+; NB: FrameLines viene scritta DUE volte. La prima con le righe dal sync,
+;   la seconda - solo sui frame misurati davvero - con la durata
+;   ricostruita, che puo' essere maggiore di RASTER_LINES. Con i numeri a
+;   schermo la misura e' congelata e resta buona la prima.
 ;
 ; Richiede A6 = $DFF000.  Preserva tutti i registri.
 ;---------------------------------------------------------------------
@@ -1891,7 +2656,7 @@ ProcessaFrecce:
 	move.b	D1,MusicKeyPrev
 .k_gravity:
 	cmp.b	#RAWKEY_G,D2
-	bne.s	.k_prof
+	bne.s	.k_quadrante
 	; D1 = 1 (premuto) o 0 (rilasciato); toggle solo sul fronte di pressione
 	tst.b	D1
 	beq.s	.g_release				; rilasciato -> aggiorna prev e basta
@@ -1906,7 +2671,92 @@ ProcessaFrecce:
 .g_release:
 	move.b	D1,GravKeyPrev
 
-; La label sta FUORI dal condizionale: .k_gravity ci salta sempre, anche
+; --- tasti di prova degli strumenti del pannello ---
+; Nel gioco non c'e' ancora chi comanda schermo, spie e lancetta: finche' non
+; c'e', si guardano da qui. Quando arriveranno i veri clienti questi tre
+; blocchi si tolgono, non si tengono "per sicurezza".
+.k_quadrante:
+	cmp.b	#RAWKEY_Q,D2
+	bne.s	.k_schermo
+	tst.b	D1
+	beq.s	.q_release
+	tst.b	QuadKeyPrev
+	bne.s	.q_release
+	; Edge press: la posizione dopo (ovest, nord, est, sud-sud-est)
+	addq.w	#1,QuadranteObiettivo
+	and.w	#3,QuadranteObiettivo
+.q_release:
+	move.b	D1,QuadKeyPrev
+
+.k_schermo:
+	cmp.b	#RAWKEY_S,D2
+	bne.s	.k_spie
+	tst.b	D1
+	beq.s	.s_release
+	tst.b	SchermoKeyPrev
+	bne.s	.s_release
+	; Edge press: neve, poi le cinque immagini, poi di nuovo neve
+	addq.w	#1,SchermoModo
+	cmp.w	#SCHERMO_IMMAGINI,SchermoModo
+	bls.s	.s_release
+	clr.w	SchermoModo
+.s_release:
+	move.b	D1,SchermoKeyPrev
+
+.k_spie:
+	cmp.b	#RAWKEY_L,D2
+	bne.s	.k_lettera
+	tst.b	D1
+	beq.s	.l_release
+	tst.b	SpieKeyPrev
+	bne.s	.l_release
+	; Edge press: una spia in piu' a ogni pressione, poi si ricomincia da zero.
+	; D0 lo usa il ciclo che ha letto la tastiera: si salva.
+	move.l	D0,-(sp)
+	move.w	SpieAccese,D0
+	cmp.w	#(1<<SPIE_TOT)-1,D0
+	bne.s	.l_avanti
+	moveq	#0,D0
+	bra.s	.l_scrivi
+.l_avanti:
+	add.w	D0,D0
+	or.w	#1,D0
+.l_scrivi:
+	move.w	D0,SpieAccese
+	move.l	(sp)+,D0
+.l_release:
+	move.b	D1,SpieKeyPrev
+
+.k_lettera:
+	cmp.b	#RAWKEY_A,D2
+	bne.s	.k_prof
+	tst.b	D1
+	beq.s	.a_release
+	tst.b	LetteraKeyPrev
+	bne.s	.a_release
+	; Edge press: A, B, C ... Z, spazio, e si ricomincia. Lo spazio e' il glifo
+	; vuoto, quindi e' anche il modo di SPEGNERE il quadrato: non serve un flag
+	; a parte. D0 lo usa il ciclo che ha letto la tastiera: si salva.
+	move.l	D0,-(sp)
+	move.w	LetteraDestra,D0
+	cmp.w	#'A',D0
+	bcs.s	.a_riparte				; sotto la A (lo spazio) -> si riaccende
+	cmp.w	#'Z',D0
+	bcc.s	.a_spegne				; alla Z -> spazio
+	addq.w	#1,D0
+	bra.s	.a_scrive
+.a_riparte:
+	move.w	#'A',D0
+	bra.s	.a_scrive
+.a_spegne:
+	move.w	#' ',D0
+.a_scrive:
+	move.w	D0,LetteraDestra
+	move.l	(sp)+,D0
+.a_release:
+	move.b	D1,LetteraKeyPrev
+
+; La label sta FUORI dal condizionale: .k_lettera ci salta sempre, anche
 ; quando l'harness e' escluso dalla build.
 .k_prof:
 	IFNE	PROFILING
@@ -2179,8 +3029,18 @@ DisegnaSfondo:
 * Gira una volta al boot, quindi il costo non conta.
 *****************************************************************************
 	IFEQ	PROFILING*PROF_KILL_SKY
+; Posizione dei bit BANK dentro BPLCON3: selezionano quale gruppo di 32
+; registri colore rispondono a $180..$1BE. Le tinte dello skyline sono la
+; voce 0 dei banchi 2/4/6, quindi si scrivono su COLOR00 cambiando solo questi.
+BPLCON3_BANK_SHIFT      EQU     13
+; Una voce di SkylineTinte: base a 24 bit, peso del mix col cielo, bit BANK.
+SKYLINE_OFS_BASE        EQU     0
+SKYLINE_OFS_MIX         EQU     4
+SKYLINE_OFS_BANCO       EQU     6
+SKYLINE_TINTA_LEN       EQU     8
+
 BuildSkyCopper:
-	MOVEM.L	D0-D4/A0-A1,-(SP)
+	MOVEM.L	D0-D7/A0-A3,-(SP)
 	LEA	SkyCopper,A1
 	MOVEQ	#0,D0                   ; D0 = indice riga visibile
 .skyrow:
@@ -2193,6 +3053,9 @@ BuildSkyCopper:
 	LEA	SkyGradient,A0
 	ADDA.W	D1,A0
 
+	; --- il colore del cielo di questa riga, a 24 bit, in D5 ---
+	BSR.W	.leggicielo
+
 	; --- WAIT sulla riga $2C + D0 ---
 	MOVE.W	D0,D2
 	ADD.W	#$2C,D2
@@ -2201,25 +3064,216 @@ BuildSkyCopper:
 	MOVE.W	D2,(A1)+
 	MOVE.W	#$FFFE,(A1)+
 
-	; --- LOCT=1, nibble bassi ---
-	MOVE.W	#$0106,(A1)+
-	MOVE.W	#BPLCON3_LOCT1,(A1)+
-	MOVE.W	#$0180,(A1)+
-	MOVE.W	2(A0),(A1)+             ; seconda word della voce = basso
-	; --- LOCT=0, nibble alti ---
-	MOVE.W	#$0106,(A1)+
-	MOVE.W	#BPLCON3_LOCT0,(A1)+
-	MOVE.W	#$0180,(A1)+
-	MOVE.W	(A0),(A1)+              ; prima word della voce = alto
+	; --- IL CIELO PER PRIMO, banco 0 ---
+	; L'ordine non e' estetico: se il blocco sforasse il color clock 64 il
+	; danno cadrebbe sulle tinte e non sul cielo, e si vedrebbe subito dove.
+	MOVE.L	D5,D4
+	MOVEQ	#0,D1                   ; BANK = 0
+	BSR.W	.emitcolore
+
+	IFNE	SKYLINE_TINTE_MOBILI
+	; --- poi le tinte della parallasse che hanno un mix diverso da zero ---
+	; La tabella contiene SOLO quelle: le altre restano la costante scritta
+	; da InitPalette8BPL e non costano una word.
+	LEA	SkylineTinte,A2
+	MOVEQ	#SKYLINE_TINTE_MOBILI-1,D7
+.skytinta:
+	BSR.W	.mixtinta               ; D4 = mix fra base e cielo di questa riga
+	MOVE.W	SKYLINE_OFS_BANCO(A2),D1
+	BSR.W	.emitcolore
+	LEA	SKYLINE_TINTA_LEN(A2),A2
+	DBRA	D7,.skytinta
+	ENDC
 
 	ADDQ.W	#1,D0
 	CMP.W	#SKY_STEPS,D0
-	BLT.S	.skyrow
+	BLT.W	.skyrow
 
-	MOVE.W	#$0106,(A1)+            ; lascia BPLCON3 a LOCT=0
+	MOVE.W	#$0106,(A1)+            ; lascia BPLCON3 a BANK=0 / LOCT=0
 	MOVE.W	#BPLCON3_LOCT0,(A1)+
-	MOVEM.L	(SP)+,D0-D4/A0-A1
+	MOVEM.L	(SP)+,D0-D7/A0-A3
 	RTS
+
+;---------------------------------------------------------------------
+; .leggicielo - ricostruisce il colore a 24 bit di una voce di SkyGradient
+;   IN:  A0 = voce (word 0 = nibble alti $0RGB, word 1 = nibble bassi $0rgb)
+;   OUT: D5.l = $00RRGGBB
+;   USA: D1, D2, D4, D6
+;---------------------------------------------------------------------
+.leggicielo:
+	MOVE.W	(A0),D1                 ; nibble alti
+	MOVE.W	2(A0),D2                ; nibble bassi
+	MOVEQ	#0,D5
+	; R
+	MOVE.W	D1,D6
+	LSR.W	#8,D6
+	AND.W	#$000F,D6
+	LSL.W	#4,D6
+	MOVE.W	D2,D4
+	LSR.W	#8,D4
+	AND.W	#$000F,D4
+	OR.W	D4,D6
+	MOVE.W	D6,D5
+	LSL.L	#8,D5
+	; G
+	MOVE.W	D1,D6
+	LSR.W	#4,D6
+	AND.W	#$000F,D6
+	LSL.W	#4,D6
+	MOVE.W	D2,D4
+	LSR.W	#4,D4
+	AND.W	#$000F,D4
+	OR.W	D4,D6
+	OR.W	D6,D5
+	LSL.L	#8,D5
+	; B
+	MOVE.W	D1,D6
+	AND.W	#$000F,D6
+	LSL.W	#4,D6
+	MOVE.W	D2,D4
+	AND.W	#$000F,D4
+	OR.W	D4,D6
+	OR.W	D6,D5
+	RTS
+
+;---------------------------------------------------------------------
+; .emitcolore - emette gli 8 word (4 MOVE) che scrivono un colore a 24 bit
+;   IN:  D1.w = bit BANK di BPLCON3 gia' shiftati, D4.l = colore,
+;        A1 = destinazione nella copperlist
+;   OUT: A1 avanzata di 8 word
+;   USA: D2, D6
+; Bassi prima degli alti, come nella versione a solo cielo: nella voce di
+; SkyGradient gli alti stanno per primi ma il copper li scrive per ultimi.
+;---------------------------------------------------------------------
+.emitcolore:
+	MOVE.W	#$0106,(A1)+
+	MOVE.W	D1,D2
+	OR.W	#BPLCON3_LOCT1,D2       ; BANK | LOCT=1 | PF2OF | BRDRBLNK
+	MOVE.W	D2,(A1)+
+	MOVE.W	#$0180,(A1)+
+	BSR.W	.nibblebassi
+	MOVE.W	D6,(A1)+
+	MOVE.W	#$0106,(A1)+
+	MOVE.W	D1,D2
+	OR.W	#BPLCON3_LOCT0,D2       ; BANK | LOCT=0 | PF2OF | BRDRBLNK
+	MOVE.W	D2,(A1)+
+	MOVE.W	#$0180,(A1)+
+	BSR.W	.nibblealti
+	MOVE.W	D6,(A1)+
+	RTS
+
+;---------------------------------------------------------------------
+; .nibblealti / .nibblebassi - da $00RRGGBB alle due meta' che vuole l'AGA
+;   IN: D4.l = $00RRGGBB   OUT: D6.w = $0RGB oppure $0rgb   USA: D2
+;---------------------------------------------------------------------
+.nibblealti:
+	MOVE.L	D4,D6
+	LSR.L	#4,D6
+	AND.W	#$000F,D6               ; B alto
+	MOVE.L	D4,D2
+	LSR.L	#8,D2
+	AND.W	#$00F0,D2               ; G alto << 4
+	OR.W	D2,D6
+	MOVE.L	D4,D2
+	LSR.L	#8,D2
+	LSR.L	#4,D2                   ; shift totale 12 (l'immediato arriva a 8)
+	AND.W	#$0F00,D2               ; R alto << 8
+	OR.W	D2,D6
+	RTS
+
+.nibblebassi:
+	MOVE.W	D4,D6
+	AND.W	#$000F,D6               ; B basso
+	MOVE.W	D4,D2
+	LSR.W	#4,D2
+	AND.W	#$00F0,D2               ; G basso << 4
+	OR.W	D2,D6
+	MOVE.L	D4,D2
+	LSR.L	#8,D2
+	AND.W	#$0F00,D2               ; R basso << 8
+	OR.W	D2,D6
+	RTS
+
+	IFNE	SKYLINE_TINTE_MOBILI
+;---------------------------------------------------------------------
+; .mixtinta - tinta = (base*(8-mix) + cielo*mix) / 8, canale per canale
+;   IN:  A2 = voce di SkylineTinte, D5.l = cielo della riga
+;   OUT: D4.l = $00RRGGBB
+;   USA: D1, D2, D6, A3
+;---------------------------------------------------------------------
+.mixtinta:
+	MOVEA.W	SKYLINE_OFS_MIX(A2),A3  ; A3 = mix, 0..8
+	MOVEQ	#0,D4
+	; R
+	MOVE.L	SKYLINE_OFS_BASE(A2),D1
+	LSR.L	#8,D1
+	LSR.L	#8,D1
+	AND.W	#$00FF,D1
+	MOVE.L	D5,D2
+	LSR.L	#8,D2
+	LSR.L	#8,D2
+	AND.W	#$00FF,D2
+	BSR.W	.mixcanale
+	MOVE.W	D1,D4
+	LSL.L	#8,D4
+	; G
+	MOVE.L	SKYLINE_OFS_BASE(A2),D1
+	LSR.L	#8,D1
+	AND.W	#$00FF,D1
+	MOVE.L	D5,D2
+	LSR.L	#8,D2
+	AND.W	#$00FF,D2
+	BSR.W	.mixcanale
+	OR.W	D1,D4
+	LSL.L	#8,D4
+	; B
+	MOVE.L	SKYLINE_OFS_BASE(A2),D1
+	AND.W	#$00FF,D1
+	MOVE.L	D5,D2
+	AND.W	#$00FF,D2
+	BSR.W	.mixcanale
+	OR.W	D1,D4
+	RTS
+
+;---------------------------------------------------------------------
+; .mixcanale - un canale: D1 = (D1*(8-mix) + D2*mix) / 8
+;   Il massimo e' 255*8 = 2040: la somma sta larga in un long.
+;   IN/OUT: D1.w   IN: D2.w = cielo, A3 = mix   USA: D2, D6
+;---------------------------------------------------------------------
+.mixcanale:
+	MOVE.W	A3,D6
+	MULU	D6,D2                   ; cielo * mix
+	MOVEQ	#8,D6
+	SUB.W	A3,D6                   ; 8 - mix
+	MULU	D6,D1                   ; base * (8-mix)
+	ADD.L	D2,D1
+	LSR.L	#3,D1                   ; / 8
+	RTS
+
+;---------------------------------------------------------------------
+; Le tinte MOBILI: base a 24 bit, peso del mix col cielo, bit BANK del banco
+; che le ospita. Una tinta col mix a zero non entra nella tabella, cosi' la
+; lunghezza e' SKYLINE_TINTE_MOBILI voci per costruzione e il ciclo le percorre
+; tutte senza sapere quali sono. I banchi dispari 3/5/7 sono i notturni e il
+; copper non li tocca.
+;---------------------------------------------------------------------
+SkylineTinte:
+	IFNE	SKYLINE_MIX_1
+	dc.l	SKYLINE_C1_RGB
+	dc.w	SKYLINE_MIX_1
+	dc.w	2<<BPLCON3_BANK_SHIFT
+	ENDC
+	IFNE	SKYLINE_MIX_2
+	dc.l	SKYLINE_C2_RGB
+	dc.w	SKYLINE_MIX_2
+	dc.w	4<<BPLCON3_BANK_SHIFT
+	ENDC
+	IFNE	SKYLINE_MIX_3
+	dc.l	SKYLINE_C3_RGB
+	dc.w	SKYLINE_MIX_3
+	dc.w	6<<BPLCON3_BANK_SHIFT
+	ENDC
+	ENDC
 	ENDC
 
 *****************************************************************************
@@ -2269,9 +3323,10 @@ BuildParallaxStrip:
 .hplane:
     MOVE.W  #PARALLAX_STRIP_ROWS-1,D0
 .hrow:
-    ; NB: a WORD, non a long: PARALLAX_STRIP_PITCH e' 138, che non e'
-    ; divisibile per 4 — un loop a long lascerebbe 2 byte per riga e
-    ; falserebbe proprio la prova. 138/2 = 69 word esatte.
+    ; NB: a WORD, non a long. PARALLAX_STRIP_PITCH e' DERIVATO (oggi 152) e
+    ; non c'e' nessuna garanzia che resti multiplo di 4: un loop a long
+    ; lascerebbe 2 byte per riga non scritti e falserebbe proprio la prova.
+    ; A word bastano PITCH/2 iterazioni esatte per qualunque pitch pari.
     MOVEQ   #0,D2
     BTST    #0,D0
     BEQ.S   .hvuota
@@ -2326,9 +3381,6 @@ AggiornaParallax:
     ; la finestra non attraversa mai la giunzione fra arte e replica — che era
     ; la vera causa della striscia sporca sul bordo sinistro.
     ADD.W   #PARALLAX_LEFT_MARGIN,D0    ; D0 = offset, sempre >= 16
-    IFNE    PARALLAX_NO_FINE
-    AND.W   #$FFF0,D0                   ; prova: niente shift fine, ASH = 0
-    ENDC
 
 	CMP.W   par_old,D0
     BEQ.S   .par_checkdirty              ; offset invariato -> forse serve ancora l'altro buffer
@@ -2443,17 +3495,14 @@ DisegnaPannello:
 	ENDC
 
 	; --- puntatori del pannello nella copperlist, una volta sola: e' fisso ---
+	; Niente compensazione della corsa col DMA: le righe di separazione girano
+	; a bitplane spenti, quindi non c'e' auto-incremento e i puntatori restano
+	; dove li mettiamo. Vedi il blocco su PANNELLO_SEP_ROWS.
 	LEA		PannelloBuf,A1
 	LEA		BitplanePannello,A2
 	MOVEQ	#PANNELLO_BITPLANES-1,D4
-	MOVEQ	#PANNELLO_PTR_RACE_N,D3	; quanti puntatori vanno compensati
 .PuntaLoopPannello:
 	MOVE.L	A1,D0
-	; i primi RACE_N prenderanno un incremento dal DMA: glielo tolgo prima
-	SUBQ.W	#1,D3
-	BMI.S	.PuntaSenzaComp
-	SUB.L	#PANNELLO_PTR_RACE_ADJ,D0
-.PuntaSenzaComp:
 	MOVE.W	D0,6(A2)				; word bassa
 	SWAP	D0
 	MOVE.W	D0,2(A2)				; word alta
@@ -2490,9 +3539,18 @@ InitPlayer:
 	MOVE.W	#PLAYER_SPAWN_Y,bob_WorldY(A0)
 	MOVE.W	#0,bob_AI(A0)
 		; --- Hit Points ---
-	MOVE.W	#20,bob_PF(A0)				; punti ferita iniziali
-	MOVE.W	#1,bob_Damage(A0)			; player danno 1 (non utilizzato per ora, scontro)
-	MOVE.W	#0,bob_Invuln(A0)			; vulnerabile all'inizio
+	MOVE.W	#PLAYER_PF_MAX,bob_PF(A0)	; punti ferita iniziali: la stessa EQU da
+										; cui l'indicatore ricava il fondo scala
+	MOVE.W	#PLAYER_DANNO,bob_Damage(A0)		; quanto toglie al nemico al contatto
+	MOVE.W	#0,bob_Invuln(A0)					; vulnerabile all'inizio
+	MOVE.W	#PLAYER_INVULN_MAX,bob_InvulnMax(A0)	; recupero dopo un colpo subito
+										; SENZA questa riga InvulnMax resta 0 (la
+										; struct sta in BSS): il player verrebbe
+										; colpito a ogni frame di contatto e i
+										; suoi punti ferita sparirebbero in mezzo
+										; secondo. I nemici ce l'hanno dalla loro
+										; tabella, il player no e nessuno se n'era
+										; accorto perche' non c'era la barra.
 
 	; --- stato per-entita' che prima erano variabili globali ---
 	MOVE.W	#0,bob_VelY(A0)				; fermo in verticale
@@ -2635,6 +3693,9 @@ BuildBobMasks:
 	LEA		PIETRA_MASK,A0
 	MOVE.L	#PIETRA_PLANE_SIZE,D2
 	BSR.S	BuildBobMask
+	; Il falo' NON e' qui: il suo sheet non esiste su disco, lo costruisce
+	; BuildFaloSheet al boot, e la sua maschera si fa li' subito dopo. Vedi il
+	; commento in quella routine per il perche' l'ordine non e' un dettaglio.
 	MOVEM.L	(SP)+,D2/A0-A1
 	RTS
 
@@ -3071,11 +4132,11 @@ LoadAGAPalette256:
 *   Sorgente dei 32 colori base: i blocchi copper GamePalHi/GamePalLo.
 *   CHIAMARE CON IL COPPER DMA SPENTO (scrive BPLCON3 a piu' riprese).
 *****************************************************************************
-; Le 3 tinte dello skyline (valori 1/2/3 dei 2 bitplane di parallasse).
-; Regolale a gusto: p.es. base scura, cresta, foschia chiara.
-SKYLINE_C1_RGB	EQU	$182838			; parallasse valore 1
-SKYLINE_C2_RGB	EQU	$2a3a52			; parallasse valore 2
-SKYLINE_C3_RGB	EQU	$46608c			; parallasse valore 3
+; Le 3 tinte dello skyline (SKYLINE_C1/C2/C3_RGB) stanno adesso nel blocco EQU
+; del cielo, in testa al file, insieme a SKYLINE_MIX_*:
+; le legge anche BuildSkyCopper, che sta piu' su di qui. Quelle scritte qui
+; sono i valori DI PARTENZA dei banchi 2/4/6 e i valori VERI dei banchi
+; notturni 3/5/7, che il copper non tocca.
 
 InitPalette8BPL:
 	MOVEM.L	D0-D7/A0-A2/A6,-(SP)
@@ -3237,6 +4298,72 @@ GamePalBk:
 	ds.l	32						; scratch per costruire ogni banco
 
 
+	IFNE	TITLE_TEST_FILL
+*****************************************************************************
+* TitleTestFill - prova a costanti note sui piani della schermata del titolo
+*
+*   Serve a separare due cose che a schermo si somigliano: un percorso di
+*   DISPLAY rotto (puntatori, DDF, FMODE, passo fra i piani) da un CONTENUTO
+*   o una PALETTE sbagliati. Con valori noti nei piani, quello che esce e'
+*   prevedibile, e se non esce quello il difetto e' nel percorso.
+*
+*   Come leggere il risultato:
+*     modo 1  schermo di UN SOLO colore, piatto      -> il fetch e' sano
+*             qualunque cosa diversa da piatto       -> percorso di display
+*     modo 2  schermo di un solo colore, DIVERSO dal modo 1
+*                                                    -> i piani si separano
+*     modo 3  otto bande orizzontali NETTE da 32 righe, ognuna di un colore
+*                                                    -> passo fra i piani ok
+*             bande sfalsate, oblique o mescolate    -> TITLE_PLANE_SIZE o
+*                                                       i BPLxMOD sono sbagliati
+*
+*   Gira una volta, prima che il DMA display si accenda.
+*****************************************************************************
+TitleTestFill:
+	MOVEM.L	D0-D3/A0-A1,-(SP)
+
+	; --- tutti i piani a zero: e' la base di tutti e tre i modi ---
+	LEA		title_bpl,A0
+	MOVE.W	#TITLE_PLANE_SIZE*TITLE_PIANI/4-1,D0
+.azzera:
+	CLR.L	(A0)+
+	DBRA	D0,.azzera
+
+	IFEQ	TITLE_TEST_FILL-2
+	; --- modo 2: solo il piano 0, tutto acceso ---
+	LEA		title_bpl,A0
+	MOVE.W	#TITLE_PLANE_SIZE/4-1,D0
+.piano0:
+	MOVE.L	#$FFFFFFFF,(A0)+
+	DBRA	D0,.piano0
+	ENDC
+
+	IFEQ	TITLE_TEST_FILL-3
+	; --- modo 3: il piano n acceso solo nelle righe n*32 .. n*32+31 ---
+	LEA		title_bpl,A0
+	MOVEQ	#0,D1					; D1 = numero del piano
+.banda:
+	MOVE.L	D1,D2
+	MULU	#TITLE_PLANE_SIZE,D2	; inizio del piano n
+	MOVEA.L	A0,A1
+	ADDA.L	D2,A1
+	MOVE.L	D1,D2
+	MULU	#32*TITLE_BYTES_PER_ROW,D2	; + la banda n dentro quel piano
+	ADDA.L	D2,A1
+	MOVE.W	#(32*TITLE_BYTES_PER_ROW)/4-1,D3
+.riempi:
+	MOVE.L	#$FFFFFFFF,(A1)+
+	DBRA	D3,.riempi
+	ADDQ.W	#1,D1
+	CMP.W	#TITLE_PIANI,D1
+	BLT.S	.banda
+	ENDC
+
+	MOVEM.L	(SP)+,D0-D3/A0-A1
+	RTS
+	ENDC
+
+
 *****************************************************************************
 * ShowTitle
 *   1) Patcha i puntatori BPL1..8PT della TitleCopperList su title_bpl.
@@ -3245,10 +4372,21 @@ GamePalBk:
 *****************************************************************************
 ShowTitle:
 	MOVEM.L	D0-D1/A1/A6,-(SP)
+	IFNE	TITLE_TEST_FILL
+	BSR.W	TitleTestFill
+	ENDC
 	LEA		$DFF000,A6
 
 	; --- Setup display via CPU (ridondante con la copperlist ma garantisce
 	;     valori corretti gia' al primo frame, anche se il copper non parte). ---
+	; FMODE MANCAVA da questo blocco, ed era l'unico registro di display a non
+	; esserci. Non e' pignoleria: piu' sotto il DMA bitplane viene acceso PRIMA
+	; che COP1LC punti alla TitleCopperList, quindi fra l'accensione e la prima
+	; esecuzione della lista il fetch gira con l'FMODE lasciato da chi c'era
+	; prima. La copperlist lo scrive comunque in testa: questa e' la cintura, e
+	; il commento della copperlist dice proprio che FMODE va messo PRIMA di
+	; abilitare il DMA bitplane.
+	MOVE.W	#$0003,$1FC(A6)			; FMODE = BPL32+BPAGEM (fetch a 64 bit)
 	MOVE.W	#$0211,$100(A6)			; BPLCON0: BPU3=1 (=8 BPL) + COLOR + ECSENA (no UHRES)
 	MOVE.W	#$0000,$102(A6)			; BPLCON1
 	MOVE.W	#$0024,$104(A6)			; BPLCON2: PF2P=4, PF1P=4 (come gioco)
@@ -3663,6 +4801,7 @@ Proiettile:
 	TST.W	bob_PF(A0)
 	BNE.S	.sfx_hit_alive
 	CLR.W	bob_Active(A0)
+	ADD.L	#PUNTI_NEMICO,Punteggio	; punti solo per il colpo che uccide
 	LEA		SfxNemicoMorto,A0
 	BSR.W	PlaySfx
 	BRA.S	.save_fire
@@ -3682,16 +4821,30 @@ Proiettile:
 	RTS
 
 *****************************************************************************
-* ProcessCombat
-*   Gestisce gli scontri player <-> nemici.
-*   Logica:
-*   1. Decrementa Invuln di tutti i BOB (player + nemici)
-*   2. Per ogni nemico attivo non invulnerabile e player non invulnerabile:
-*      - se in collisione (AABB):
-*        - player.PF -= nemico.Damage
-*        - nemico.PF -= player.Damage
-*        - entrambi Invuln = 50
-*        - se PF <= 0: morte (Active=0 per nemico; flag per player)
+* Combattimento - lo scontro al CONTATTO fra player e nemici
+*
+*   Gira una volta per frame, prima del disegno. Per ogni nemico attivo:
+*
+*   1. scala di uno il suo recupero (bob_Invuln) e, se stava ancora
+*      recuperando, lo salta del tutto: non colpisce e non e' colpibile.
+*   2. controlla la sovrapposizione col player, AABB con soglia 17 e non 16,
+*      cosi' scatta anche quando i due si toccano esattamente sui bordi.
+*   3. il danno NON e' automatico da tutte e due le parti: ognuno colpisce solo
+*      se sta GUARDANDO l'altro, cioe' se l'ottante del vettore verso il
+*      bersaglio sta entro +-1 dalla sua bob_Direzione. Si puo' quindi prendere
+*      un nemico alle spalle senza incassare, e viceversa.
+*   4. chi colpisce mette al bersaglio bob_InvulnMax frame di recupero. Per i
+*      nemici quel valore viene da EnemyInitTable, per il player da
+*      PLAYER_INVULN_MAX: se restasse a zero il contatto toglierebbe un punto
+*      ferita a OGNI frame.
+*   5. il nemico che arriva a zero punti ferita si spegne (bob_Active = 0) e
+*      chi lo colpisce passa in AI 2, che e' l'allarme.
+*
+*   COSA NON FA, e va saputo: quando i punti ferita del PLAYER arrivano a zero
+*   non succede niente. Non c'e' morte, ne' fine partita: la barra resta vuota
+*   e si continua a giocare. Manca quello, non il conteggio.
+*
+*   DISTRUGGE: nulla (salva tutto).
 *****************************************************************************
 Combattimento:
 	MOVEM.L	D0-D5/A0/A1,-(SP)
@@ -3720,15 +4873,23 @@ Combattimento:
 	BRA.W	.next						; se era invulnerabile, no collision check
 
 .check_collision:
-	; Test overlap player-nemico (AABB, soglia 17 = anche contatto tangente)
-	; IsOverlapEnemies usa soglia 16 = i BOB possono essere adiacenti (dx=16 esatto)
-	; Combattimento usa 17 per scattare anche quando si toccano sui bordi.
+	; Sovrapposizione player-nemico, AABB sulle coordinate mondo.
+	; La soglia DISCENDE dalla dimensione del bob e non e' scritta a mano:
+	; due riquadri larghi BOB_COLL_W si toccano quando la distanza fra gli
+	; angoli e' BOB_COLL_W esatti, e si sovrappongono quando e' meno. Il +1
+	; serve a far scattare anche il contatto tangente, che e' il caso in cui a
+	; schermo i due si sfiorano.
+	; QUI C'ERA UN 17 SCRITTO A MANO, giusto quando i bob erano 16x16 e mai
+	; aggiornato quando l'arte e' passata a 32x32: chiedeva che i due fossero
+	; sovrapposti per meta', cioe' molto piu' che "in contatto". E' il motivo
+	; per cui la vita non scendeva quasi mai. IsOverlapEnemies, che il numero
+	; lo derivava gia', non aveva il problema.
 	MOVE.W	bob_WorldX(A0),D1
 	SUB.W	bob_WorldX(A1),D1
 	BPL.S	.absx_ok
 	NEG.W	D1
 .absx_ok:
-	CMP.W	#17,D1
+	CMP.W	#BOB_COLL_W+1,D1
 	BGE.W	.next						; no overlap X
 
 	MOVE.W	bob_WorldY(A0),D1
@@ -3736,24 +4897,19 @@ Combattimento:
 	BPL.S	.absy_ok
 	NEG.W	D1
 .absy_ok:
-	CMP.W	#17,D1
+	CMP.W	#BOB_COLL_H+1,D1
 	BGE.W	.next						; no overlap Y
 
 	; --- COLLISIONE GEOMETRICA! ---
-	; Ognuno infligge danno solo se sta GUARDANDO il bersaglio.
-	; "Guardare" = octante del vettore verso il bersaglio entro ±1 da bob_Direzione.
+	; Il contatto fa male a TUTTI E DUE, e non dipende da dove uno sta
+	; guardando. Prima c'era un cancello in piu': ognuno colpiva solo se
+	; l'octante del vettore verso il bersaglio stava entro +-1 dalla sua
+	; bob_Direzione. Con nemici che non si girano mai (AI 0) voleva dire che il
+	; contatto quasi non si vedeva, ed e' il motivo per cui la vita non
+	; scendeva. Se un domani lo si vuole rimettere, DirezioneVerso e
+	; OctantsClose sono ancora nel sorgente e fanno esattamente quel conto.
 
-	; --- 1) Player colpisce nemico se guarda verso nemico ---
-	MOVE.W	bob_WorldX(A0),D4
-	SUB.W	bob_WorldX(A1),D4			; D4 = dx (nemico.X - player.X)
-	MOVE.W	bob_WorldY(A0),D5
-	SUB.W	bob_WorldY(A1),D5			; D5 = dy (nemico.Y - player.Y)
-	BSR.W	DirezioneVerso				; D4 = octante player -> nemico
-	MOVE.W	bob_Direzione(A1),D5
-	BSR.W	OctantsClose				; D5 = 1 se vicini
-	TST.W	D5
-	BEQ.S	.player_no_hit
-	; Player colpisce nemico
+	; --- 1) Player colpisce nemico ---
 	MOVE.W	bob_Damage(A1),D1			; danno player
 	MOVE.W	bob_PF(A0),D2
 	SUB.W	D1,D2
@@ -3765,24 +4921,14 @@ Combattimento:
 	; Cambia AI nemico a Hunt (allarme!)
 	MOVE.W	#2,bob_AI(A0)
 	TST.W	bob_PF(A0)
-	BNE.S	.player_no_hit
+	BNE.S	.nemico_vivo
 	MOVE.W	#0,bob_Active(A0)
-.player_no_hit:
+.nemico_vivo:
 
-	; --- 2) Nemico colpisce player se guarda verso player ---
-	; Player era invulnerabile? Skip
+	; --- 2) Nemico colpisce player ---
+	; Player ancora in recupero da un colpo precedente? Allora niente.
 	TST.W	bob_Invuln(A1)
 	BNE.W	.next
-	MOVE.W	bob_WorldX(A1),D4
-	SUB.W	bob_WorldX(A0),D4			; D4 = dx (player.X - nemico.X)
-	MOVE.W	bob_WorldY(A1),D5
-	SUB.W	bob_WorldY(A0),D5			; D5 = dy (player.Y - nemico.Y)
-	BSR.W	DirezioneVerso				; D4 = octante nemico -> player
-	MOVE.W	bob_Direzione(A0),D5
-	BSR.W	OctantsClose
-	TST.W	D5
-	BEQ.W	.next
-	; Nemico colpisce player
 	MOVE.W	bob_Damage(A0),D1			; danno nemico
 	MOVE.W	bob_PF(A1),D2
 	SUB.W	D1,D2
@@ -3791,8 +4937,14 @@ Combattimento:
 .player_alive:
 	MOVE.W	D2,bob_PF(A1)
 	MOVE.W	bob_InvulnMax(A1),bob_Invuln(A1)
+	; A0 e' il puntatore al NEMICO su cui sta girando il ciclo, e PlaySfx vuole
+	; la struttura del suono proprio in A0: senza salvarlo, .next avanzerebbe da
+	; SfxHitPlayer invece che dal nemico e le iterazioni restanti leggerebbero
+	; - e scriverebbero - fuori dall'array dei nemici.
+	MOVE.L	A0,-(SP)
 	LEA		SfxHitPlayer,A0
 	BSR.W	PlaySfx
+	MOVE.L	(SP)+,A0
 .next:
 	LEA		bob_Length(A0),A0			; prossimo nemico
 	DBRA	D0,.loop
@@ -3918,155 +5070,127 @@ OctantsClose:
 	RTS
 
 *****************************************************************************
+* InitFalo - il falo' come BOB
+*
+*   Stesso schema di InitPietra. La geometria dello sheet la deriva DisegnaBOB
+*   da larghezza, altezza, fotogrammi e bande: qui si dichiarano solo quelli.
+*
+*   bob_IsMoving = ANIM_ESTERNA perche' la sequenza del falo' non e' un giro
+*   in avanti: e' un'accensione a ritroso seguita da un ciclo piu' corto, e
+*   la decide AnimaFalo. Con 0 DisegnaBOB azzererebbe il fotogramma a ogni
+*   disegno; con 1 lo farebbe avanzare per conto suo.
+*****************************************************************************
+InitFalo:
+	MOVEM.L	A0,-(SP)
+	LEA		BobFalo,A0
+	MOVE.W	#0,bob_Active(A0)		; lo accende AnimaFalo, e solo di notte
+	MOVE.L	#FaloSheet,bob_Gfx(A0)
+	MOVE.L	#FALO_MASK,bob_Mask(A0)
+	MOVE.W	#FALO_W,bob_Larghezza(A0)
+	MOVE.W	#FALO_H,bob_Altezza(A0)
+	MOVE.W	#FALO_FRAMES,bob_Frames(A0)
+	MOVE.W	#1,bob_Bande(A0)		; una banda sola: nessuna direzione
+	MOVE.W	#ANIM_ESTERNA,bob_IsMoving(A0)
+	MOVE.W	#FALO_INTRO_IDX,bob_AnimFrame(A0)
+	MOVE.W	#0,bob_Direzione(A0)
+	MOVE.W	#0,bob_FrameCont(A0)
+	MOVE.W	#0,bob_Damage(A0)		; non fa male: e' scenografia
+	MOVE.W	#0,bob_X(A0)			; li ricalcola DisegnaBOBs dalla camera
+	MOVE.W	#0,bob_Y(A0)
+	MOVEM.L	(SP)+,A0
+	BRA.W	TrovaFalo				; la posizione la decide la mappa
+
+*****************************************************************************
+* TrovaFalo - mette il falo' dove la mappa ha la tile TILE_LUCE
+*
+*   Il cerchio di luce e il fuoco devono stare nello stesso posto. La luce la
+*   disegna PathBBuildDark cercando TILE_LUCE nella mappa: qui si cerca la
+*   stessa tile, cosi' la posizione ha UNA fonte sola ed e' la mappa.
+*
+*   Si prende la PRIMA tile trovata, scandendo per righe. Se ne metti piu' di
+*   una, PathBBuildDark accende un cerchio per ognuna ma il fuoco resta sulla
+*   prima: per averne due servono due bob.
+*
+*   L'angolo alto-sinistro del bob va sull'angolo della tile, cosi' il centro
+*   del bob 16x16 cade esattamente dove DisegnaCerchioLuceBlitter mette il
+*   centro del cerchio, che e' (colonna*16+8, riga*16+8).
+*
+*   Se nella mappa non c'e' nessuna TILE_LUCE, bob_WorldX resta NEGATIVA e
+*   DisegnaBOB la scarta con il cull che ha gia' ("X mondo negativa -> fuori
+*   dal buffer"): niente fuoco, esattamente come niente luce.
+*
+*   Gira una volta al boot: la mappa non cambia.
+*   DISTRUGGE: nulla (salva tutto).
+*****************************************************************************
+TrovaFalo:
+	MOVEM.L	D2-D3/A0-A1,-(SP)
+	LEA		BobFalo,A1
+	MOVE.W	#-1,bob_WorldX(A1)		; "non trovata", finche' non si dimostra
+	MOVE.W	#0,bob_WorldY(A1)
+	LEA		MAPPA,A0
+	MOVEQ	#0,D2					; D2 = riga
+.riga:
+	MOVEQ	#0,D3					; D3 = colonna
+.col:
+	CMP.W	#TILE_LUCE,(A0)+
+	BEQ.S	.trovata
+	ADDQ.W	#1,D3
+	CMP.W	#MAPPA_COLS,D3
+	BLT.S	.col
+	ADDQ.W	#1,D2
+	CMP.W	#MAPPA_ROWS,D2
+	BLT.S	.riga
+	BRA.S	.fine
+.trovata:
+	LSL.W	#4,D3					; colonna -> pixel
+	MOVE.W	D3,bob_WorldX(A1)
+	LSL.W	#4,D2					; riga -> pixel
+	MOVE.W	D2,bob_WorldY(A1)
+.fine:
+	MOVEM.L	(SP)+,D2-D3/A0-A1
+	RTS
+
+*****************************************************************************
 * AnimaFalo
-*   Gestisce l'animazione del falò (sprite hardware SPR0):
-*   - Avanza FaloAnimFrame ogni FaloAnimSpeed frame
-*   - Trova la prima tile 19 nella viewport e calcola posizione schermo
-*   - Costruisce SPRPOS/SPRCTL per quel frame
-*   - Aggiorna SPR0PT nella copperlist (Sprites entry)
-*   Se nessuna tile 19 visibile: SPR0PT -> EmptySprite (invisibile).
+*   Fa avanzare il fotogramma del falo' e lo accende solo di notte.
+*
+*   NON tocca piu' niente di grafico: posizione, cull, clip, blit e rettangolo
+*   sporco sono di DisegnaBOBs come per ogni altro bob. Prima questa routine
+*   costruiva SPRPOS/SPRCTL e scriveva SPR0PT nella copperlist.
+*
+*   La sequenza va A RITROSO: l'arte ha la fiamma piena al frame 1 e la brace
+*   al frame FALO_FRAMES. Si parte da FALO_INTRO_IDX e si scende; quando si
+*   passa sotto zero si rientra da FALO_LOOP_IDX, che e' la fiamma a regime.
+*   Non serve nessun flag "intro finita": il valore iniziale e quello di
+*   rientro sono semplicemente due numeri diversi.
+*
+*   DISTRUGGE: nulla (salva tutto).
 *****************************************************************************
 AnimaFalo:
-	MOVEM.L	D0-D7/A0-A4,-(SP)
-	
-	; ----- Di giorno (NightMode=0): sprite invisibile, esci subito -----
+	MOVEM.L	D0/A0,-(SP)
+	LEA		BobFalo,A0
+
+	; ----- di giorno il falo' non c'e' -----
 	TST.B	NightMode
-	BNE.S	.is_night
-	; Giorno: SPR0 -> EmptySprite
-	MOVE.L	#EmptySprite,D0
-	LEA		Sprites,A1
-	MOVE.W	D0,6(A1)
-	SWAP	D0
-	MOVE.W	D0,2(A1)
-	BRA.W	.done
-.is_night:
-	; ----- Avanza il frame di animazione ogni FaloAnimSpeed frame -----
+	BNE.S	.notte
+	MOVE.W	#0,bob_Active(A0)
+	BRA.S	.fine
+.notte:
+	MOVE.W	#1,bob_Active(A0)
+
+	; ----- avanza il fotogramma ogni FaloAnimSpeed frame -----
 	ADDQ.W	#1,FaloAnimDelay
 	CMP.W	#FaloAnimSpeed,FaloAnimDelay
-	BLT.S	.no_advance
+	BLT.S	.fine
 	CLR.W	FaloAnimDelay
-	ADDQ.W	#1,FaloAnimFrame
-	CMP.W	#6,FaloAnimFrame
-	BLT.S	.no_advance
-	CLR.W	FaloAnimFrame
-.no_advance:
-
-	; ===== DEBUG: posizione fissa basata su tile 19 in MAPPA[15][5] =====
-	; Sottraggo TileX/TileY per compensare lo scroll
-	; D3 = 5 - TileX, D7 = 15 - TileY
-	; (Verificato: lo sprite NON e' la causa dello sfarfallio sulle ultime
-	;  ~12 scanline - quello e' contesa DMA blitter/bitplane su AGA FMODE=3.)
-	MOVE.W	#5,D3
-	SUB.W	TileX,D3				; D3 = col buffer della tile 19
-	MOVE.W	#15,D7
-	SUB.W	TileY,D7				; D7 = row buffer della tile 19
-
-	; Cull: se fuori dal buffer visibile, sprite invisibile
-	TST.W	D3
-	BMI.W	.no_falo
-	CMP.W	#BUFFER_COLS,D3
-	BGE.W	.no_falo
-	TST.W	D7
-	BMI.W	.no_falo
-	CMP.W	#BUFFER_ROWS,D7
-	BGE.W	.no_falo
-
-	BRA.W	.found_falo
-
-.no_falo:
-	; Sprite invisibile (fuori viewport)
-	MOVE.L	#EmptySprite,D0
-	LEA		Sprites,A1
-	MOVE.W	D0,6(A1)
-	SWAP	D0
-	MOVE.W	D0,2(A1)
-	BRA.W	.done
-
-.found_falo:
-	; D3 = col buffer, D7 = row buffer
-	; Gli sprite hardware sono posizionati in coordinate SCHERMO, mentre le tile
-	; sono disegnate a partire da BG_ORIGIN dentro il buffer. La differenza fra
-	; le due va tolta qui: BG_ORIGIN_X e' in byte (x8 per avere i pixel),
-	; BG_ORIGIN_Y e' gia' in righe. Con l'origine a zero questi due termini
-	; spariscono da soli. Prima erano due -16 cablati, giustificati da un
-	; commento che parlava di "sfasamento di 1 tile": era proprio BG_ORIGIN.
-	MOVE.W	D3,D0
-	LSL.W	#4,D0					; D0 = D3*16
-	SUBI.W	#BG_ORIGIN_X*8,D0		; compensa l'origine del mondo (px)
-	SUB.W	PixelOffX,D0			; D0 = topleft_x
-
-	MOVE.W	D7,D1
-	LSL.W	#4,D1
-	SUBI.W	#BG_ORIGIN_Y,D1
-	SUB.W	PixelOffY,D1			; D1 = topleft_y
-
-	; ----- Costruisco SPRPOS/SPRCTL -----
-	; VSTART_reg = $2C + screen_y
-	; VSTOP_reg  = VSTART_reg + 16
-	; HSTART_reg = $81 + screen_x  (pixel lores 1-to-1)
-	ADDI.W	#DIW_V_START,D1			; D1 = VSTART (agganciato alla finestra)
-	MOVE.W	D1,D2
-	ADDI.W	#16,D2					; D2 = VSTOP
-
-	ADDI.W	#DIW_H_START,D0			; D0 = HSTART (agganciato alla finestra)
-
-	; ----- Costruisco SPRPOS/SPRCTL -----
-	; SPRPOS: bit 15-8 = SV7-SV0 (= VSTART[7:0])
-	;         bit 7-0  = SH8-SH1 (= HSTART[8:1])  <- importante!
-	; SPRCTL: bit 15-8 = EV7-EV0 (= VSTOP[7:0])
-	;         bit 7    = ATT
-	;         bit 2    = SV8 (= VSTART[8])
-	;         bit 1    = EV8 (= VSTOP[8])
-	;         bit 0    = SH0 (= HSTART[0])
-
-	; D3 = SPRPOS (build): (VSTART[7:0] << 8) | (HSTART[8:1])
-	MOVE.W	D1,D3
-	ANDI.W	#$FF,D3
-	LSL.W	#8,D3					; bit 15-8 = VSTART[7:0]
-	MOVE.W	D0,D4
-	LSR.W	#1,D4					; D4 = HSTART >> 1
-	ANDI.W	#$FF,D4
-	OR.W	D4,D3					; D3 = SPRPOS
-
-	; D5 = SPRCTL (build): (VSTOP[7:0] << 8) | flags
-	MOVE.W	D2,D5
-	ANDI.W	#$FF,D5
-	LSL.W	#8,D5					; bit 15-8 = VSTOP[7:0]
-	BTST	#8,D1
-	BEQ.S	.no_v8a
-	BSET	#2,D5					; VSTART[8] (SV8)
-.no_v8a:
-	BTST	#8,D2
-	BEQ.S	.no_v8b
-	BSET	#1,D5					; VSTOP[8] (EV8)
-.no_v8b:
-	BTST	#0,D0
-	BEQ.S	.no_h0
-	BSET	#0,D5					; HSTART[0] (SH0)
-.no_h0:
-
-	; ----- Scrivo SPRPOS/SPRCTL in TUTTI i 6 frame -----
-	; Cosi' qualunque sia il frame corrente, la posizione e' sempre corretta.
-	LEA		FaloFrameTable,A0
-	MOVEQ	#6-1,D7					; 6 frame
-.write_pos_loop:
-	MOVE.L	(A0)+,A2				; A2 = FuocoFrame_N
-	MOVE.W	D3,(A2)					; SPRPOS
-	MOVE.W	D5,2(A2)				; SPRCTL
-	DBRA	D7,.write_pos_loop
-
-	; ----- Aggiorno SPR0PT nella copperlist (Sprites entry) -----
-	LEA		FaloFrameTable,A0
-	MOVE.W	FaloAnimFrame,D4
-	LSL.W	#2,D4
-	MOVE.L	(A0,D4.W),D0			; D0 = FuocoFrame_N corrente
-	LEA		Sprites,A1
-	MOVE.W	D0,6(A1)
-	SWAP	D0
-	MOVE.W	D0,2(A1)
-
-.done:
-	MOVEM.L	(SP)+,D0-D7/A0-A4
+	MOVE.W	bob_AnimFrame(A0),D0
+	SUBQ.W	#1,D0
+	BPL.S	.scritto
+	MOVE.W	#FALO_LOOP_IDX,D0
+.scritto:
+	MOVE.W	D0,bob_AnimFrame(A0)
+.fine:
+	MOVEM.L	(SP)+,D0/A0
 	RTS
 
 *****************************************************************************
@@ -4097,9 +5221,12 @@ DisegnaCerchioLuce:
 	; y_riga = cy + dy
 	MOVE.W	A3,D3
 	ADD.W	D7,D3					; D3 = y_riga
-	; Cull verticale (le ultime CUT_BOTTOM_ROWS righe restano "scure", fuori dal display utile)
+	; Cull verticale contro l'ALTEZZA DEL BUFFER, non contro l'altezza dello
+	; schermo: qui cx/cy arrivano in coordinate MONDO da PathBBuildDark e il
+	; darkplane di Path B copre tutta la mappa. Con BG_VIS_ROWS (176) una
+	; sorgente di luce sotto quella riga perdeva silenziosamente meta' cerchio.
 	BMI.W	.skip_row
-	CMP.W	#BG_VIS_ROWS,D3
+	CMP.W	#DARK_MAX_ROWS,D3
 	BGE.W	.skip_row
 
 	; half = LightHalfWidthTable[|dy|]
@@ -4120,26 +5247,30 @@ DisegnaCerchioLuce:
 	ADD.W	D5,D1
 	SUBQ.W	#1,D1					; D1 = x_right
 
-	; Cull orizzontale
+	; Cull e clip orizzontali contro la LARGHEZZA DELLA RIGA DEL BUFFER
+	; (DARK_MAX_X, oggi 511), non contro i 320 dello schermo: si lavora in
+	; coordinate mondo su righe da DARK_ROW_BYTES byte.
 	TST.W	D1
 	BMI.W	.skip_row
-	CMP.W	#320,D0
-	BGE.W	.skip_row
+	CMP.W	#DARK_MAX_X,D0
+	BGT.W	.skip_row
 	; Clip
 	TST.W	D0
 	BPL.S	.lc_ok
 	MOVEQ	#0,D0
 .lc_ok:
-	CMP.W	#319,D1
+	CMP.W	#DARK_MAX_X,D1
 	BLE.S	.rc_ok
-	MOVE.W	#319,D1
+	MOVE.W	#DARK_MAX_X,D1
 .rc_ok:
 	; D0 = x_left clippato, D1 = x_right clippato
 
-	; A1 = base riga sul dark plane
+	; A1 = base riga sul dark plane. Il passo e' AUX_PITCH (il pitch VERO del
+	; buffer di Path B): con BPSF_PITCH, rimasto da Path A, ogni riga finiva
+	; 24 byte piu' indietro del dovuto e il cerchio usciva sbilenco.
 	MOVE.L	CurrentDarkDraw,A1
 	MOVE.W	D3,D4
-	MULU.W	#BPSF_PITCH,D4
+	MULU.W	#AUX_PITCH,D4
 	ADDA.L	D4,A1
 
 	; byte_left = D0 >> 3, byte_right = D1 >> 3
@@ -4336,7 +5467,7 @@ DisegnaCerchioLuceBlitter:
 	MULU.W	#LIGHT_MASK_BANDA,D6
 	LEA		LightMask,A0
 	ADDA.W	D6,A0
-	; A1 = CurrentDarkDraw + vtop*48 + word_x*2
+	; A1 = CurrentDarkDraw + vtop*AUX_PITCH + word_x*2
 	MOVE.L	CurrentDarkDraw,A1
 	MOVE.W	D5,D6
 	MULU.W	#AUX_PITCH,D6
@@ -4879,7 +6010,14 @@ DisegnaBOB:
 	MOVE.L	D0,BobGeoPlane
 
 	; ----------------- Animazione -----------------
-	TST.W	bob_IsMoving(A0)
+	; bob_IsMoving ha tre posizioni, non due:
+	;    1  il fotogramma lo fa avanzare questa routine
+	;    0  fermo, e il fotogramma torna a 0 (posa di riposo)
+	;   <0  ANIM_ESTERNA: il fotogramma lo decide il proprietario del bob e qui
+	;       non si tocca. Serve al falo', che ha una sequenza a ritroso con
+	;       un'accensione che non si ripete.
+	MOVE.W	bob_IsMoving(A0),D0
+	BMI.S	.fineAnimazione
 	BEQ.S	.notmoving
 	ADD.W	#1,bob_FrameCont(A0)
 	MOVE.W	bob_FrameCont(A0),D0
@@ -5089,6 +6227,586 @@ DisegnaBOBs:
 	RTS
 
 *****************************************************************************
+* DisegnaPunteggio - le cinque cifre nel riquadro del pannello
+*
+*   Due lavori distinti, e in quest'ordine:
+*     1) il numero MOSTRATO insegue quello vero, di PUNTEGGIO_PASSO per frame;
+*     2) il pannello si riscrive solo se il numero mostrato e' cambiato.
+*   Il secondo passo esiste perche' PannelloBuf e' un buffer fisso: quando la
+*   rotella e' ferma - quasi sempre - la routine e' un confronto e un RTS.
+*
+*   Il passo si fa SEMPRE a long. Una ADDI.W su un contatore a long somma solo
+*   la word bassa e il riporto non passa nella alta: partendo da -1 il valore
+*   resta nella fascia $FFFFxxxx per sempre, sopra PUNTEGGIO_MAX, e la rotella
+*   si inchioda su 99999 senza muoversi piu'. E' successo davvero.
+*
+*   L'inseguimento va anche all'INDIETRO, che oggi non capita ma capitera' al
+*   primo azzeramento a inizio partita. Senza, un obiettivo piu' basso di
+*   quello mostrato lo farebbe salire all'infinito senza raggiungerlo mai.
+*   Il passo non scavalca l'obiettivo: se lo coprirebbe, ci si mette sopra.
+*
+*   IL ROTOLAMENTO. Il contatore non conta punti, conta FOTOGRAMMI: un punto
+*   vale ROTELLA_PASSI. Da quell'unico numero escono sia la cifra sia il
+*   fotogramma, senza nessuno stato per cifra - cinque copie di una cosa che
+*   e' funzione di un numero solo sarebbero cinque occasioni di scollarsi.
+*
+*   IL RIPORTO e' la regola della rotella vera: la cifra k gira solo finche'
+*   tutte quelle alla sua destra leggono 9. Da 198 a 199 gira solo l'ultima;
+*   da 199 a 200 girano le ultime tre insieme e atterrano nello stesso
+*   istante. Costa un flag e un confronto per cifra.
+*
+*   Niente blitter: una cifra e' larga 8 px e cade su un byte, quindi la CPU
+*   la scrive con una MOVE.B. Col blitter servirebbero maschera, shift e un
+*   minterm a tre canali per non cancellare la cifra vicina.
+*
+*   Le cifre escono dalla DIVU dalla meno significativa, e infatti si riempie
+*   da destra: la posizione parte da PUNTEGGIO_CIFRE-1 e scende.
+*
+*   DISTRUGGE: nulla (salva tutto).
+*****************************************************************************
+DisegnaPunteggio:
+	MOVEM.L	D0-D2/D4-D7/A0-A3,-(SP)
+
+	; ----- 1. l'obiettivo, saturato una volta sola e portato in SCALA -----
+	; La scala e' ROTELLA_PASSI: il contatore conta i FOTOGRAMMI, non i punti,
+	; e un punto ne vale quattro. Da un solo numero escono sia la cifra
+	; (valore/PASSI) sia il fotogramma (valore mod PASSI). Le posizioni di
+	; riposo sono i multipli di ROTELLA_PASSI, quindi quando la rotella e'
+	; ferma tutte le cifre stanno per forza sul fotogramma pieno: non c'e'
+	; nessuno stato che possa restare appeso a meta' giro.
+	MOVE.L	Punteggio,D0
+	CMP.L	#PUNTEGGIO_MAX,D0
+	BLS.S	.obiettivo
+	MOVE.L	#PUNTEGGIO_MAX,D0			; oltre le cifre che ci sono, si satura
+.obiettivo:
+	LSL.L	#2,D0						; * ROTELLA_PASSI (4, potenza di due)
+
+	; ----- 2. il numero mostrato ci si avvicina di un passo -----
+	MOVE.L	PunteggioMostrato,D1
+	CMP.L	D0,D1
+	BEQ.S	.mostra						; gia' arrivato: niente da muovere
+	BCS.S	.sale						; mostrato < obiettivo
+	MOVE.L	D1,D2						; scende: distanza = mostrato-obiettivo
+	SUB.L	D0,D2
+	CMP.L	#PUNTEGGIO_PASSO,D2
+	BLS.S	.arriva
+	SUB.L	#PUNTEGGIO_PASSO,D1
+	BRA.S	.mostra
+.sale:
+	MOVE.L	D0,D2						; distanza = obiettivo-mostrato
+	SUB.L	D1,D2
+	CMP.L	#PUNTEGGIO_PASSO,D2
+	BLS.S	.arriva
+	ADD.L	#PUNTEGGIO_PASSO,D1
+	BRA.S	.mostra
+.arriva:
+	MOVE.L	D0,D1						; un passo coprirebbe tutto: ci si mette sopra
+.mostra:
+	MOVE.L	D1,PunteggioMostrato
+
+	; ----- 3. si tocca il pannello solo se cambia qualcosa -----
+	CMP.L	PunteggioDisegnato,D1
+	BEQ.W	.fine
+	MOVE.L	D1,PunteggioDisegnato
+
+	; La FASE del rotolamento e' la stessa per tutte le cifre che girano, quindi
+	; si calcola una volta sola qui fuori. E' gia' convertita in BYTE, cosi'
+	; dentro il ciclo e' una somma e basta.
+	; ROTELLA_PASSI e' 4, cioe' una potenza di due: la fase e' un AND e il
+	; valore intero uno shift. Se un giorno i passi non fossero piu' una
+	; potenza di due, queste due righe vanno rifatte con una divisione.
+	MOVE.L	D1,D0
+	AND.W	#ROTELLA_PASSI-1,D0			; D0 = fase 0..ROTELLA_PASSI-1
+	MULU	#ROTELLA_CELL_W/8,D0		; -> byte di scostamento nella striscia
+	LSR.L	#2,D1						; D1 = valore intero (scala / ROTELLA_PASSI)
+	MOVEQ	#1,D2						; le unita' girano SEMPRE
+
+	MOVEQ	#PUNTEGGIO_CIFRE-1,D7		; posizione, da destra verso sinistra
+.cifra:
+	DIVU	#10,D1
+	SWAP	D1							; alto = quoziente, basso = resto
+	MOVE.W	D1,D6						; D6 = cifra 0..9
+	CLR.W	D1
+	SWAP	D1							; D1 = quoziente per il giro dopo
+
+	; --- il riporto: questa cifra gira solo se TUTTE quelle alla sua destra
+	;     leggono 9. D2 e' quel flag, e vale gia' per la cifra corrente: si
+	;     USA prima e si aggiorna dopo, se no le unita' non girerebbero mai.
+	;     D4 e' libero fin qui: lo carica il ciclo delle righe piu' sotto.
+	MOVE.W	D0,D4						; scostamento del fotogramma...
+	TST.W	D2
+	BNE.S	.gira
+	MOVEQ	#0,D4						; ...ma questa cifra e' ferma
+	BRA.S	.indice
+.gira:
+	CMP.W	#9,D6
+	BEQ.S	.indice						; e' 9: anche quella dopo puo' girare
+	CLR.W	D2							; non e' 9: da qui in poi nessuno gira
+.indice:
+	; sorgente: prima cella della cifra, che sta alla colonna
+	; cifra*ROTELLA_PASSI, cioe' a cifra*PASSI*CELL_W/8 byte dall'inizio riga,
+	; piu' il fotogramma del rotolamento.
+	MULU	#ROTELLA_PASSI*ROTELLA_CELL_W/8,D6
+	ADD.W	D4,D6
+	LEA		RotellaSheet,A0
+	ADDA.W	D6,A0
+
+	; destinazione: riga PUNTEGGIO_Y, byte PUNTEGGIO_X/8 piu' la posizione
+	LEA		PannelloBuf,A1
+	ADDA.W	#PANNELLO_ART_BYTE_OFS+PUNTEGGIO_Y*PANNELLO_BUF_PITCH+PUNTEGGIO_X/8,A1
+	ADDA.W	D7,A1
+
+	MOVEQ	#ROTELLA_PIANI_PAN-1,D5
+.piano:
+	MOVEA.L	A0,A2
+	MOVEA.L	A1,A3
+	MOVEQ	#ROTELLA_H-1,D4
+.riga:
+	MOVE.B	(A2),(A3)
+	ADDA.W	#ROTELLA_ROWB,A2
+	ADDA.W	#PANNELLO_BUF_PITCH,A3
+	DBRA	D4,.riga
+	ADDA.L	#ROTELLA_PLANE_SZ,A0		; piano successivo, sorgente
+	ADDA.L	#PANNELLO_BUF_PLANE,A1		; piano successivo, destinazione
+	DBRA	D5,.piano
+
+	DBRA	D7,.cifra
+.fine:
+	MOVEM.L	(SP)+,D0-D2/D4-D7/A0-A3
+	RTS
+
+*****************************************************************************
+* DisegnaIndicatori - le due barre nei riquadri di sinistra
+*
+*   In alto l'ENERGIA, in basso la VITA del player. La vita si legge da
+*   bob_PF della sua struct e non da una copia: due numeri che dicono la stessa
+*   cosa sono due numeri che possono scollarsi.
+*
+*   Il livello si RICAVA dal valore, non si conta:
+*       livello = valore * (INDIC_LIVELLI-1) / massimo
+*   Cambiando PLAYER_PF_MAX o ENERGIA_MAX la barra si ritara da sola. Il
+*   risultato si satura sull'ultimo livello: un valore fuori scala non deve
+*   poter indirizzare fuori dalla griglia.
+*
+*   Si ridisegna solo quando cambia il LIVELLO, non il valore: fra un livello e
+*   l'altro ci sono due punti ferita, e riscrivere il pannello per un valore che
+*   mostra la stessa barra e' lavoro buttato.
+*
+*   IL COLORE non sta nell'arte. L'arte ha una coppia di indici (13 e 14) e il
+*   colore vero lo mettono due blocchi di copper, uno per riquadro, che questa
+*   routine riscrive quando il livello cambia fascia. Costa quattro word per
+*   barra invece di sei voci di palette, che il pannello non ha.
+*
+*   Niente blitter, per lo stesso motivo delle cifre del punteggio: la barra e'
+*   larga 40 px allineati al byte, quindi sono 5 MOVE.B per riga.
+*
+*   DISTRUGGE: nulla (salva tutto).
+*****************************************************************************
+DisegnaIndicatori:
+	MOVEM.L	D0-D7/A0-A4,-(SP)
+	LEA		IndicTab,A4
+	MOVEQ	#INDIC_QUANTI-1,D7
+.indicatore:
+
+	; ----- 1. il livello OBIETTIVO, ricavato dal valore -----
+	MOVEA.L	ind_Valore(A4),A0
+	MOVE.W	(A0),D0
+	MULU	#INDIC_LIVELLI-1,D0
+	DIVU	ind_Massimo(A4),D0
+	AND.L	#$FFFF,D0					; DIVU lascia il resto nella word alta
+	CMP.W	#INDIC_LIVELLI-1,D0
+	BLS.S	.in_scala
+	MOVEQ	#INDIC_LIVELLI-1,D0			; un valore fuori scala non deve poter
+.in_scala:									; indirizzare fuori dalla griglia
+
+	; ----- 2. l'animazione avanza di un fotogramma -----
+	MOVE.W	ind_Fase(A4),D1
+	CMP.W	#INDIC_FASI_FERMA,D1
+	BCC.S	.in_movimento				; fase oltre le colonne di riposo = transizione
+
+	; ----- a riposo: o parte una transizione, o girano le bolle -----
+	CMP.W	ind_Livello(A4),D0
+	BEQ.S	.bolle						; obiettivo raggiunto: respira e basta
+	BCS.S	.parte_giu
+	MOVEQ	#INDIC_FASE_SU,D1			; sale
+	BRA.S	.parte
+.parte_giu:
+	MOVEQ	#INDIC_FASE_GIU,D1			; scende
+.parte:
+	MOVE.W	D1,ind_Fase(A4)
+	MOVE.W	#INDIC_RITMO,ind_Ritmo(A4)
+	BRA.W	.disegna
+
+.bolle:
+	; Le bolle hanno un ritmo tutto loro, piu' lento delle transizioni, e non si
+	; fermano mai: sono il segno che la barra e' viva anche col valore fermo.
+	; Il contatore qui va a zero e sotto, quindi si guarda il SEGNO e non lo
+	; zero: quando entra in questo ramo per la prima volta il ritmo vale ancora
+	; quello lasciato dalla transizione, e a zero deve scattare subito.
+	SUBQ.W	#1,ind_Ritmo(A4)
+	BPL.W	.disegna					; il fotogramma dura ancora
+	MOVE.W	#INDIC_RITMO_BOLLE,ind_Ritmo(A4)
+	ADDQ.W	#1,D1
+	CMP.W	#INDIC_FASI_FERMA,D1
+	BCS.S	.bolle_ok
+	MOVEQ	#0,D1						; il ciclo si richiude
+.bolle_ok:
+	MOVE.W	D1,ind_Fase(A4)
+	BRA.W	.disegna
+
+.in_movimento:
+	SUBQ.W	#1,ind_Ritmo(A4)
+	BNE.W	.disegna					; questo fotogramma dura ancora
+	MOVE.W	#INDIC_RITMO,ind_Ritmo(A4)
+	ADDQ.W	#1,D1
+	; finita la sequenza? allora si ATTERRA sul livello di arrivo e si torna
+	; alla posa ferma. La salita finisce dove comincia la discesa, la discesa
+	; finisce dove finiscono le colonne: due confronti, tutti e due derivati.
+	CMP.W	#INDIC_FASE_GIU,D1
+	BEQ.S	.atterra_su
+	CMP.W	#INDIC_FOTOGRAMMI,D1
+	BEQ.S	.atterra_giu
+	MOVE.W	D1,ind_Fase(A4)
+	BRA.S	.disegna
+.atterra_su:
+	ADDQ.W	#1,ind_Livello(A4)
+	CLR.W	ind_Fase(A4)
+	MOVE.W	#INDIC_RITMO_BOLLE,ind_Ritmo(A4)
+	BRA.S	.disegna
+.atterra_giu:
+	SUBQ.W	#1,ind_Livello(A4)
+	CLR.W	ind_Fase(A4)
+	MOVE.W	#INDIC_RITMO_BOLLE,ind_Ritmo(A4)
+
+	; ----- 3. si tocca il pannello solo se cambia il FOTOGRAMMA -----
+.disegna:
+	MOVE.W	ind_Livello(A4),D2
+	MULU	#INDIC_FOTOGRAMMI,D2
+	ADD.W	ind_Fase(A4),D2				; D2 = fotogramma, livello e fase insieme
+	CMP.W	ind_Disegnato(A4),D2
+	BEQ.W	.prossimo
+	MOVE.W	D2,ind_Disegnato(A4)
+
+	; il colore dipende dal LIVELLO, non dalla fase: durante una transizione
+	; la barra tiene la tinta del livello da cui parte e la cambia atterrando.
+	MOVE.W	ind_Livello(A4),D3
+	LSL.W	#2,D3						; due word per livello
+	LEA		IndicRampa,A2
+	MOVE.W	0(A2,D3.W),D4				; tinta scura
+	MOVE.W	2(A2,D3.W),D5				; tinta viva
+	MOVEA.L	ind_CopHi(A4),A2
+	MOVE.W	D4,2(A2)
+	MOVE.W	D5,6(A2)
+	MOVEA.L	ind_CopLo(A4),A2
+	MOVE.W	D4,2(A2)
+	MOVE.W	D5,6(A2)
+
+	; sorgente: riga = livello, colonna = fase
+	MOVE.W	ind_Livello(A4),D0
+	MULU	#INDIC_H*INDIC_ROWB,D0
+	MOVE.W	ind_Fase(A4),D1
+	MULU	#INDIC_CELL_W/8,D1
+	ADD.L	D1,D0
+	LEA		IndicSheet,A0
+	ADDA.L	D0,A0
+	; destinazione: riga ind_Y del pannello, byte INDIC_X/8
+	MOVE.W	ind_Y(A4),D1
+	MULU	#PANNELLO_BUF_PITCH,D1
+	LEA		PannelloBuf,A1
+	ADDA.L	D1,A1
+	ADDA.W	#PANNELLO_ART_BYTE_OFS+INDIC_X/8,A1
+	BSR.W	DisegnaBarra
+
+.prossimo:
+	LEA		ind_Length(A4),A4
+	DBRA	D7,.indicatore
+	MOVEM.L	(SP)+,D0-D7/A0-A4
+	RTS
+
+*****************************************************************************
+* DisegnaBarra - copia un fotogramma dell'indicatore dentro il pannello
+*
+*   IN:  A0 = primo byte del fotogramma nello sheet (piano 0)
+*        A1 = primo byte della destinazione in PannelloBuf (piano 0)
+*   Quattro piani, INDIC_H righe, INDIC_BYTE_W byte per riga.
+*
+*   DISTRUGGE: D4, D5, D6, A0-A3. Li salva DisegnaIndicatori.
+*****************************************************************************
+DisegnaBarra:
+	MOVEQ	#INDIC_PIANI_PAN-1,D5
+.piano:
+	MOVEA.L	A0,A2
+	MOVEA.L	A1,A3
+	MOVEQ	#INDIC_H-1,D4
+.riga:
+	MOVEQ	#INDIC_BYTE_W-1,D6
+.byte:
+	MOVE.B	(A2)+,(A3)+
+	DBRA	D6,.byte
+	ADDA.W	#INDIC_ROWB-INDIC_BYTE_W,A2			; riga successiva nella striscia
+	ADDA.W	#PANNELLO_BUF_PITCH-INDIC_BYTE_W,A3	; riga successiva nel pannello
+	DBRA	D4,.riga
+	ADDA.L	#INDIC_PLANE_SZ,A0					; piano successivo, sorgente
+	ADDA.L	#PANNELLO_BUF_PLANE,A1				; piano successivo, destinazione
+	DBRA	D5,.piano
+	RTS
+
+*****************************************************************************
+* CopiaCellaPannello - una cella di un foglio dentro PannelloBuf
+*
+*   IN:  A0 = primo byte della cella nel foglio (piano 0)
+*        A1 = primo byte della destinazione in PannelloBuf (piano 0)
+*        D0 = byte per riga della cella
+*        D1 = righe della cella
+*        D2 = byte per riga del FOGLIO (il passo fra una riga e la successiva)
+*        D3 = byte di un piano del foglio
+*
+*   E' DisegnaBarra con le misure fuori invece che dentro: i tre strumenti
+*   hanno celle di larghezza diversa (2 e 5 byte) ma lo stesso identico ciclo.
+*
+*   DISTRUGGE: nulla (salva tutto).
+*****************************************************************************
+CopiaCellaPannello:
+	MOVEM.L	D0-D7/A0-A3,-(SP)
+	MOVE.W	D2,D5
+	SUB.W	D0,D5						; foglio: byte da saltare a fine riga
+	MOVE.W	#PANNELLO_BUF_PITCH,D6
+	SUB.W	D0,D6						; pannello: byte da saltare a fine riga
+	SUBQ.W	#1,D0						; contatori a base zero per DBRA
+	SUBQ.W	#1,D1
+	MOVEQ	#PANNELLO_BITPLANES-1,D7
+.piano:
+	MOVEA.L	A0,A2
+	MOVEA.L	A1,A3
+	MOVE.W	D1,D4
+.riga:
+	MOVE.W	D0,D2
+.byte:
+	MOVE.B	(A2)+,(A3)+
+	DBRA	D2,.byte
+	ADDA.W	D5,A2
+	ADDA.W	D6,A3
+	DBRA	D4,.riga
+	ADDA.L	D3,A0						; piano successivo, sorgente
+	ADDA.L	#PANNELLO_BUF_PLANE,A1		; piano successivo, destinazione
+	DBRA	D7,.piano
+	MOVEM.L	(SP)+,D0-D7/A0-A3
+	RTS
+
+*****************************************************************************
+* DisegnaSchermo - lo schermo centrale
+*
+*   SchermoModo a 0 mostra la neve, da 1 a SCHERMO_IMMAGINI mostra l'immagine
+*   di quell'evento. Chi glielo mette non c'e' ancora: per adesso lo gira il
+*   tasto S.
+*
+*   Si ridisegna solo quando cambia il FOTOGRAMMA, e il fotogramma e' un numero
+*   solo (riga per colonne piu' colonna) come per le barre: due numeri per dire
+*   la stessa cosa sono due numeri che possono scollarsi.
+*
+*   DISTRUGGE: nulla (salva tutto).
+*****************************************************************************
+DisegnaSchermo:
+	MOVEM.L	D0-D3/A0-A1,-(SP)
+	MOVE.W	SchermoModo,D0
+	BNE.S	.immagine
+
+	; --- neve: avanza di un fotogramma ogni SCHERMO_RITMO frame ---
+	SUBQ.W	#1,SchermoRitmo
+	BPL.S	.neve_pronta
+	MOVE.W	#SCHERMO_RITMO-1,SchermoRitmo
+	MOVE.W	SchermoFase,D1
+	ADDQ.W	#1,D1
+	CMP.W	#SCHERMO_NEVE,D1
+	BCS.S	.neve_ok
+	MOVEQ	#0,D1						; il ciclo si richiude
+.neve_ok:
+	MOVE.W	D1,SchermoFase
+.neve_pronta:
+	MOVE.W	SchermoFase,D2				; colonna
+	MOVEQ	#0,D3						; riga 0 della griglia
+	BRA.S	.disegna
+
+.immagine:
+	SUBQ.W	#1,D0
+	CMP.W	#SCHERMO_IMMAGINI,D0
+	BCS.S	.imm_ok
+	MOVEQ	#0,D0						; un modo fuori scala mostra la prima
+.imm_ok:
+	MOVE.W	D0,D2						; colonna
+	MOVEQ	#1,D3						; riga 1 della griglia
+
+.disegna:
+	MOVE.W	D3,D0
+	MULU	#SCHERMO_COLONNE,D0
+	ADD.W	D2,D0						; fotogramma: riga e colonna insieme
+	CMP.W	SchermoDisegnato,D0
+	BEQ.S	.fine
+	MOVE.W	D0,SchermoDisegnato
+
+	MOVE.W	D3,D0
+	MULU	#SCHERMO_H*SCHERMO_ROWB,D0	; riga della griglia
+	MULU	#SCHERMO_BYTE_W,D2			; colonna
+	ADD.L	D2,D0
+	LEA		SchermoSheet,A0
+	ADDA.L	D0,A0
+	LEA		PannelloBuf,A1
+	ADDA.L	#PANNELLO_ART_BYTE_OFS+SCHERMO_Y*PANNELLO_BUF_PITCH+SCHERMO_X/8,A1
+	MOVEQ	#SCHERMO_BYTE_W,D0
+	MOVEQ	#SCHERMO_H,D1
+	MOVE.W	#SCHERMO_ROWB,D2
+	MOVE.L	#SCHERMO_PLANE_SZ,D3
+	BSR.W	CopiaCellaPannello
+.fine:
+	MOVEM.L	(SP)+,D0-D3/A0-A1
+	RTS
+
+*****************************************************************************
+* DisegnaSpie - le quattro spie in basso a destra
+*
+*   Un bit di SpieAccese per spia. Accesa, la spia percorre le fasi
+*   dell'accensione e resta sull'ultima; spenta, torna subito alla fase 0, che
+*   e' la cella vuota, cioe' il buco nero come lo ha lasciato il pannello.
+*
+*   Le posizioni stanno in SpieTab e non qui, perche' le legge anche
+*   ComponiSheet per prendere lo sfondo giusto: una sola copia.
+*
+*   DISTRUGGE: nulla (salva tutto).
+*****************************************************************************
+DisegnaSpie:
+	MOVEM.L	D0-D7/A0-A4,-(SP)
+	LEA		SpieTab,A4
+	MOVEQ	#SPIE_TOT-1,D7
+.spia:
+	MOVE.W	spi_Fase(A4),D1
+	MOVE.W	SpieAccese,D0
+	AND.W	spi_Bit(A4),D0
+	BNE.S	.accesa
+	MOVEQ	#0,D1						; spenta: si spegne subito, non a scalare
+	MOVE.W	D1,spi_Fase(A4)
+	BRA.S	.disegna
+.accesa:
+	CMP.W	#SPIA_FASI-1,D1
+	BCC.S	.disegna					; a regime: l'ultimo fotogramma resta
+	SUBQ.W	#1,spi_Ritmo(A4)
+	BPL.S	.disegna
+	MOVE.W	#SPIA_RITMO-1,spi_Ritmo(A4)
+	ADDQ.W	#1,D1
+	MOVE.W	D1,spi_Fase(A4)
+
+.disegna:
+	CMP.W	spi_Disegnato(A4),D1
+	BEQ.S	.prossima
+	MOVE.W	D1,spi_Disegnato(A4)
+
+	; La sorgente non si ricava da un indice: sta nella riga. Le quattro gialle
+	; e la rossa vivono in due fogli diversi, montati con mappe diverse, e la
+	; riga sa dove comincia la SUA cella e quanto e' grande un piano del SUO
+	; foglio. Cosi' il ciclo e' uno solo e non sa niente del colore.
+	MOVE.W	D1,D0
+	MULU	#SPIA_BYTE_W,D0				; colonna = la fase
+	MOVEA.L	spi_Cella(A4),A0
+	ADDA.L	D0,A0
+
+	MOVE.W	spi_Y(A4),D0
+	MULU	#PANNELLO_BUF_PITCH,D0
+	ADD.W	spi_X(A4),D0
+	LEA		PannelloBuf,A1
+	ADDA.L	D0,A1
+	ADDA.W	#PANNELLO_ART_BYTE_OFS,A1
+
+	MOVEQ	#SPIA_BYTE_W,D0
+	MOVEQ	#SPIA_H,D1
+	MOVE.W	#SPIA_ROWB,D2
+	MOVE.L	spi_PianoSz(A4),D3
+	BSR.W	CopiaCellaPannello
+.prossima:
+	LEA		spi_Length(A4),A4
+	DBRA	D7,.spia
+	MOVEM.L	(SP)+,D0-D7/A0-A4
+	RTS
+
+*****************************************************************************
+* DisegnaQuadrante - la lancetta del quadrante grande
+*
+*   QuadranteObiettivo sceglie una delle quattro posizioni (ovest, nord, est,
+*   sud-sud-est); QuadPosizioni le traduce in angoli di bussola. La lancetta ci
+*   arriva un passo alla volta, dalla parte piu' corta, e durante il movimento
+*   mostra la riga con lo sbuffo di vapore invece di quella pulita.
+*
+*   La parte piu' corta si trova senza confronti fra angoli: la distanza IN
+*   AVANTI e' (arrivo - partenza) AND 15, e se e' oltre mezzo giro conviene
+*   andare indietro. Cosi' il giro e' sempre al massimo di otto passi e non
+*   c'e' nessun caso speciale allo scavallamento dello zero.
+*
+*   DISTRUGGE: nulla (salva tutto).
+*****************************************************************************
+DisegnaQuadrante:
+	MOVEM.L	D0-D3/A0-A1,-(SP)
+	MOVE.W	QuadranteObiettivo,D0
+	AND.W	#3,D0						; quattro posizioni, e basta
+	ADD.W	D0,D0
+	LEA		QuadPosizioni,A0
+	MOVE.W	0(A0,D0.W),D0				; angolo di arrivo
+	MOVE.W	QuadranteAngolo,D1
+	CMP.W	D0,D1
+	BEQ.S	.ferma
+
+	SUBQ.W	#1,QuadranteRitmo
+	BPL.S	.sbuffo						; il fotogramma dura ancora
+	MOVE.W	#QUAD_RITMO-1,QuadranteRitmo
+	SUB.W	D1,D0
+	AND.W	#QUAD_ANGOLI-1,D0			; distanza in avanti, 1..QUAD_ANGOLI-1
+	CMP.W	#QUAD_ANGOLI/2,D0
+	BHI.S	.indietro
+	ADDQ.W	#1,D1
+	BRA.S	.passo
+.indietro:
+	SUBQ.W	#1,D1
+.passo:
+	AND.W	#QUAD_ANGOLI-1,D1
+	MOVE.W	D1,QuadranteAngolo
+.sbuffo:
+	; lo sbuffo segue il passo: una fase per frame, e con QUAD_RITMO uguale a
+	; QUAD_SBUFFI le tre fasi entrano esatte in un passo.
+	MOVE.W	#QUAD_RITMO-1,D2
+	SUB.W	QuadranteRitmo,D2
+	ADDQ.W	#1,D2
+	CMP.W	#QUAD_SBUFFI,D2
+	BLS.S	.disegna
+	MOVEQ	#QUAD_SBUFFI,D2				; ritmi piu' lunghi delle fasi: si tiene
+	BRA.S	.disegna					; l'ultima invece di uscire dalla griglia
+.ferma:
+	CLR.W	QuadranteRitmo				; il primo passo del prossimo giro parte subito
+	MOVEQ	#0,D2						; riga 0: la lancetta pulita
+
+.disegna:
+	MOVE.W	QuadranteAngolo,D1
+	MOVE.W	D2,D0
+	MULU	#QUAD_ANGOLI,D0
+	ADD.W	D1,D0						; fotogramma: riga e angolo insieme
+	CMP.W	QuadranteDisegnato,D0
+	BEQ.S	.fine
+	MOVE.W	D0,QuadranteDisegnato
+
+	MOVE.W	D2,D0
+	MULU	#QUAD_H*QUAD_ROWB,D0		; riga della griglia
+	MULU	#QUAD_BYTE_W,D1				; colonna = l'angolo
+	ADD.L	D1,D0
+	LEA		QuadSheet,A0
+	ADDA.L	D0,A0
+	LEA		PannelloBuf,A1
+	ADDA.L	#PANNELLO_ART_BYTE_OFS+QUAD_Y*PANNELLO_BUF_PITCH+QUAD_X/8,A1
+	MOVEQ	#QUAD_BYTE_W,D0
+	MOVEQ	#QUAD_H,D1
+	MOVE.W	#QUAD_ROWB,D2
+	MOVE.L	#QUAD_PLANE_SZ,D3
+	BSR.W	CopiaCellaPannello
+.fine:
+	MOVEM.L	(SP)+,D0-D3/A0-A1
+	RTS
+
+*****************************************************************************
 * Routine che aspetta il blitter
 *****************************************************************************
 AspettaBlitter:
@@ -5103,20 +6821,331 @@ AspettaBlitter:
 ;=====================================================================
 	include	"Testo.i"
 
+; ============================================================
+; SCRITTA SCORREVOLE sotto il monitor
+; ============================================================
+; Sta QUI e non con le altre EQU degli strumenti perche' discende da FONT_H e
+; FONT_GLYPH, che le definisce Testo.i: Devpac valuta una EQU dove la incontra.
+;
+; Il buco misurato sui pixel di Pannello.raw e' x114..212 y54..67, e il piu'
+; grande rettangolo tutto nero allineato al byte dentro di esso e' x120..207 su
+; dieci righe, y58..67. Undici caratteri, e restano 6 px di margine a sinistra e
+; 5 a destra: le lettere entrano ed escono dove finisce il nero, non prima.
+;
+; PERCHE' SI SCRIVE A BYTE E NON A WORD. x120/8 = 15, dispari, e il pitch del
+; pannello e' pari: ogni riga della destinazione comincia a un indirizzo
+; dispari, e una MOVE.W li' sopra e' un address error sul 68000. La finestra
+; allineata alla word esiste (x128..207, dieci caratteri) e costerebbe circa il
+; 40% in meno, ma lascerebbe 14 px di margine a sinistra e 5 a destra: le
+; lettere sparirebbero molto prima del bordo del buco. E' il primo numero da
+; toccare se la scritta risultasse cara: si misura con P, si guarda DR.
+;
+; IL FONDO NON SI RISCRIVE. Il riquadro e' tutto nero, cioe' indice 15, cioe'
+; tutti e quattro i piani accesi. La tinta della scritta ha dei bit a 1: su quei
+; piani il pixel resta acceso sia sul fondo sia sulla lettera, quindi quei piani
+; sono GIA' giusti come li ha lasciati DisegnaPannello e non si toccano mai.
+; Si riscrivono solo i piani in cui la tinta ha il bit a 0, e ci si scrive il
+; NEGATO della sagoma. Con la tinta 6 sono due piani su quattro: meta' lavoro,
+; e senza nessun riempimento al boot.
+SCRITTA_X			EQU		120			; primo byte della finestra
+SCRITTA_Y			EQU		59			; il buco nero va da y58 a y67: il glifo
+										; e' alto 7 px su 8, quindi centrato qui
+SCRITTA_BYTE_W		EQU		11			; caratteri che si vedono in una volta
+SCRITTA_H			EQU		FONT_H
+SCRITTA_TINTA		EQU		6
+SCRITTA_VELOCITA	EQU		1			; px per quadro. A 0 la scritta sta ferma.
+SCRITTA_MAX_CAR		EQU		64			; caratteri del messaggio piu' lungo
+; Byte ricopiati in fondo a ogni riga per chiudere il giro senza cucitura.
+; Non e' un numero a gusto: la lettura piu' avanzata di DisegnaScritta e' un
+; long che comincia al decimo byte della finestra, quindi servono
+; SCRITTA_BYTE_W+3 byte oltre la fine del messaggio. Uno in piu' per sicurezza.
+SCRITTA_CODA		EQU		SCRITTA_BYTE_W+4
+SCRITTA_ROWB		EQU		((SCRITTA_MAX_CAR+SCRITTA_CODA+1)/2)*2
+SCRITTA_BUF_SZ		EQU		SCRITTA_ROWB*SCRITTA_H
+; Prima riga in cui la voce della scritta prende il suo colore. Sta sotto
+; l'ultima riga delle spie (y56) e sopra la prima riga del glifo (y59).
+SCRITTA_Y0			EQU		57
+SCRITTA_RASTER		EQU		PANNELLO_ART_RASTER+SCRITTA_Y0
+SCRITTA_COL			EQU		$0cef		; azzurro chiaro, in tinta col pannello
+; Quanti piani si riscrivono: quelli in cui la tinta ha il bit a ZERO. Esce dal
+; numero della tinta, non da una scelta, ed e' lo stesso conto che decide le
+; righe di ScrittaPianiTab: le due strade si controllano a vicenda con
+; GUARDIA_SCRITTA_PIANI.
+SCRITTA_PIANI_N		EQU		(1-((SCRITTA_TINTA>>0)&1))+(1-((SCRITTA_TINTA>>1)&1))+(1-((SCRITTA_TINTA>>2)&1))+(1-((SCRITTA_TINTA>>3)&1))
+	IFEQ	SCRITTA_PIANI_N
+; Con una tinta uguale al fondo non ci sarebbe niente da scrivere, e il ciclo
+; dei piani girerebbe 65536 volte.
+GUARDIA_SCRITTA_TINTA	EQU		1/0
+	ENDC
+	IFLT	SCRITTA_RASTER-256
+GUARDIA_SCRITTA_RASTER	EQU		1/0
+	ENDC
+	IFLE	SCRITTA_ROWB-(SCRITTA_MAX_CAR+SCRITTA_CODA)
+; La riga del buffer deve contenere il messaggio piu' la coda.
+GUARDIA_SCRITTA_ROWB	EQU		1/0
+	ENDC
+
+*****************************************************************************
+* DisegnaLettera - un carattere del font nel quadrato all'estrema destra
+*
+*   Lo prende da LetteraDestra (codice ASCII) e ridisegna solo quando cambia,
+*   quindi il costo di questa routine e' quasi sempre un confronto.
+*
+*   Il glifo NON cade su un byte: l'unica posizione tutta nera dentro il buco
+*   e' x285..292, a cavallo di due byte. Quindi la riga del font si porta in
+*   una word con una LSL e la si compone col fondo, che si rilegge da
+*   'pannello'. Non c'e' un foglio da montare al boot: un carattere per volta
+*   costa 64 operazioni su byte, e succede quando cambia la lettera.
+*
+*   Per ogni piano: dove la tinta ha il bit a 1 il glifo ACCENDE (OR), dove ce
+*   l'ha a 0 SPEGNE (AND col negato). I bit della tinta si consumano uno alla
+*   volta con una LSR, cosi' non c'e' nessuna tabella da tenere allineata.
+*
+*   Tutto a byte: la cella comincia al byte LETTERA_X/8 = 35, dispari, e una
+*   MOVE.W a indirizzo dispari e' un address error sul 68000.
+*
+*   DISTRUGGE: nulla (salva tutto).
+*****************************************************************************
+DisegnaLettera:
+	MOVEM.L	D0-D6/A0-A4,-(SP)
+	MOVE.W	LetteraDestra,D0
+	CMP.W	LetteraDisegnata,D0
+	BEQ.W	.fine
+	MOVE.W	D0,LetteraDisegnata
+
+	; --- il glifo nel font ---
+	SUB.W	#FONT_FIRST,D0
+	BCC.S	.sopra
+	MOVEQ	#0,D0						; sotto lo spazio -> spazio
+.sopra:
+	CMP.W	#FONT_CHARS,D0
+	BCS.S	.dentro
+	MOVEQ	#0,D0						; oltre l'ultimo -> spazio
+.dentro:
+	MULU	#FONT_GLYPH,D0
+	LEA		FontData,A0
+	ADDA.W	D0,A0
+
+	; --- fondo e destinazione ---
+	LEA		pannello,A1
+	ADDA.W	#LETTERA_Y*PANNELLO_BYTES_PER_ROW+LETTERA_X/8,A1
+	LEA		PannelloBuf,A2
+	ADDA.L	#PANNELLO_ART_BYTE_OFS+LETTERA_Y*PANNELLO_BUF_PITCH+LETTERA_X/8,A2
+
+	MOVEQ	#FONT_H-1,D5
+.riga:
+	MOVEQ	#0,D1
+	MOVE.B	(A0)+,D1					; gli 8 px di questa riga del glifo
+	LSL.W	#8-LETTERA_OFS,D1			; portati dove cadono nella cella
+	ROL.W	#8,D1						; D1.b = byte sinistro, alto = destro
+	MOVEA.L	A1,A3
+	MOVEA.L	A2,A4
+	MOVEQ	#LETTERA_TINTA,D3			; i bit della tinta, uno per piano
+	MOVEQ	#PANNELLO_BITPLANES-1,D4
+.piano:
+	MOVE.W	D1,D6						; copia della sagoma, si consuma
+	LSR.W	#1,D3						; il bit di questo piano finisce in C
+	BCC.S	.spegne
+	MOVE.B	(A3),D2
+	OR.B	D6,D2
+	MOVE.B	D2,(A4)
+	ROL.W	#8,D6
+	MOVE.B	1(A3),D2
+	OR.B	D6,D2
+	MOVE.B	D2,1(A4)
+	BRA.S	.avanti
+.spegne:
+	NOT.W	D6
+	MOVE.B	(A3),D2
+	AND.B	D6,D2
+	MOVE.B	D2,(A4)
+	ROL.W	#8,D6
+	MOVE.B	1(A3),D2
+	AND.B	D6,D2
+	MOVE.B	D2,1(A4)
+.avanti:
+	ADDA.W	#PANNELLO_PLANE_SIZE,A3
+	ADDA.L	#PANNELLO_BUF_PLANE,A4
+	DBRA	D4,.piano
+	ADDA.W	#PANNELLO_BYTES_PER_ROW,A1
+	ADDA.W	#PANNELLO_BUF_PITCH,A2
+	DBRA	D5,.riga
+.fine:
+	MOVEM.L	(SP)+,D0-D6/A0-A4
+	RTS
+
+*****************************************************************************
+* ImpostaScritta - prepara il messaggio che scorre sotto il monitor
+*
+*   IN:  A0 = stringa terminata da zero
+*
+*   Costruisce la mappa a 1 piano del messaggio: un byte per carattere, otto
+*   righe. La tiene GIA' NEGATA, perche' quello che finisce nei bitplane e' il
+*   negato della sagoma: negando qui si toglie una NOT dal ciclo che gira ogni
+*   quadro. Lo scorrimento pesca i bit dal byte accanto, e negato o no il conto
+*   e' lo stesso, quindi la negazione anticipata non cambia niente.
+*
+*   In fondo a ogni riga si ricopiano SCRITTA_CODA byte presi MODULO la
+*   lunghezza: cosi' il giro si richiude senza cucitura anche con un messaggio
+*   piu' corto della finestra.
+*
+*   DISTRUGGE: nulla (salva tutto).
+*****************************************************************************
+ImpostaScritta:
+	MOVEM.L	D0-D5/A0-A3,-(SP)
+	LEA		ScrittaBuf,A1
+	MOVEQ	#0,D0						; caratteri sistemati finora
+.car:
+	MOVEQ	#0,D1
+	MOVE.B	(A0)+,D1
+	BEQ.S	.finita
+	CMP.W	#SCRITTA_MAX_CAR,D0
+	BCC.S	.finita						; il resto del messaggio non ci sta
+	SUB.W	#FONT_FIRST,D1
+	BCC.S	.sopra
+	MOVEQ	#0,D1
+.sopra:
+	CMP.W	#FONT_CHARS,D1
+	BCS.S	.dentro
+	MOVEQ	#0,D1
+.dentro:
+	MULU	#FONT_GLYPH,D1
+	LEA		FontData,A2
+	ADDA.W	D1,A2
+	MOVEA.L	A1,A3
+	MOVEQ	#SCRITTA_H-1,D2
+.riga:
+	MOVE.B	(A2)+,D3
+	NOT.B	D3							; la mappa si tiene negata
+	MOVE.B	D3,(A3)
+	ADDA.W	#SCRITTA_ROWB,A3
+	DBRA	D2,.riga
+	ADDQ.L	#1,A1
+	ADDQ.W	#1,D0
+	BRA.S	.car
+
+.finita:
+	MOVE.W	D0,ScrittaCar
+	MOVE.W	D0,D1
+	LSL.W	#3,D1						; la lunghezza in px, dove il giro si chiude
+	MOVE.W	D1,ScrittaFine
+	CLR.W	ScrittaOffset
+	TST.W	D0
+	BEQ.S	.vuota						; messaggio vuoto: niente coda da fare
+
+	LEA		ScrittaBuf,A1
+	MOVEQ	#SCRITTA_H-1,D2
+.coda_riga:
+	MOVEQ	#0,D3						; posizione dentro la coda
+	MOVEQ	#0,D4						; posizione nel messaggio, che si richiude
+.coda:
+	MOVE.W	D0,D5
+	ADD.W	D3,D5
+	MOVE.B	0(A1,D4.W),0(A1,D5.W)
+	ADDQ.W	#1,D4
+	CMP.W	D0,D4
+	BCS.S	.coda_ok
+	MOVEQ	#0,D4
+.coda_ok:
+	ADDQ.W	#1,D3
+	CMP.W	#SCRITTA_CODA,D3
+	BCS.S	.coda
+	ADDA.W	#SCRITTA_ROWB,A1
+	DBRA	D2,.coda_riga
+.vuota:
+	MOVEM.L	(SP)+,D0-D5/A0-A3
+	RTS
+
+*****************************************************************************
+* DisegnaScritta - fa scorrere il messaggio di SCRITTA_VELOCITA px
+*
+*   L'unica parte mobile del pannello che si ridisegna a OGNI quadro: le altre
+*   hanno un "gia' disegnato" da confrontare, questa per definizione cambia
+*   sempre. E' anche l'unica che non cade su un byte, ed e' li' che sta il
+*   lavoro.
+*
+*   Come si prende una riga spostata di n px: si legge un LONG all'indirizzo
+*   PARI che contiene i due byte voluti, lo si sposta a sinistra di n, e la word
+*   alta e' esattamente la coppia di byte che serve. Cosi' n vale 0..15 e la
+*   sorgente resta sempre allineata alla word, che sul 68000 non e' un dettaglio
+*   di velocita' ma la differenza fra funzionare e un address error.
+*
+*   I due byte poi si scrivono UNO ALLA VOLTA, perche' la destinazione comincia
+*   a un byte dispari: vedi il blocco EQU della scritta.
+*
+*   Si scrivono solo i piani in cui la tinta ha il bit a 0 (ScrittaPianiTab):
+*   sugli altri il fondo nero e la lettera accendono lo stesso pixel, e quello
+*   che c'e' gia' e' gia' giusto.
+*
+*   DISTRUGGE: nulla (salva tutto).
+*****************************************************************************
+DisegnaScritta:
+	MOVEM.L	D0-D7/A0-A4,-(SP)
+	MOVE.W	ScrittaCar,D0
+	BEQ.W	.fine						; nessun messaggio impostato
+
+	; --- avanza lo scorrimento, e si richiude ---
+	MOVE.W	ScrittaOffset,D0
+	ADD.W	#SCRITTA_VELOCITA,D0
+	CMP.W	ScrittaFine,D0
+	BCS.S	.off_ok
+	SUB.W	ScrittaFine,D0
+.off_ok:
+	MOVE.W	D0,ScrittaOffset
+	MOVE.W	D0,D2
+	AND.W	#15,D2						; spostamento in bit, 0..15
+	LSR.W	#4,D0
+	ADD.W	D0,D0						; byte PARI da cui leggere
+	LEA		ScrittaBuf,A0
+	ADDA.W	D0,A0
+	LEA		PannelloBuf,A1
+	ADDA.L	#PANNELLO_ART_BYTE_OFS+SCRITTA_Y*PANNELLO_BUF_PITCH+SCRITTA_X/8,A1
+
+	LEA		ScrittaPianiTab,A4
+	MOVEQ	#SCRITTA_PIANI_N-1,D7
+.piano:
+	MOVEA.L	A0,A2
+	MOVEA.L	A1,A3
+	ADDA.L	(A4)+,A3					; questo piano della destinazione
+	MOVEQ	#SCRITTA_H-1,D6
+.riga:
+	MOVEQ	#SCRITTA_BYTE_W/2-1,D5
+.coppia:
+	MOVE.L	(A2),D1
+	ADDQ.L	#2,A2
+	LSL.L	D2,D1
+	SWAP	D1							; D1.w = i due byte, gia' spostati
+	ROL.W	#8,D1
+	MOVE.B	D1,(A3)+					; byte sinistro
+	ROL.W	#8,D1
+	MOVE.B	D1,(A3)+					; byte destro
+	DBRA	D5,.coppia
+	IFNE	SCRITTA_BYTE_W&1
+	MOVE.L	(A2),D1						; il byte dispari in fondo alla finestra
+	LSL.L	D2,D1
+	SWAP	D1
+	ROL.W	#8,D1
+	MOVE.B	D1,(A3)+
+	ENDC
+	ADDA.W	#SCRITTA_ROWB-(SCRITTA_BYTE_W/2)*2,A2
+	ADDA.W	#PANNELLO_BUF_PITCH-SCRITTA_BYTE_W,A3
+	DBRA	D6,.riga
+	DBRA	D7,.piano
+.fine:
+	MOVEM.L	(SP)+,D0-D7/A0-A4
+	RTS
+
 ;=====================================================================
-; Scroll hardware AGA (Path B). ScrollHW.i e' il modulo definitivo;
-; ProtoScroll.i e' solo il banco di prova del passo 1 ed esce dalla
-; build insieme a PROTO_SCROLL=0.
+; Scroll hardware AGA (Path B). ScrollHW.i e' il modulo definitivo.
+; ProtoScroll.i era il banco di prova del passo 1: l'interruttore
+; PROTO_SCROLL e' stato tolto il 22 agosto 2026 (valeva 0 da quando Path B
+; e' diventato l'architettura), e con lui l'include. Il file resta sul disco.
 ;=====================================================================
 	include	"ScrollHW.i"
 
-; DISPLAY_FETCH_BYTES e' dichiarato in testa perche' serve al pitch, che si
-; calcola prima di questo include. Qui che SCROLL_FETCH_BYTES esiste, si
-; verifica che i due non siano divergenti: se lo fossero, il puntatore del
-; parallasse finirebbe nel posto sbagliato e tornerebbe la striscia a sinistra.
-	IFNE	SCROLL_FETCH_BYTES-DISPLAY_FETCH_BYTES
-;	FAIL	"DISPLAY_FETCH_BYTES non coincide con SCROLL_FETCH_BYTES"
-	ENDC
+; SCROLL_FETCH_BYTES e DISPLAY_FETCH_BYTES sono lo stesso numero: la seconda
+; e' definita come la prima in testa a Gioco.s. Qui non c'e' piu' niente da
+; verificare, e prima c'era una guardia.
 
 ; Tabella dei colori del gradiente cielo: UNA VOCE PER RIGA RASTER VISIBILE.
 ; La copperlist vera la genera BuildSkyCopper al boot. CieloCopper.i, che era
@@ -5227,9 +7256,7 @@ ScrollPathBApply:
 	; devono entrare in vigore nello stesso quadro. Pubblicandoli in momenti
 	; diversi si sfasano di un frame ed e' il vecchio flash all'innesco.
 	; Con tutto pubblicato insieme, SW smette di essere un vincolo.
-	IFNE	SWITCH_PIANI&2
 	BSR.W	SwapParBuffers
-	ENDC
 
 	; --- scambio dei buffer e dei rispettivi set di rettangoli sporchi ---
 	MOVE.L	WorldShow,D0
@@ -5261,10 +7288,12 @@ ScrollPathBApply:
 ;
 ; Ogni BOB registra il proprio rettangolo mentre lo disegna; il frame
 ; dopo, PathBRestoreAll li ripulisce tutti e svuota la lista. I
-; rettangoli sono sempre larghi 2 word, perche' e' quanto blittano sia
-; i BOB (16 px + shift) sia le barre vita.
+; rettangoli NON hanno piu' larghezza fissa: ogni voce porta la propria
+; (dirty_Width), perche' i bob hanno geometrie diverse (omino/nemico 32 px,
+; pietra 16). Le barre vita, che erano l'altro cliente a 2 word, non
+; esistono piu' nel codice.
 ;=====================================================================
-PATHB_DIRTY_MAX EQU     16              ; 5 BOB + 5 barre, con margine
+PATHB_DIRTY_MAX EQU     16              ; BOB_TOTALI (oggi 6, 7 col falo') + margine
 
 ;---------------------------------------------------------------------
 ; PathBRegistraDirty - annota un rettangolo da ripulire al prossimo frame
@@ -5473,11 +7502,11 @@ PathBBuildDark:
 ;---------------------------------------------------------------------
 ; PathBInit - preparazione una tantum, dopo DisegnaSfondo
 ;
-; Piani 6/7/8 su un buffer vuoto con lo STESSO pitch del world: i
-; moduli BPL1MOD/BPL2MOD sono condivisi fra piani pari e dispari, e
-; darkplane e parallasse hanno ancora pitch 48. Restano accesi perche'
-; la contesa DMA a 8 piani deve essere quella vera, e le loro routine
-; continuano a girare perche' il loro costo deve entrare nella misura.
+; Sostituisce nella copperlist i segnaposto di CL_Ddf e CL_BplMod con la
+; geometria vera di Path B (ScrollHW.i). Tutti e otto i piani puntano a
+; buffer reali con lo STESSO pitch (AUX_PITCH = SFONDO_PITCH): BPL1MOD e
+; BPL2MOD sono condivisi fra piani dispari e pari, quindi un pitch diverso
+; farebbe slittare ogni riga dei piani ausiliari.
 ;---------------------------------------------------------------------
 PathBInit:
 	MOVEM.L	D0-D1/A0-A1,-(SP)
@@ -5489,31 +7518,9 @@ PathBInit:
 	MOVE.W	#SCROLL_BPLMOD,2(A1)	; BPL1MOD
 	MOVE.W	#SCROLL_BPLMOD,6(A1)	; BPL2MOD
 
-	; Dirotta su PathBVuoto i piani ausiliari spenti da SWITCH_PIANI.
-	MOVE.L	#PathBVuoto,D0
-	IFEQ	SWITCH_PIANI&1
-	LEA		BitPlaneTiles+5*8,A1	; 6o piano = darkplane
-	BSR.S	.ptr
-	ENDC
-	IFEQ	SWITCH_PIANI&2
-	LEA		BitplaneParall,A1		; 7o
-	BSR.S	.ptr
-	LEA		BitplaneParall+8,A1		; 8o
-	BSR.S	.ptr
-	ENDC
-
 	MOVEM.L	(SP)+,D0-D1/A0-A1
 	RTS
 
-.ptr:	MOVE.W	D0,6(A1)
-	SWAP	D0
-	MOVE.W	D0,2(A1)
-	SWAP	D0
-	RTS
-
-	IFNE	PROTO_SCROLL
-	include	"ProtoScroll.i"
-	ENDC
 
 	IFNE	PROFILING
 ;---------------------------------------------------------------------
@@ -5535,11 +7542,14 @@ PathBInit:
 ;   EN ENTITIES   BO BOB        BL BLTDRAIN  WO WORST (totale)
 ;   DR DROP (frame persi)
 ;
-; POSIZIONE: dentro l'area di gioco. NON sotto: DIWSTOP e' gia' tagliato
-; da CUT_BOTTOM_ROWS, quindi il display si ferma a BG_VIS_ROWS e tutto
-; cio' che sta sotto e' nel buffer ma invisibile.
-; CopiaVideo ridisegna lo sfondo ogni frame, ma MostraProfilo gira DOPO
-; (ultima a scrivere prima dello swap), quindi i numeri restano sopra.
+; POSIZIONE: dentro l'area di gioco. NON sotto: sotto BG_VIS_ROWS il display
+; non mostra piu' il world buffer ma PannelloBuf (la fascia del pannello ha i
+; suoi puntatori), quindi quel che sta li' nel world buffer non si vede.
+; NB: DIWSTOP verticale NON si ferma piu' a BG_VIS_ROWS: arriva a
+; PANNELLO_BOT_RASTER perche' la fascia del pannello deve stare dentro la
+; finestra. E' il cambio di puntatori a rendere invisibile la coda, non il DIW.
+; MostraProfilo e' l'ultima a scrivere prima dello swap, quindi i numeri
+; restano sopra a tutto il resto.
 ;
 ; Scrive la stessa forma su TUTTI E 5 i piani: colore 31 su fondo 0,
 ; leggibile su qualunque sfondo e senza dover pulire prima.
@@ -5615,9 +7625,11 @@ MostraProfilo:
         CMP.W   #PROF_COLS,D6
         BLT.S   .prossimo
         MOVEQ   #0,D6                           ; a capo
-        ; il salto di riga deve usare il pitch REALE del buffer (D0), non
-        ; una costante: in Path B vale 56 e non 48, e con 48 ogni riga di
-        ; testo finiva 8 byte piu' avanti = 64 px a destra della precedente
+        ; il salto di riga deve usare il pitch REALE del buffer (D0 =
+        ; SFONDO_PITCH, oggi 72 e DERIVATO da MAPPA_COLS), non una costante:
+        ; ogni byte di differenza sposta la riga di testo di 8 px, e quando
+        ; qui c'era 48 contro un pitch di 56 ogni riga finiva 64 px a destra
+        ; della precedente
         MOVE.W  D0,D5
         MULU.W  #FONT_H,D5
         ADDA.L  D5,A4
@@ -5642,7 +7654,11 @@ ProfLabels:
 ; ---- Variabili del profiling harness (vedi EQU PROFILING in testa) ----
 ; Sempre presenti anche con PROFILING=0: 8 byte, e cosi' restano
 ; ispezionabili dal debugger senza ricompilare con guardie condizionali.
-FrameLines:		dc.w	0       ; righe consumate da QUESTO frame (0..312)
+; Righe consumate da QUESTO frame. NON e' limitata a RASTER_LINES-1: sui
+; frame misurati davvero FineLavoro la riscrive con la durata ricostruita
+; dai wrap, e un frame che ha sforato vale di piu' di un giro di raster.
+; E' proprio quel confronto a contare i frame persi.
+FrameLines:		dc.w	0       ; righe consumate da QUESTO frame
 WorstReset:		dc.w	0       ; scrivici 1 (debugger) per azzerare i worst
 ProfShow:		dc.b	0       ; 1 = numeri a schermo + misura congelata (tasto P)
 ProfKeyPrev:	dc.b	0       ; stato precedente del tasto P (edge detect)
@@ -5690,11 +7706,6 @@ CurDirty:       dc.l	DirtySetB        ; set del buffer in cui si disegna (B al b
 PathBDelay:		dc.w	0       ; ritardo BPLCON1 del frame: darkplane e
                                 ;   parallasse lo usano per compensare
 
-	IFNE	PROTO_SCROLL
-ProtoCamX:		dc.w	0       ; posizione camera del prototipo, in pixel
-ProtoTuneD:		dc.w	0       ; modo taratura: il ritardo BPLCON1 sotto test
-ProtoCamY:		dc.w	0
-	ENDC
 
 ProfRaw:		ds.w    PROF_SLOTS
 ProfWorst:		ds.w    PROF_SLOTS
@@ -5736,12 +7747,6 @@ ProfSwapRaster: dc.w    0       ; SW: righe dopo il sync alla pubblicazione (hig
 ProfDelay:      dc.w    0       ; DL: ritardo BPLCON1 del frame
 ProfParOfs:     dc.w    0       ; PO: offset della parallasse
 
-
-; Palette AGA del title screen (256 colori, format $00RRGGBB long).
-; Caricata via CPU in LoadAGAPalette256 prima di mostrare la title.
-title_pal:
-	incbin	"grafica/title.pal"
-
 CurrentParDisplay:  
 	dc.l    PARALLASSE_A
 CurrentParDraw:     
@@ -5770,7 +7775,7 @@ TileFlags:
 ;   tile:  32  33  34  35  36  37  38  39  40  41  42  43  44  45  46  47
 	dc.b	1,	1,	1,	1,	1,	0,	0,	0,	0,	0,	0,	1,	1,	1,	1,	1
 ;   tile:  48  49  50  51  52  53  54  55  56  57  58  59  60  61  62  63
-	dc.b	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1
+	dc.b	1,	1,	0,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1
 
 	even	; padding per allineamento word
 *****************************************************************************
@@ -5788,7 +7793,7 @@ MAPPA:
 	dc.w	  2, 3,12,13,14,15,16, 0, 0, 0,28,29, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;6
 	dc.w	  4, 5,32,33,34,35,36, 0, 0, 0,30,31, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;7
 	dc.w	  6, 7, 0, 0, 0, 0, 0, 0, 0, 0,37,38, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;8
-	dc.w	  8, 9, 0, 0, 0, 0, 0, 0, 0, 0,39,40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;9
+	dc.w	  8, 9, 0, 0, 0, 0, 0, 0, 0, 0,39,40, 0, 0, 0, 0,50, 0, 0, 0, 0, 0, 0, 0, 0	;9
 	dc.w	 10,11,12,13,14,15,16,12,13,14,41,42,16,12,13,14,15,16,12,13,14,15,16, 0, 0	;10
 	dc.w	 35,36,32,33,34,35,36,32,33,34,35,36,32,33,34,35,36,32,32,33,34,35,36, 0, 0	;11
 	dc.w	  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0	;12
@@ -5853,13 +7858,15 @@ MusicOn:		dc.b	0			; 0 = music off, 1 = music on (toggle col tasto M)
 MusicKeyPrev:	dc.b	0			; stato precedente del tasto M (per edge detect)
 MusicOnPrev:	dc.b	0			; ultimo valore "applicato" di MusicOn
 GravKeyPrev:	dc.b	0			; stato precedente del tasto G (per edge detect)
+QuadKeyPrev:	dc.b	0			; stato precedente del tasto Q (per edge detect)
+SchermoKeyPrev:	dc.b	0			; stato precedente del tasto S (per edge detect)
+SpieKeyPrev:	dc.b	0			; stato precedente del tasto L (per edge detect)
+LetteraKeyPrev:	dc.b	0			; stato precedente del tasto A (per edge detect)
 
 	EVEN
-; ----- Falò sprite hardware -----
-FaloAnimFrame:	dc.w	0			; frame corrente (0..5)
 FaloAnimDelay:	dc.w	0			; contatore frame per animazione (incrementa ogni VBL)
 
-	EVEN
+	cnop	0,8
 
 ; ----- Stato proiettile -----
 ; Stato di CHI SPARA, non del proiettile: il proiettile vive tutto dentro
@@ -6013,15 +8020,10 @@ bob_Cooldown	rs.w	1		; frame che mancano prima di poter sparare
 bob_TTL			rs.w	1
 bob_Length		rs.B	0		; dimensione della struttura
 
-; L'allineamento dei due campi long dipende da bob_Length: se qualcuno aggiunge
-; una word sola la struttura diventa dispari di 4 e ogni bob dal secondo in poi
-; legge i puntatori disallineati. La guardia lo fa notare all'assemblaggio
-; invece che con un rallentamento silenzioso (FAIL viene ignorata, quindi si
-; usa la divisione per zero).
-ERRORE_BOB_LENGTH_NON_MULTIPLO_DI_4	EQU	bob_Length-((bob_Length/4)*4)
-	IFNE	ERRORE_BOB_LENGTH_NON_MULTIPLO_DI_4
-GUARDIA_BOB_LENGTH	EQU	1/0
-	ENDC
+; VINCOLO: bob_Length deve restare multiplo di 4. I bob stanno in memoria
+; contigua e il ciclo avanza di bob_Length per volta: se la struttura diventa
+; dispari di 4, dal secondo bob in poi bob_Gfx e bob_Mask cadono disallineati.
+; Aggiungendo campi si aggiungono in coppia, o si mette una word di riempimento.
 
 EnemyInitTable:
 ;       WorldX, WorldY, Direzione, Active, AI, PF, Damage, InvulnMax
@@ -6050,13 +8052,297 @@ DirectionDeltas:
 	dc.w	 0, -1	; 6 = N
 	dc.w	 1, -1	; 7 = NE
 
+	EVEN
+; ----- Punteggio -----
+; Tre valori, e sono tre cose diverse. Tenerli separati e' quello che permette
+; alla rotella di salire a passi senza riscrivere il pannello a vuoto.
+;
+;   Punteggio           quello VERO, in punti. Lo alza il gioco, di colpo.
+;   PunteggioMostrato   quello che la rotella sta mostrando, in SCALA
+;                       ROTELLA_PASSI: conta fotogrammi, non punti, e un punto
+;                       ne vale quattro. Insegue Punteggio*ROTELLA_PASSI di
+;                       PUNTEGGIO_PASSO per frame. Parte da 0 perche' e' un
+;                       numero che si vede davvero, non un segnaposto.
+;   PunteggioDisegnato  l'ultimo valore SCRITTO nei bitplane, anche lui in
+;                       scala. In scala e NON in punti: durante il rotolamento
+;                       i punti stanno fermi per quattro frame mentre il
+;                       fotogramma cambia, e confrontando i punti non si
+;                       ridisegnerebbe niente. Parte da -1, che nessun
+;                       punteggio puo' valere, cosi' il primo frame disegna di
+;                       sicuro invece di credere che lo zero sia gia' a
+;                       schermo.
+Punteggio:			dc.l	0
+PunteggioMostrato:	dc.l	0
+PunteggioDisegnato:	dc.l	-1		; -1 = "mai disegnato", forza il primo giro
+
+; ----- Indicatori di sinistra -----
+; L'ENERGIA e' stato del MONDO, non di un'entita': ce n'e' una sola e nessuna
+; seconda entita' potrebbe averne un'altra. Quindi globale, non in bob_*.
+; Oggi non la muove nessuno: serve per il futuro, e intanto la barra la mostra.
+; La VITA invece non ha una variabile sua: e' bob_PF del player, e leggerla di
+; li' e' l'unico modo di non avere due numeri che possono scollarsi.
+Energia:			dc.w	ENERGIA_MAX
+
+	cnop	0,4
+; Tabella degli indicatori: una riga per barra. Tutto quello che distingue una
+; barra dall'altra sta QUI, e la routine e' una sola - la stessa scelta fatta
+; per DisegnaBOBs. Aggiungere un terzo indicatore (il quadrante, le spie) e'
+; una riga in piu' e nessun codice da toccare.
+;
+; ind_Livello / ind_Fase / ind_Ritmo sono stato PER BARRA: due barre ne vogliono
+; due copie, quindi stanno nella riga e non fra le variabili globali.
+; ind_Disegnato e' il fotogramma gia' scritto nei bitplane - livello e fase
+; insieme, perche' durante una transizione il livello sta fermo mentre la fase
+; cambia e confrontare il solo livello non ridisegnerebbe niente. Parte da -1,
+; che nessun fotogramma puo' valere, cosi' il primo frame disegna di sicuro.
+;
+; I livelli partono da 0 anche se i valori partono pieni: al boot le due barre
+; si riempiono da sole con la loro animazione di salita.
+			rsreset
+ind_Valore		rs.l	1		; puntatore alla word col valore corrente
+ind_CopHi		rs.l	1		; blocco copper del colore, passata LOCT0
+ind_CopLo		rs.l	1		;                            passata LOCT1
+ind_Massimo		rs.w	1		; fondo scala del valore
+ind_Y			rs.w	1		; riga del pannello a cui comincia il riquadro
+ind_Livello		rs.w	1		; livello mostrato adesso, 0..INDIC_LIVELLI-1
+ind_Fase		rs.w	1		; 0 = ferma, 1..3 sale, 4..8 scende
+ind_Ritmo		rs.w	1		; frame che restano a questo fotogramma
+ind_Disegnato	rs.w	1		; fotogramma gia' a schermo (-1 = nessuno)
+ind_Length		rs.b	0
+
+IndicTab:
+	dc.l	Energia					; in ALTO: energia
+	dc.l	IndicAltoHi
+	dc.l	IndicAltoLo
+	dc.w	ENERGIA_MAX
+	dc.w	INDIC_ALTO_Y
+	dc.w	0,0,0,-1
+
+	dc.l	Player+bob_PF			; in BASSO: vita del player, letta dalla
+	dc.l	IndicBassoHi			;   sua struct e non da una copia
+	dc.l	IndicBassoLo
+	dc.w	PLAYER_PF_MAX
+	dc.w	INDIC_BASSO_Y
+	dc.w	0,0,0,-1
+IndicTabFine:
+INDIC_QUANTI	EQU		(IndicTabFine-IndicTab)/ind_Length
+
+	EVEN
+; Rampa di colore della barra, una coppia (scura, viva) per livello.
+; NON e' una scelta fatta qui: sono i colori MISURATI su
+; risorse/grafica/indicatore_anteprima.png, che e' l'anteprima colorata
+; dell'arte. Tre fasce, come le ha disegnate l'anteprima:
+;   livelli 0..3   rosso    $c8203c / $ff6e82
+;   livelli 4..6   arancio  $ee6a00 / $ffb870
+;   livelli 7..10  giallo   $e4a800 / $ffe478
+; La tabella ha una riga per livello e non tre righe con delle soglie: cosi'
+; cambiare una fascia e' cambiare una riga, e non c'e' nessun confronto da
+; tenere allineato al numero dei livelli.
+IndicRampa:
+	dc.w	$0c23,$0f68		; livello  0
+	dc.w	$0c23,$0f68		; livello  1
+	dc.w	$0c23,$0f68		; livello  2
+	dc.w	$0c23,$0f68		; livello  3
+	dc.w	$0e60,$0fb7		; livello  4
+	dc.w	$0e60,$0fb7		; livello  5
+	dc.w	$0e60,$0fb7		; livello  6
+	dc.w	$0ea0,$0fe7		; livello  7
+	dc.w	$0ea0,$0fe7		; livello  8
+	dc.w	$0ea0,$0fe7		; livello  9
+	dc.w	$0ea0,$0fe7		; livello 10
+IndicRampaFine:
+
+; ============================================================================
+; STRUMENTI: schermo, spie, quadrante
+; ============================================================================
+; Le tre variabili di comando. Nel gioco non le scrive ancora nessuno: per
+; provarle ci sono tre tasti, Q (lancetta), S (schermo), L (spie).
+SchermoModo:		dc.w	0		; 0 = neve, 1..SCHERMO_IMMAGINI = immagine
+SchermoFase:		dc.w	0
+SchermoRitmo:		dc.w	0
+SchermoDisegnato:	dc.w	-1		; nessun fotogramma puo' valere -1: il primo
+									; quadro disegna di sicuro
+SpieAccese:			dc.w	0		; un bit per spia, SPIE_TOT bit utili
+LetteraDestra:		dc.w	'A'		; il carattere nel quadrato a destra
+LetteraDisegnata:	dc.w	-1		; nessun codice puo' valere -1
+ScrittaCar:			dc.w	0		; caratteri del messaggio (0 = nessuno)
+ScrittaFine:		dc.w	0		; ScrittaCar*8: dove lo scorrimento si chiude
+ScrittaOffset:		dc.w	0		; px gia' scorsi
+QuadranteObiettivo:	dc.w	0		; indice in QuadPosizioni, 0..3
+QuadranteAngolo:	dc.w	QUAD_POS_OVEST	; da dove parte, e non e' un numero
+										; a caso: e' la posizione 0, quindi al
+										; boot la lancetta sta gia' ferma li'
+QuadranteRitmo:		dc.w	0
+QuadranteDisegnato:	dc.w	-1
+
+; Le quattro posizioni di riposo, nell'ordine in cui le gira il tasto Q.
+QuadPosizioni:
+	dc.w	QUAD_POS_OVEST
+	dc.w	QUAD_POS_NORD
+	dc.w	QUAD_POS_EST
+	dc.w	QUAD_POS_SSE
+
+; Tabella delle quattro spie. I due campi X e Y sono i PRIMI due e in
+; quest'ordine perche' li legge anche ComponiSheet, che da li' prende il pezzo
+; di pannello da mettere sotto alla cella: una sola copia delle posizioni.
+; Le posizioni sono MISURATE sui buchi di Pannello.raw e le stampa
+; tools/genera-strumenti.py a ogni giro, insieme al controllo che nessun pixel
+; acceso finisca fuori dal nero.
+			rsreset
+spi_X			rs.w	1		; byte x nel pannello
+spi_Y			rs.w	1		; riga y nel pannello
+spi_Bit			rs.w	1		; maschera del bit di SpieAccese
+spi_Fase		rs.w	1		; 0 = spenta, SPIA_FASI-1 = accesa a regime
+spi_Ritmo		rs.w	1		; frame che restano a questo fotogramma
+spi_Disegnato	rs.w	1		; fotogramma gia' nei bitplane (-1 = nessuno)
+spi_Cella		rs.l	1		; primo byte della SUA cella (fase 0) nel SUO foglio
+spi_PianoSz		rs.l	1		; byte di un piano di quel foglio
+spi_Length		rs.b	0
+
+; Le quattro gialle e la rossa stanno in due fogli diversi, montati con due
+; mappe diverse, e la tabella e' una sola: la riga porta il foglio con se'.
+; DisegnaSpie non sa niente di colori.
+	cnop	0,4
+SpieTab:
+	dc.w	264/8,40,1,0,0,-1		; gialla, in alto a sinistra
+	dc.l	SpiaSheet+0*SPIA_H*SPIA_ROWB,SPIA_PLANE_SZ
+	dc.w	280/8,40,2,0,0,-1		; gialla, in alto a destra
+	dc.l	SpiaSheet+1*SPIA_H*SPIA_ROWB,SPIA_PLANE_SZ
+	dc.w	256/8,49,4,0,0,-1		; gialla, in basso a sinistra
+	dc.l	SpiaSheet+2*SPIA_H*SPIA_ROWB,SPIA_PLANE_SZ
+	dc.w	272/8,49,8,0,0,-1		; gialla, in basso a destra
+	dc.l	SpiaSheet+3*SPIA_H*SPIA_ROWB,SPIA_PLANE_SZ
+	dc.w	ROSSA_X/8,ROSSA_Y,16,0,0,-1	; ROSSA, nel cerchio sotto la lancetta
+	dc.l	SpiaRossaSheet,ROSSA_PLANE_SZ
+SpieTabFine:
+	IFNE	(SpieTabFine-SpieTab)/spi_Length-SPIE_TOT
+; Le righe della tabella sono le spie, e le spie sono le righe delle due
+; griglie messe insieme. Se divergono, ComponiSheet monta lo sfondo sbagliato.
+GUARDIA_SPIE_QUANTE	EQU		1/0
+	ENDC
+
+; ----------------------------------------------------------------------------
+; MAPPA_TINTE - i dodici long che dicono a ComponiSheet quali tinte accendono
+; quale piano. NON e' una tabella scritta a mano: esce dai tre INDICI di
+; palette, un bit alla volta, quindi cambiando un indice si rifa' da sola.
+;   \1 \2 \3 = indice di palette dei valori 1, 2 e 3 dell'arte
+; Per ogni piano tre long: tutti uno se quel valore accende il piano, zero se no.
+; ----------------------------------------------------------------------------
+MAPPA_TINTE	MACRO
+	dc.l	-((\1>>0)&1),-((\2>>0)&1),-((\3>>0)&1)
+	dc.l	-((\1>>1)&1),-((\2>>1)&1),-((\3>>1)&1)
+	dc.l	-((\1>>2)&1),-((\2>>2)&1),-((\3>>2)&1)
+	dc.l	-((\1>>3)&1),-((\2>>3)&1),-((\3>>3)&1)
+	ENDM
+
+MappaGrigi:
+	MAPPA_TINTE	STRUM_TINTA1,STRUM_TINTA2,STRUM_TINTA3
+MappaGialli:
+	MAPPA_TINTE	SPIA_TINTA1,SPIA_TINTA2,SPIA_TINTA3
+MappaRossa:
+	MAPPA_TINTE	ROSSA_TINTA1,ROSSA_TINTA2,ROSSA_TINTA3
+
+; Posizioni fisse: schermo e quadrante hanno una sola cella nel pannello, la
+; stessa per tutte le righe della griglia, quindi shd_PosPasso e' 0.
+SchermoPos:
+	dc.w	SCHERMO_X/8,SCHERMO_Y
+QuadPos:
+	dc.w	QUAD_X/8,QUAD_Y
+
+; Tabella dei fogli da montare al boot: una riga per strumento, e la routine e'
+; una sola. Stessa scelta di IndicTab e di DisegnaBOBs.
+			rsreset
+shd_Arte		rs.l	1		; striscia a 2 piani, come esce dall'editor
+shd_Sheet		rs.l	1		; foglio a 4 piani da riempire
+shd_Mappa		rs.l	1		; i dodici long di MAPPA_TINTE
+shd_Pos			rs.l	1		; posizioni nel pannello, una per RIGA di celle
+shd_PosPasso	rs.w	1		; byte fra una posizione e la successiva
+shd_CellB		rs.w	1		; byte di una cella
+shd_CellH		rs.w	1		; righe di una cella
+shd_Colonne		rs.w	1
+shd_Righe		rs.w	1
+shd_Length		rs.b	0
+
+StrumentiTab:
+	dc.l	schermo_strip
+	dc.l	SchermoSheet
+	dc.l	MappaGrigi
+	dc.l	SchermoPos
+	dc.w	0
+	dc.w	SCHERMO_BYTE_W
+	dc.w	SCHERMO_H
+	dc.w	SCHERMO_COLONNE
+	dc.w	SCHERMO_RIGHE
+
+	dc.l	spia_strip
+	dc.l	SpiaSheet
+	dc.l	MappaGialli
+	dc.l	SpieTab					; le posizioni stanno nella tabella delle
+	dc.w	spi_Length				;   spie, non in una seconda copia
+	dc.w	SPIA_BYTE_W
+	dc.w	SPIA_H
+	dc.w	SPIA_FASI
+	dc.w	SPIA_GIALLE
+
+	dc.l	spia_rossa_strip
+	dc.l	SpiaRossaSheet
+	dc.l	MappaRossa
+	dc.l	SpieTab+SPIA_GIALLE*spi_Length	; l'ultima riga della stessa tabella
+	dc.w	0
+	dc.w	SPIA_BYTE_W
+	dc.w	SPIA_H
+	dc.w	SPIA_FASI
+	dc.w	ROSSA_RIGHE
+
+	dc.l	quadrante_strip
+	dc.l	QuadSheet
+	dc.l	MappaGrigi
+	dc.l	QuadPos
+	dc.w	0
+	dc.w	QUAD_BYTE_W
+	dc.w	QUAD_H
+	dc.w	QUAD_ANGOLI
+	dc.w	QUAD_RIGHE
+StrumentiTabFine:
+STRUM_QUANTI	EQU		(StrumentiTabFine-StrumentiTab)/shd_Length
+
+; I piani della destinazione che la scritta riscrive: quelli in cui la tinta ha
+; il bit a ZERO. Dove ce l'ha a 1, il fondo nero e la lettera accendono lo
+; stesso pixel e il pannello e' gia' giusto da DisegnaPannello.
+	cnop	0,4
+ScrittaPianiTab:
+	IFEQ	(SCRITTA_TINTA>>0)&1
+	dc.l	0*PANNELLO_BUF_PLANE
+	ENDC
+	IFEQ	(SCRITTA_TINTA>>1)&1
+	dc.l	1*PANNELLO_BUF_PLANE
+	ENDC
+	IFEQ	(SCRITTA_TINTA>>2)&1
+	dc.l	2*PANNELLO_BUF_PLANE
+	ENDC
+	IFEQ	(SCRITTA_TINTA>>3)&1
+	dc.l	3*PANNELLO_BUF_PLANE
+	ENDC
+ScrittaPianiFine:
+	IFNE	(ScrittaPianiFine-ScrittaPianiTab)/4-SCRITTA_PIANI_N
+; La tabella e il conto di SCRITTA_PIANI_N escono tutti e due da SCRITTA_TINTA:
+; se non tornano, una delle due strade e' sbagliata.
+GUARDIA_SCRITTA_PIANI	EQU		1/0
+	ENDC
+
+; Il messaggio che scorre. Cambiarlo qui, oppure chiamare ImpostaScritta con
+; A0 su un'altra stringa: piu' lungo di SCRITTA_MAX_CAR viene tagliato.
+ScrittaMessaggio:
+	dc.b	'THE SACRED ARMOUR OF ANTIRIAD - AMIGA 1200 AGA - ',0
+	EVEN
+
 *****************************************************************************
 *
 * 		COPPER
 *
 *****************************************************************************	
 		
-	Section	ChipStuff,data_c
+	SECTION	ChipStuff,DATA_C
 
 ; ============================================================================
 ; TITLE COPPERLIST - 8 bitplane AGA, lores 320x256, palette caricata via CPU.
@@ -6136,17 +8422,25 @@ CL_BplCon1:
 	; Nota: BPLCON3 e BPLCON4 NON sono qui perche' la PALETTE section piu' avanti
 	; gia' imposta BPLCON3 (con LOCT alternato) e nessuno modifica BPLCON4 a runtime.
 	; Settarli qui rompe la palette degli sprite hardware (es. falo' diventa verde).
+; ATTENZIONE: i valori scritti qui in CL_BplMod e CL_Ddf sono SEGNAPOSTO.
+; PathBInit li sovrascrive al boot con SCROLL_BPLMOD, SCROLL_DDFSTRT e
+; SCROLL_DDFSTOP (patch su CL_BplMod+2/+6 e CL_Ddf+2/+6), quindi la geometria
+; che va davvero a video e' quella di ScrollHW.i, non questa. Restano perche'
+; la copperlist dev'essere sintatticamente completa prima della patch.
 CL_BplMod:
-	dc.w	$108,BPSF_PITCH-40	; BPL1MOD = 48-40 = 8 (pitch 48, mostra 20 word/riga)
-	dc.w	$10A,BPSF_PITCH-40	; BPL2MOD = 48-40 = 8
+	dc.w	$108,BPSF_PITCH-40	; SEGNAPOSTO Path A: sovrascritto con SCROLL_BPLMOD
+	dc.w	$10A,BPSF_PITCH-40	; SEGNAPOSTO Path A: sovrascritto con SCROLL_BPLMOD
 CL_Ddf:
-	dc.w 	$0092,$0038,$0094,$00b8 ; DdfStrt - DdfStop (5 fetch FMODE=3 allineati)
-	dc.w	$008e,($2C<<8)|DIW_H_START,$0090,((($2C+BG_VIS_ROWS)&$FF)<<8)|DIW_H_STOP	; DiwStrt - DiwStop
-	; DIWSTOP verticale arriva a PANNELLO_BOT_RASTER, non piu' a fine area di
-	; gioco: la fascia del pannello deve stare DENTRO la finestra, altrimenti
-	; sarebbe bordo e non si vedrebbe.
-	; Il V8 di DIWSTOP e' implicito come complemento di V7, e con 300 il byte
-	; basso vale $2C che ha V7=0: il complemento mette V8=1 e il conto torna.
+	dc.w 	$0092,$0038,$0094,$00b8 ; SEGNAPOSTO (5 fetch): sovrascritti con SCROLL_DDFSTRT/STOP
+	; DIWSTOP verticale arriva a PANNELLO_BOT_RASTER, non a fine area di gioco:
+	; la fascia del pannello deve stare DENTRO la finestra, altrimenti sarebbe
+	; bordo e non si vedrebbe.
+	; Il V8 di DIWSTOP e' implicito come complemento di V7: con 302 il byte
+	; basso vale $2E, che ha V7=0, quindi il complemento mette V8=1 e il conto
+	; torna (256+46 = 302).
+	; NB: qui c'era una PRIMA coppia $008e/$0090 che fermava DIWSTOP a
+	; $2C+BG_VIS_ROWS. Senza WAIT fra le due vinceva comunque questa, quindi
+	; era un residuo che il copper eseguiva ogni frame senza effetto: tolta.
 	dc.w	$008e,($2C<<8)|DIW_H_START,$0090,((PANNELLO_BOT_RASTER&$FF)<<8)|DIW_H_STOP	; DiwStrt - DiwStop
 
 BitPlaneTiles:
@@ -6162,7 +8456,7 @@ BitplaneParall:
 	dc.w 	$fc,$0000,$fe,$0000	;ottavo  bitplane - BPL7PT (parallasse bit ALTO)
 
 Sprites:
-	dc.w	$120,0,$122,0			; SPR0PT (InitSprites scrive l'indirizzo)
+	dc.w	$120,0,$122,0			; SPR0PT (AggiornaCopperSPR al boot, poi AnimaFalo ogni frame)
 	dc.w	$124,0,$126,0			; SPR1PT
 	dc.w	$128,0,$12a,0			; SPR2PT
 	dc.w	$12c,0,$12e,0			; SPR3PT
@@ -6225,7 +8519,10 @@ GamePalHi:
 	dc.w 	$0182,$0fff,$0184,$0040,$0186,$0070	
 	dc.w 	$0188,$00c0,$018a,$0410,$018c,$0621,$018e,$0850	
 	dc.w 	$0190,$00b6,$0192,$00dd,$0194,$00af,$0196,$007c
-	dc.w 	$0198,$000f,$019a,$070f,$019c,$0c0e,$019e,$0c08
+	; COLOR13/14/15 = le tre tinte del falo'. Erano tre viola che nessuna
+	; arte a 5 piani usava: verificato contando gli indici davvero presenti
+	; in Tiles, Omino32, Nemico32 e Pietra. Derivati da FALO_C*_RGB.
+	dc.w 	$0198,$000f,$019a,FALO_C1_HI,$019c,FALO_C2_HI,$019e,FALO_C3_HI
 	dc.w 	$01a0,$0620,$01a2,$0e52,$01a4,$0a52,$01a6,$0fca	
 	dc.w 	$01a8,$0000,$01aa,$0444,$01ac,$0555,$01ae,$0666
 	dc.w 	$01b0,$0777,$01b2,$0888,$01b4,$0999,$01b6,$0aaa
@@ -6242,7 +8539,8 @@ GamePalLo:
 	dc.w 	$0182,$0fff,$0184,$0040,$0186,$0070
 	dc.w 	$0188,$00c0,$018a,$0410,$018c,$0621,$018e,$0880
 	dc.w 	$0190,$00b6,$0192,$00dd,$0194,$00af,$0196,$007c
-	dc.w 	$0198,$000f,$019a,$070f,$019c,$0c0e,$019e,$0c08
+	; COLOR13/14/15: nibble bassi delle stesse tre tinte del falo'.
+	dc.w 	$0198,$000f,$019a,FALO_C1_LO,$019c,FALO_C2_LO,$019e,FALO_C3_LO
 	dc.w 	$01a0,$0620,$01a2,$0e52,$01a4,$0a52,$01a6,$0fca
 	dc.w 	$01a8,$0000,$01aa,$0444,$01ac,$0555,$01ae,$0666
 	dc.w 	$01b0,$0777,$01b2,$0888,$01b4,$0999,$01b6,$0aaa
@@ -6300,19 +8598,16 @@ SkyCopper:
 	; pannello ha lo stesso pitch del mondo apposta, cosi' la geometria del
 	; fetch resta identica e non c'e' niente da ritarare.
 	; ---------------------------------------------------------------
-	; Il WAIT e' sulla riga PRECEDENTE, a H=$DC, non su quella del pannello a H=0.
-	; Motivo: dopo il WAIT ci sono 11 MOVE e ogni MOVE del copper costa 2 color
-	; clock, quindi 22 in tutto. Aspettando (riga 220, H=0) le ultime scritture
-	; cadevano verso il cc 22, mentre il DMA bitplane di quella riga parte a
-	; DDFSTRT = $18 = 24: i piani senza puntatore nuovo continuavano a leggere il
-	; buffer del MONDO e restavano sfasati per tutto il frame — e a schermo si
-	; vedevano i colori delle tile mescolati al pannello.
-	; Aspettando a fine riga 219 le scritture cadono nell'orizzontale blank e
-	; arrivano tutte prima del fetch. I PUNTATORI stanno per primi, cosi' sono i
-	; primi a essere aggiornati; BPLCON0 e COLOR00 possono permettersi di seguire.
-	; WAIT dentro la finestra tranquilla della riga DEL PANNELLO: dopo che il
-	; fetch della riga precedente ha finito di sforare, e prima di DDFSTRT.
-	; Vedi il commento su PANNELLO_PTR_WAIT_H per il perche' del valore.
+	; Il WAIT e' su PANNELLO_TOP_RASTER (riga 220), a inizio riga: la word vale
+	; $DC03, cioe' VP=$DC=220 e HP=1, cioe' color clock 2. Attenzione a non
+	; leggere quel $DC come posizione orizzontale: e' il numero di riga.
+	; Qui la posizione orizzontale NON e' critica. Le righe di separazione girano
+	; con BPLCON0 a 0 piani (riga sotto), quindi su di esse non c'e' DMA bitplane
+	; e il copper ha la riga tutta per se'. Quello che segue e' 1 MOVE di BPLCON0
+	; piu' la palette caricata due volte (LOCT0 e LOCT1, 16 colori l'una) piu' i
+	; tre MOVE di BPLCON3: 36 MOVE da 2 color clock = 72 cc, su 227 disponibili.
+	; I puntatori dei bitplane NON stanno qui: sono dopo il WAIT successivo,
+	; dove invece la posizione orizzontale conta. Vedi li'.
 	dc.w	((PANNELLO_TOP_RASTER&$FF)<<8)|$02|$01,$FFFE	; WAIT righe di separazione
 	; BPLCON0 per PRIMO: deve valere prima che parta il fetch, e costa un MOVE
 	; solo. Poi i quattro puntatori, in ordine naturale. BPLCON1 e COLOR00 vanno
@@ -6330,7 +8625,37 @@ SkyCopper:
 	include	"Pannello.cop"
 	dc.w	$0106,BPLCON3_LOCT0
 
+	; --- colore della barra ALTA (energia) ---
+	; Le voci 13 e 14 sono la coppia scura/viva dell'indicatore, e il loro
+	; colore dipende dal LIVELLO: rosso in basso, giallo in alto. Non ci sono
+	; sei voci di palette libere per tenere le tre fasce tutte insieme, quindi
+	; il colore lo cambia il copper e le voci restano due.
+	; Sta QUI, nelle righe di separazione, e non nel blocco dell'arte: quello ha
+	; 2 color clock di margine prima di DDFSTRT e cinque MOVE in piu' lo
+	; sfonderebbero. Qui i bitplane sono spenti e non c'e' nessuna corsa.
+	; Le word dei colori le riscrive DisegnaIndicatori: sono a +2 e +6 da
+	; ognuna delle due etichette. LOCT0 e' gia' impostato dalla riga qui sopra.
+IndicAltoHi:
+	dc.w	$019A,$0c23,$019C,$0f68
+	dc.w	$0106,BPLCON3_LOCT1
+IndicAltoLo:
+	dc.w	$019A,$0c23,$019C,$0f68
+	dc.w	$0106,BPLCON3_LOCT0
+
 	; --- inizio dell'arte: puntatori e 4 bitplane ---
+	; QUI la posizione orizzontale del WAIT e' il valore piu' delicato del blocco.
+	; Da cc 2 seguono 10 MOVE (8 word di puntatore, BPLCON0, BPLCON1) da 2 color
+	; clock l'una: finiscono verso il cc 22, e il DMA bitplane di QUESTA riga
+	; parte a DDFSTRT = $18 = 24. Restano 2 cc di margine. Se i puntatori
+	; arrivassero dopo, i piani continuerebbero a leggere il buffer del MONDO e
+	; resterebbero sfasati per tutto il frame: a schermo i colori delle tile
+	; mescolati al pannello.
+	; NON c'e' invece nessuna corsa col DMA sui puntatori: la riga precedente
+	; (221) e' di separazione e gira a 0 piani, quindi non sfora nessun fetch
+	; dentro questa riga e non c'e' auto-incremento che se li mangi. E' il motivo
+	; per cui la compensazione che stava in DisegnaPannello e' stata tolta.
+	; TARATURA: alzare la posizione orizzontale di 2 alla volta sposta le
+	; scritture piu' avanti nella riga; oltre DDFSTRT (24) e' troppo tardi.
 	dc.w	((PANNELLO_ART_RASTER&$FF)<<8)|$02|$01,$FFFE	; WAIT inizio arte
 BitplanePannello:
 	dc.w	$00e0,0,$00e2,0		; BPL1PT (riempiti da DisegnaPannello, una volta al boot)
@@ -6340,13 +8665,72 @@ BitplanePannello:
 	dc.w	$0100,%0100001000000001 ; BPLCON0: 4 bitplane (BPU=4), COLOR, ECSENA
 	dc.w	$0102,$0000			; BPLCON1: niente scorrimento fine qui
 
+	; --- colore della barra BASSA (vita) ---
+	; I due riquadri stanno su righe raster diverse, quindi possono avere due
+	; colori diversi nello stesso quadro: basta ricambiare le voci 13 e 14 fra
+	; l'uno e l'altro. Il WAIT e' sulla PRIMA riga del riquadro basso; il
+	; riquadro alto e' finito 10 righe prima.
+	; Cinque MOVE da 2 color clock finiscono verso il cc 12, e il primo pixel
+	; visibile e' al 64: qui il margine e' largo, al contrario del blocco dei
+	; puntatori qui sopra. Vale la pena saperlo se un domani si aggiunge roba.
+	dc.w	((INDIC_BASSO_RASTER&$FF)<<8)|$02|$01,$FFFE	; WAIT prima riga del riquadro basso
+IndicBassoHi:
+	dc.w	$019A,$0c23,$019C,$0f68
+	dc.w	$0106,BPLCON3_LOCT1
+IndicBassoLo:
+	dc.w	$019A,$0c23,$019C,$0f68
+	dc.w	$0106,BPLCON3_LOCT0
 
+	; --- i gialli delle spie ---
+	; Le quattro spie stanno da SPIA_Y0 in giu', cioe' SOTTO il riquadro basso
+	; degli indicatori, che finisce sette righe dopo INDIC_BASSO_RASTER. Da qui
+	; in giu' le tre voci degli indicatori (2, 13, 14) non le usa piu' nessuno,
+	; quindi si ridipingono di giallo: le spie non costano una voce di palette
+	; in piu'. Schermo e quadrante non c'entrano, usano i grigi 4/5/6.
+	; L'ARMA DEL V8 STA QUI e non piu' davanti al WAIT di fine fascia: serve una
+	; volta sola, e da 256 in su valgono tutti e due i WAIT che seguono. Un
+	; secondo $FFDF fra i due aspetterebbe la riga 255 del quadro DOPO, e il
+	; WAIT di fine fascia non scatterebbe mai.
+	; Otto MOVE da 2 color clock: col conto di IndicBassoHi finiscono verso il
+	; cc 18, e il primo pixel visibile e' al 64. Qui pero' i bitplane sono
+	; ACCESI e si contendono i cicli col copper: e' il blocco da guardare per
+	; primo se sulla prima riga delle spie comparisse una striscia di colore
+	; sbagliato.
 	dc.w	$FFDF,$FFFE		; past end of line 255 (arma V8)
+	dc.w	(((SPIA_RASTER-256)&$FF)<<8)|$02|$01,$FFFE	; WAIT prima riga delle spie
+	dc.w	$0184,SPIA_COL1,$019A,SPIA_COL2,$019C,SPIA_COL3
+	dc.w	$0106,BPLCON3_LOCT1
+	dc.w	$0184,SPIA_COL1,$019A,SPIA_COL2,$019C,SPIA_COL3
+	dc.w	$0106,BPLCON3_LOCT0
+
+	; --- il rosso della quinta spia ---
+	; I tre grigi 4/5/6 servono alla rotella, allo schermo e al quadrante, che
+	; finiscono rispettivamente a y30, y41 e y46. Da qui in giu' non li usa piu'
+	; nessuno e diventano il rosso della spia sotto la lancetta, che sta sulle
+	; stesse righe delle due spie gialle in basso e percio' non poteva usare le
+	; loro voci. L'arma del V8 e' gia' stata data qui sopra.
+	dc.w	(((ROSSA_RASTER-256)&$FF)<<8)|$02|$01,$FFFE	; WAIT prima riga del rosso
+	dc.w	$0188,ROSSA_COL1,$018A,ROSSA_COL2,$018C,ROSSA_COL3
+	dc.w	$0106,BPLCON3_LOCT1
+	dc.w	$0188,ROSSA_COL1,$018A,ROSSA_COL2,$018C,ROSSA_COL3
+	dc.w	$0106,BPLCON3_LOCT0
+
+	; --- il colore della scritta scorrevole ---
+	; Solo la voce della tinta, che sotto l'ultima riga delle spie (y56) e'
+	; libera un'altra volta. Due MOVE per passata invece di sei.
+	dc.w	(((SCRITTA_RASTER-256)&$FF)<<8)|$02|$01,$FFFE	; WAIT prima riga della scritta
+	dc.w	$0180+SCRITTA_TINTA*2,SCRITTA_COL
+	dc.w	$0106,BPLCON3_LOCT1
+	dc.w	$0180+SCRITTA_TINTA*2,SCRITTA_COL
+	dc.w	$0106,BPLCON3_LOCT0
+
 	dc.w	(((PANNELLO_BOT_RASTER-256)&$FF)<<8)|$E0|$01,$FFFE	; WAIT fine fascia pannello
 	dc.w	$0100,%0000001000000001		; BPLCON0: 0 bitplane, Color burst, ECSENA
 
 	dc.w	$FFFF,$FFFE		; FINE DELLA COPPERLIST
  
+; La palette del titolo NON e' piu' qui: la legge solo la CPU e vive in
+; SECTION AssetCPU, in fondo a questo blocco.
 
 *****************************************************************************
 * Qui sono memorizzate le tiles dello sfondo e tutti gli oggetti che ci si 
@@ -6365,27 +8749,145 @@ NEMICO:
 PIETRA:
 	incbin	"grafica/Pietra.raw"	
 
+; La striscia dell'arte del falo' NON e' piu' qui: la legge solo la CPU e vive
+; in SECTION AssetCPU, in fondo a questo blocco. In chip resta la copia gia'
+; espansa a 5 piani, FaloSheet, che e' quella che il blitter disegna.
+
+;----------------------------------------------------------------------------
+; Grafica Parallasse  : 2 bitplane AGA, 640x256, sequential layout.
+; DEVE essere in CHIP RAM per la display DMA.
+;----------------------------------------------------------------------------
+	cnop	0,8					; allineamento AGA FMODE=3
+parallasse:
+	incbin	"grafica/parallasse.raw"
+
+;----------------------------------------------------------------------------
+; Grafica Pannello  : 4 bitplane AGA, 320x80, sequential layout.
+; DEVE essere in CHIP RAM per la display DMA.
+;----------------------------------------------------------------------------
+	cnop	0,8					; allineamento AGA FMODE=3
+pannello:
+	incbin	"grafica/Pannello.raw"
+
+; La striscia della rotella NON e' piu' qui, stesso motivo del falo': la legge
+; solo la CPU. Vive in SECTION AssetCPU, qui sotto.
+
+;----------------------------------------------------------------------------
+; Title screen image: 8 bitplane AGA, 320x256, sequential layout.
+; DEVE essere in CHIP RAM per la display DMA.
+;----------------------------------------------------------------------------
+	cnop	0,8					; allineamento AGA FMODE=3
+title_bpl:
+	incbin	"grafica/title.raw"
+
+*****************************************************************************
+* AssetCPU - dati che NON vede nessun DMA
+*
+*   La chip RAM serve a chi non puo' farne a meno: display, blitter, copper,
+*   Paula. Tutto quello che legge solo la CPU sta in memoria pubblica, che su
+*   una macchina espansa e' fast e su un 1200 liscio torna chip da sola - non
+*   si perde niente, si guadagna dove c'e' da guadagnare.
+*
+*   Il criterio non e' "e' grafica quindi va in chip": e' CHI LA LEGGE. Queste
+*   tre sono grafica che nessun DMA tocca mai.
+*
+*   - title_pal      la palette del titolo la scrive nei registri
+*                    LoadAGAPalette256, un long alla volta, con la CPU
+*   - falo_strip     la legge BuildFaloSheet al boot; in chip ci va il
+*                    risultato, FaloSheet, che quello si' lo blitta
+*   - rotella_strip  la legge BuildRotellaSheet al boot; il risultato,
+*                    RotellaSheet, non lo blitta nessuno perche' le cifre le
+*                    scrive la CPU: sta in fast anche lui
+*
+*   Se un domani uno di questi finisse sotto il blitter o sotto il copper,
+*   va rimesso in una sezione _C: da qui il DMA non lo vede e leggerebbe
+*   spazzatura senza dare nessun errore.
+*
+*   cnop 0,4 e non 0,8: l'allineamento a 8 serve a FMODE=3, cioe' al fetch
+*   dei bitplane. Qui legge la CPU a long, e 4 basta.
+*****************************************************************************
+
+	SECTION	AssetCPU,DATA
+
+	cnop	0,4
+; Palette AGA del title screen (256 colori, formato $00RRGGBB long).
+; Caricata via CPU in LoadAGAPalette256 prima di mostrare la title.
+title_pal:
+	incbin	"grafica/title.pal"
+
+	cnop	0,4
+; Striscia dell'arte del falo', COSI' COME ESCE DALL'EDITOR: 512x16, 2 piani
+; separati (1024 byte l'uno). BuildFaloSheet la espande a 5 piani al boot.
+falo_strip:
+	incbin	"grafica/falo_16x16_3col.raw"
+falo_strip_fine:
+
+	cnop	0,4
+; Striscia della rotella, COSI' COME ESCE DALL'EDITOR: 640x16, 2 piani
+; separati (1280 byte l'uno). BuildRotellaSheet la espande a 4 piani al boot.
+; Si chiama rotella_strip e NON punteggio: "Punteggio" e' la variabile del
+; conteggio, e due simboli che differiscono solo per una maiuscola sono una
+; trappola - per l'assemblatore se gira con -nocase, e per chi legge sempre.
+rotella_strip:
+	incbin	"grafica/rotella_punteggio.raw"
+
+	cnop	0,4
+; Striscia dei due indicatori di sinistra, COSI' COME ESCE DALL'EDITOR:
+; 432x88, 2 piani separati (4752 byte l'uno). BuildIndicSheet la espande a 4
+; piani al boot. La versione con lo stacco fra i fotogrammi (indicatore_sep)
+; NON serve: lo stacco esiste per lo shift del blitter, e qui la barra cade su
+; byte interi e la scrive la CPU.
+indicatore_strip:
+	incbin	"grafica/indicatore.raw"
+
+; Le tre strisce degli strumenti, COSI' COME LE SCRIVE tools/genera-strumenti.py.
+; Valore 0 = trasparente: ComponiSheet ci mette sotto lo sfondo del pannello.
+; Le guardie confrontano la dimensione VERA del file con quella che discende
+; dalla griglia: e' l'unico modo di accorgersi di una ri-generazione con misure
+; diverse, che se no si leggerebbe oltre la fine senza un errore.
+	cnop	0,4
+schermo_strip:
+	incbin	"grafica/schermo.raw"
+schermo_strip_fine:
+	IFNE	(schermo_strip_fine-schermo_strip)-SCHERMO_PLANE_SZ*2
+GUARDIA_SCHERMO_RAW	EQU		1/0
+	ENDC
+
+	cnop	0,4
+spia_strip:
+	incbin	"grafica/spia.raw"
+spia_strip_fine:
+	IFNE	(spia_strip_fine-spia_strip)-SPIA_PLANE_SZ*2
+GUARDIA_SPIA_RAW	EQU		1/0
+	ENDC
+
+	cnop	0,4
+spia_rossa_strip:
+	incbin	"grafica/spia_rossa.raw"
+spia_rossa_strip_fine:
+	IFNE	(spia_rossa_strip_fine-spia_rossa_strip)-ROSSA_PLANE_SZ*2
+GUARDIA_SPIA_ROSSA_RAW	EQU		1/0
+	ENDC
+
+	cnop	0,4
+quadrante_strip:
+	incbin	"grafica/quadrante.raw"
+quadrante_strip_fine:
+	IFNE	(quadrante_strip_fine-quadrante_strip)-QUAD_PLANE_SZ*2
+GUARDIA_QUADRANTE_RAW	EQU		1/0
+	ENDC
+
 *****************************************************************************
 
 	SECTION	PLANEVUOTO,BSS_C
 
-	IFNE	PROTO_SCROLL
-; --- Buffer del prototipo scroll (Path B passo 1) --------------------
-; Pitch 56 = 48 + 8 byte di guardia a sinistra, richiesti dal prefetch
-; di un blocco FMODE=3. La mappa vera comincia all'offset 8 di ogni riga.
-; 5 piani x 56 x 352 = 98560 byte. ProtoVuoto tiene i piani 6/7/8 accesi
-; (contesa DMA realistica) senza sporcare la lettura della griglia.
-	cnop	0,8
-ProtoBuffer:
-	ds.b	5*PROTO_PLANE_SIZE
-	cnop	0,8
-ProtoVuoto:
-	ds.b	PROTO_PLANE_SIZE
-	ENDC
 
 	cnop	0,8
-; Piano vuoto col pitch dei piani 1-5: ci puntano i piani ausiliari
-; disattivati da SWITCH_PIANI.
+; Piano vuoto col pitch dei piani 1-5. Unico cliente rimasto: PAR_DISABLE,
+; che ci punta i piani 7-8 per misurare il costo della parallasse.
+; ATTENZIONE: e' alto DARK_ROWS (256) e non SFONDO_HEIGHT (368) come i piani
+; veri. Con PAR_DISABLE=1 e la camera in fondo alla mappa il display leggerebbe
+; oltre la fine: va bene per una prova, non come buffer permanente.
 PathBVuoto:
 	ds.b	AUX_PITCH*DARK_ROWS
 	cnop	0,8
@@ -6457,9 +8959,69 @@ NEMICO_MASK:
 PIETRA_MASK:
 	ds.b	PIETRA_PLANE_SIZE	; 1 plane mask (stesso pitch di PIETRA)
 
+; ============================================================================
+; FALO' - spritesheet a 5 piani, piu' la sua maschera
+;
+; Sta qui e non fra i dati inizializzati perche' e' tutto costruito al boot:
+; BuildFaloSheet espande la striscia a 2 piani dell'arte (falo_strip, che vive
+; in fast RAM perche' la legge solo la CPU) nei 5 piani che vuole il blitter, e
+; ne ricava subito la maschera. La maschera si fa LI' e non in BuildBobMasks:
+; quella gira prima, e prenderebbe l'OR di cinque piani ancora vuoti.
+; In BSS_C non occupa un byte nell'eseguibile, solo chip RAM a runtime.
+;
+; Il pitch dello sheet e' quello che DisegnaBOB DERIVA da larghezza, frame e
+; bande, e coincide con quello della striscia perche' FALO_CELL_W discende da
+; FALO_SLOT: sono la stessa catena, non due numeri da confrontare.
+; ============================================================================
+	cnop	0,8
+FaloSheet:
+	ds.b	FALO_PLANE_SZ*5		; 5 bitplane, stesso pitch della striscia
+	cnop	0,8
+FALO_MASK:
+	ds.b	FALO_PLANE_SZ		; 1 plane mask (stesso pitch di FaloSheet)
+
+*****************************************************************************
+* LavoroCPU - buffer costruiti al boot che nessun DMA legge
+*
+*   Stesso criterio di AssetCPU, per la memoria che non arriva da un file.
+*   RotellaSheet e' l'unico cliente per ora: lo scrive BuildRotellaSheet al
+*   boot e lo rilegge DisegnaPunteggio con MOVE.B. Il blitter non lo tocca -
+*   una cifra e' larga un byte e allineata, quindi la copia la fa la CPU - e
+*   percio' non ha nessun motivo di occupare chip RAM.
+*
+*   Non e' insieme a FaloSheet apposta: quello e' l'esempio opposto, un
+*   buffer costruito al boot che il blitter DEVE poter leggere.
 *****************************************************************************
 
-	SECTION	SpritesData,data_c
+	SECTION	LavoroCPU,BSS
+
+	cnop	0,4
+RotellaSheet:
+	ds.b	ROTELLA_SHEET_SZ	; 4 piani, stesso pitch della striscia
+	cnop	0,4
+IndicSheet:
+	ds.b	INDIC_SHEET_SZ		; 4 piani, stesso pitch della striscia
+	cnop	0,4
+SchermoSheet:
+	ds.b	SCHERMO_SHEET_SZ	; 4 piani, stesso pitch della striscia
+	cnop	0,4
+SpiaSheet:
+	ds.b	SPIA_SHEET_SZ
+	cnop	0,4
+SpiaRossaSheet:
+	ds.b	ROSSA_SHEET_SZ
+	cnop	0,4
+QuadSheet:
+	ds.b	QUAD_SHEET_SZ
+	cnop	0,4
+; Mappa a 1 piano del messaggio che scorre, gia' negata. Un byte per carattere,
+; SCRITTA_H righe, piu' la coda che chiude il giro.
+ScrittaBuf:
+	ds.b	SCRITTA_BUF_SZ
+
+*****************************************************************************
+
+	SECTION	SpritesData,DATA_C
 	cnop	0,8				; allineamento sprite
 ;----------------------------------------------------------------------------
 ; MOD ProTracker - DEVE essere in chip RAM (data_c) per Paula DMA
@@ -6467,30 +9029,6 @@ PIETRA_MASK:
 	cnop	0,4
 ANTIRIAD_MOD:
 	incbin	"suono/antiriad.amiga.mod"
-
-;----------------------------------------------------------------------------
-; Title screen image: 8 bitplane AGA, 320x256, sequential layout.
-; DEVE essere in CHIP RAM per la display DMA.
-;----------------------------------------------------------------------------
-	cnop	0,8					; allineamento AGA FMODE=3
-title_bpl:
-	incbin	"grafica/title.raw"
-
-;----------------------------------------------------------------------------
-; Parallasse  : 2 bitplane AGA, 640x256, sequential layout.
-; DEVE essere in CHIP RAM per la display DMA.
-;----------------------------------------------------------------------------
-	cnop	0,8					; allineamento AGA FMODE=3
-parallasse:
-	incbin	"grafica/parallasse.raw"
-
-;----------------------------------------------------------------------------
-; Pannello  : 4 bitplane AGA, 320x80, sequential layout.
-; DEVE essere in CHIP RAM per la display DMA.
-;----------------------------------------------------------------------------
-	cnop	0,8					; allineamento AGA FMODE=3
-pannello:
-	incbin	"grafica/Pannello.raw"
 
 ;----------------------------------------------------------------------------
 ; Sound effects samples (8-bit signed PCM raw mono).
@@ -6530,52 +9068,6 @@ NemicoMortoSampleEnd:
 NEMICO_MORTO_LEN	EQU	(NemicoMortoSampleEnd-NemicoMortoSample)/2
 
 	cnop	0,8
-; ============================================================================
-; Sprite hardware FUOCO - 6 frame di animazione
-; Ogni frame e' una struttura sprite indipendente:
-;   - 2 word header (SPRPOS, SPRCTL) settati a runtime
-;   - 16 righe x 2 word interleaved (plane0, plane1) = 32 word = 64 byte dati
-;   - 2 word terminator (0, 0)
-; Totale per frame: 2 + 32 + 2 = 36 word = 72 byte
-;
-; A runtime, SPR0PT puntera' a uno dei FuocoFrame_X in base a FaloAnimFrame.
-; ============================================================================
-FuocoFrame_0:
-	dc.w	$0000,$0000				; SPRPOS, SPRCTL (runtime)
-	incbin	"grafica/Fuoco_Data.raw",0,64	; offset 0, 64 byte (frame 0)
-	dc.w	0,0						; terminator
-
-	cnop	0,4
-FuocoFrame_1:
-	dc.w	$0000,$0000
-	incbin	"grafica/Fuoco_Data.raw",64,64
-	dc.w	0,0
-
-	cnop	0,4
-FuocoFrame_2:
-	dc.w	$0000,$0000
-	incbin	"grafica/Fuoco_Data.raw",128,64
-	dc.w	0,0
-
-	cnop	0,4
-FuocoFrame_3:
-	dc.w	$0000,$0000
-	incbin	"grafica/Fuoco_Data.raw",192,64
-	dc.w	0,0
-
-	cnop	0,4
-FuocoFrame_4:
-	dc.w	$0000,$0000
-	incbin	"grafica/Fuoco_Data.raw",256,64
-	dc.w	0,0
-
-	cnop	0,4
-FuocoFrame_5:
-	dc.w	$0000,$0000
-	incbin	"grafica/Fuoco_Data.raw",320,64
-	dc.w	0,0
-
-	cnop	0,8
 ; Sprite vuoto per disattivare gli sprite non usati (SPR1..SPR7)
 EmptySprite:
 	dc.w	0,0				; SPRPOS, SPRCTL
@@ -6597,6 +9089,9 @@ EmptySprite:
 ; Aggiungere un bob (il falo', le parti del pannello) = un ds.b in piu' qui
 ; e BOB_TOTALI alzato di uno. Nessun codice da toccare.
 BobArray:
+; Il falo' per PRIMO: e' scenografia, e chi ci passa davanti deve coprirlo.
+BobFalo:
+	ds.b	bob_Length		; il falo': stessa struct di tutti gli altri
 Enemies:
 	ds.b	bob_Length*ENEMY_COUNT	; array dei nemici
 Player:
