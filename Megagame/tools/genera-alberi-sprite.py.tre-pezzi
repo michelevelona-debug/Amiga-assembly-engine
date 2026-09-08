@@ -1,0 +1,357 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# ============================================================================
+# genera-alberi-sprite.py - la parallasse come ALBERI SEPARATI: uno sprite per
+#   albero, ognuno con la sua Y fissa e il suo livello di profondita'.
+#
+# USO (dalla cartella Megagame):  python3 tools/genera-alberi-sprite.py
+#
+# PERCHE' NON LE FETTE
+# Con le fette (genera-fette-parallasse.py) tutta la parallasse e' una striscia
+# sola: sei canali affiancati che si muovono insieme, quindi UNA velocita'. Due
+# livelli a velocita' diverse vorrebbero due sprite sulla stessa riga dello
+# stesso canale, e un canale ne mostra uno solo.
+#
+# Con un albero per sprite il vincolo cambia natura: due alberi in canali
+# DIVERSI si sovrappongono quanto vogliono. E siccome un albero si muove solo
+# in X, la sua Y non cambia mai: l'assegnazione albero->canale si calcola una
+# volta e non si tocca piu'. Resta un vincolo solo:
+#
+#     numero di canali = massimo numero di alberi che condividono una riga
+#
+# IL PERIODO E' 384 = DIW_WIDTH + 64, e non e' una scelta estetica:
+#     x_liv  = (x_albero - offset_del_livello) mod 384
+#     HSTART = DIW_H_START - 64 + x_liv
+# fa stare HSTART fra 65 e 449, cioe' sempre dentro i 9 bit del registro. A 65
+# l'albero finisce appena fuori a sinistra, a 449 comincia dove la finestra
+# chiude: esce e rientra da solo, senza un ramo "se e' fuori schermo".
+#
+# QUELLO CHE NON DECIDE QUESTO SCRIPT
+# Le tinte e la geometria si LEGGONO da Gioco.s. La tabella degli alberi la
+# stampa lui e va incollata li': e' l'unico punto in cui i due file si devono
+# somigliare, e la guardia sulla lunghezza del .raw se ne accorge se divergono.
+# ============================================================================
+import os, sys, random, math
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import grafica
+
+RADICE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+GEN_PAR = os.path.join(RADICE, 'tools', 'genera-parallasse.py')
+DEST = os.path.join(RADICE, 'grafica', 'alberi_parallasse.raw')
+
+SPR_W = 64                      # un prelievo sprite a 64 bit
+CTRL_B, RIGA_B, FINE_B = 16, 16, 16
+PIANI = 2
+
+DIW_H_START = grafica.equ('DIW_H_START')
+VIS = 256 - grafica.equ('CUT_BOTTOM_ROWS')
+RASTER0 = 0x2C                  # prima riga della finestra di display
+PERIODO = 320 + SPR_W           # vedi il commento in testa
+VENTO_PASSI = 32                # voci della tabella di seno
+VENTO_AMPIEZZA = 3              # px di oscillazione della CIMA
+
+# ---------------------------------------------------------------- la scena
+# (nome, livello, base in righe visibili, altezza, larghezza chioma, x nel
+#  periodo, seme). Il livello e' anche il VALORE del pixel, quindi la tinta:
+#  1 = SKYLINE_C1_RGB, la piu' scura -> i vicini, DAVANTI
+#  3 = SKYLINE_C3_RGB, la piu' chiara -> i lontani, DIETRO
+#  La 2 (mezzatinta) non serve con due soli livelli.
+# I VICINI vanno nei canali BASSI perche' fra sprite vince il numero piu'
+# basso: l'ordine di profondita' lo fa l'hardware, non la palette.
+#
+# TUTTI GLI ALBERI SI APPOGGIANO AL FONDO dell'area di gioco: la base e' VIS
+# per ognuno, e cambia solo l'altezza. Ha una conseguenza che va guardata in
+# faccia: se tutti arrivano in fondo, tutti condividono le righe basse, quindi
+# il picco di sovrapposizione E' il numero di alberi. Sette e' il tetto esatto,
+# non uno di piu' - e per averne di piu' l'unica strada sarebbe staccarne
+# qualcuno dal fondo.
+ALBERI = [
+    # nome livello base altezza largh_base largh_chioma  x   seme tronchi
+    ('V0', 1, 176, 152, 13, 34,   0, 3011, 1),
+    ('V1', 1, 176, 148, 12, 32,  96, 3022, 2),   # gruppo di due tronchi
+    ('V2', 1, 176, 156, 14, 36, 192, 3033, 1),
+    ('V3', 1, 176, 142, 11, 28, 288, 3044, 1),
+    ('L0', 3, 176, 134,  9, 24,  48, 1011, 1),
+    ('L1', 3, 176, 126,  8, 22, 176, 1022, 1),
+    ('L2', 3, 176, 140, 10, 26, 304, 1033, 1),
+]
+
+
+def disegna_conifera(tela, cx0, y_fondo, altezza, largh_base, largh_chioma,
+                     val, rnd):
+    """Disegna UNA conifera dentro una tela gia' fatta, con la base a y_fondo.
+    Sta separata dalla creazione della tela apposta: cosi' uno sprite puo'
+    ospitarne due, che dentro 64 px e' un gruppo di tronchi vicini.
+
+    La forma segue l'immagine di riferimento: il tronco si allarga verso il
+    basso come t^2.2 - quindi resta sottile per quasi tutta l'altezza e si apre
+    solo negli ultimi pixel - sale con una curva lenta, e i rami sono corti e
+    finiscono in ciuffi tondi. Sotto il 62% resta il fusto nudo.
+    """
+    H = len(tela)
+    y_cima = y_fondo - altezza + 1
+
+    def punto(x, y):
+        if 0 <= x < SPR_W and 0 <= y < H:
+            tela[y][x] = val
+
+    def disco(cx, cy, r):
+        ri = int(r) + 1
+        for dy in range(-ri, ri+1):
+            for dx in range(-ri, ri+1):
+                if dx*dx + dy*dy <= r*r:
+                    punto(cx+dx, cy+dy)
+
+    fase = rnd.uniform(0, 6.28)
+    ampiezza = rnd.uniform(1.5, 3.0)
+    # La CIMA e' una punta vera: nelle prime k_punta righe la semilarghezza
+    # sale da zero, quindi l'albero comincia con un pixel solo e si apre. Il
+    # profilo del tronco (t^2.2) da solo lascerebbe una cima tozza di 3-4 px.
+    k_punta = max(4, int(altezza * 0.09))
+    asse = []
+    for k in range(altezza):
+        t = k / float(altezza - 1)          # 0 in cima, 1 alla base
+        semi = 1.5 + (largh_base/2.0 - 1.5) * (t ** 2.2)
+        if k < k_punta:
+            semi = min(semi, 0.1 + 1.4 * (k / float(k_punta)))
+        cx = cx0 + ampiezza * math.sin(2.2*t + fase)
+        asse.append(cx)
+        y = y_cima + k
+        for dx in range(-int(semi+0.5), int(semi+0.5)+1):
+            punto(int(round(cx)) + dx, y)
+
+    # i rami cominciano SOTTO la punta, se no la rimpolpano e la punta sparisce
+    k_alto = int(altezza * 0.15)
+    k_basso = int(altezza * 0.62)
+    passo = max(5, int(altezza * 0.055))
+    lato = 1 if rnd.random() < 0.5 else -1
+    k = k_alto
+    while k < k_basso:
+        t = (k - k_alto) / float(max(1, k_basso - k_alto))
+        lung = (largh_chioma/2.0) * (0.35 + 0.65*t) * rnd.uniform(0.75, 1.05)
+        cx = asse[k]
+        cala = rnd.uniform(0.10, 0.30) * lung
+        passi = max(3, int(lung))
+        for i in range(passi + 1):
+            u = i / float(passi)
+            xx = int(round(cx + lato*lung*u))
+            yy = int(round(y_cima + k + cala*u*u))
+            punto(xx, yy)
+            if u > 0.25:                    # il ramo si ispessisce uscendo
+                punto(xx, yy + 1)
+        tx = int(round(cx + lato*lung))
+        ty = int(round(y_cima + k + cala))
+        r = rnd.uniform(2.6, 4.2)
+        disco(tx, ty, r)
+        disco(tx - lato*int(r), ty - int(r*0.7), r*0.72)
+        if rnd.random() < 0.5:
+            disco(tx, ty - int(r*1.3), r*0.65)
+        lato = -lato
+        k += passo + rnd.randint(-1, 2)
+
+    # niente disco sulla cima: la punta la fa il tronco. Un ciuffo qui la
+    # rimpallottolava, ed e' proprio quello che non si voleva.
+
+
+def sagoma(altezza, largh_base, largh_chioma, val, seme, tronchi):
+    """La tela di uno sprite: uno o due alberi, base sul fondo.
+    Con due tronchi il secondo e' piu' basso e spostato di lato: le chiome si
+    intrecciano, ed e' quello che fa sembrare un gruppo invece di due alberi
+    disegnati accanto."""
+    tela = [[0]*SPR_W for _ in range(altezza)]
+    rnd = random.Random(seme)
+    if tronchi == 1:
+        disegna_conifera(tela, SPR_W//2, altezza-1, altezza,
+                         largh_base, largh_chioma, val, rnd)
+    else:
+        h2 = int(altezza * rnd.uniform(0.62, 0.74))
+        disegna_conifera(tela, SPR_W//2 + 8, altezza-1, altezza,
+                         largh_base, largh_chioma*0.85, val, rnd)
+        disegna_conifera(tela, SPR_W//2 - 11, altezza-1, h2,
+                         largh_base*0.78, largh_chioma*0.80, val, rnd)
+    return tela
+
+
+def tagli(tela, altezza):
+    """Le due righe dove tagliare l'albero in tre pezzi sovrapposti in
+    verticale. Si cercano DOVE IL DISEGNO E' PIU' STRETTO nell'intorno del 35%
+    e del 65% dell'altezza: fra un pezzo e l'altro l'oscillazione del vento
+    lascia uno scalino di un pixel o due, e su una riga con un solo pixel
+    acceso non si vede. Sceglierle a occhio, o a percentuale fissa, vorrebbe
+    dire tagliare in mezzo a un ramo."""
+    def larghezza(y):
+        acc = [x for x in range(SPR_W) if tela[y][x]]
+        return (max(acc)-min(acc)+1) if acc else 0
+    fuori = []
+    for frazione in (0.35, 0.65):
+        centro = int(altezza * frazione)
+        finestra = range(max(1, centro-8), min(altezza-2, centro+9))
+        fuori.append(min(finestra, key=lambda y: (larghezza(y), abs(y-centro))))
+    return fuori
+
+
+def impagina(tela, vstart, vstop, ultimo):
+    """Dalla tela ai byte di uno sprite a 64 bit.
+
+    `ultimo` decide se accodare il TERMINATORE. Va messo solo dopo l'ultimo
+    pezzo del canale: il terminatore chiude la lista, e metterlo dopo ogni
+    pezzo fa fermare il DMA al primo. Il 5 settembre lo mettevo sempre, e a
+    schermo si vedevano solo le punte degli alberi.
+    """
+    out = bytearray()
+    sprpos = ((vstart & 0xFF) << 8) | ((DIW_H_START >> 1) & 0xFF)
+    sprctl = (((vstop & 0xFF) << 8)
+              | (((vstart >> 8) & 1) << 2)
+              | (((vstop >> 8) & 1) << 1)
+              | (DIW_H_START & 1))
+    out += sprpos.to_bytes(2, 'big') + b'\0'*6
+    out += sprctl.to_bytes(2, 'big') + b'\0'*6
+    for riga in tela:
+        a = bytearray(8); b = bytearray(8)
+        for i, v in enumerate(riga):
+            if not v: continue
+            bit = 1 << (7 - (i & 7))
+            if v & 1: a[i >> 3] |= bit
+            if v & 2: b[i >> 3] |= bit
+        out += bytes(a) + bytes(b)
+    if ultimo:
+        out += b'\0' * FINE_B
+    return bytes(out)
+
+
+def assegna_canali(alberi):
+    """Greedy su intervalli: e' l'ottimo. I VICINI per primi, cosi' finiscono
+    nei canali bassi e stanno davanti."""
+    canali = []
+    for a in sorted(alberi, key=lambda a: (a[1], a[2]-a[3])):
+        y0, y1 = a[2]-a[3], a[2]
+        for c in canali:
+            if c[-1][2] < y0:
+                c.append((a[0], y0, y1)); break
+        else:
+            canali.append([(a[0], y0, y1)])
+    return canali
+
+
+def main():
+    pezzi, blocchi = [], []
+    offset = 0
+    rnd_fasi = random.Random(4242)
+    for nome, liv, base, alt, lbase, lchioma, x, seme, tronchi in ALBERI:
+        tela = sagoma(alt, lbase, lchioma, liv, seme, tronchi)
+        y0, y1 = tagli(tela, alt)
+        vstart = RASTER0 + base - alt
+        # tre pezzi CONTIGUI e in ordine di VSTART: il DMA del canale li
+        # percorre in fila, e ognuno ha il suo HSTART. E' quello che permette
+        # all'albero di piegarsi invece di scivolare tutto intero.
+        # Fra un pezzo e il successivo serve UNA RIGA DI STACCO: il canale usa
+        # la riga di VSTOP per rileggere il blocco di controllo, quindi il
+        # pezzo dopo puo' partire solo da VSTOP+1. Le righe y0 e y1 restano
+        # quindi vuote - due fessure di un pixel, ed e' per questo che i tagli
+        # si cercano dove il tronco e' piu' stretto.
+        fette = [(0, y0), (y0+1, y1), (y1+1, alt)]
+        ofs_pezzi = []
+        for k, (ra, rb) in enumerate(fette):
+            ofs_pezzi.append(offset)
+            d = impagina(tela[ra:rb], vstart+ra, vstart+rb, k == len(fette)-1)
+            blocchi.append(d)
+            offset += len(d)
+        fase = rnd_fasi.randrange(VENTO_PASSI)
+        pezzi.append((nome, liv, x, alt, vstart, RASTER0+base,
+                      ofs_pezzi, fase, (y0, y1)))
+    blob = b''.join(blocchi)
+
+    canali = assegna_canali([(n, l, b, a) for n, l, b, a, _, _, _, _, _ in ALBERI])
+    picco = max(sum(1 for _, l, b, a, *_ in ALBERI if b-a <= y <= b)
+                for y in range(VIS))
+
+    print('alberi: %d   canali necessari: %d   picco su una riga: %d   %s'
+          % (len(ALBERI), len(canali), picco,
+             'OK' if len(canali) <= 7 else 'SFORA I SETTE CANALI'))
+    print('chip: %d byte (%.1f KB), periodo %d px' % (len(blob), len(blob)/1024, PERIODO))
+    print()
+    print('; --- tabella da incollare in Gioco.s ---')
+    print('; nome liv  x  alt  VSTART VSTOP  tagli   offset dei tre pezzi')
+    for nome, liv, x, alt, vs, vp, ofs, fase, tg in pezzi:
+        print(';  %-4s %d  %3d  %3d   %3d   %3d   %3d,%3d  %s'
+              % (nome, liv, x, alt, vs, vp, tg[0], tg[1], ofs))
+    print('ALBERI_N        EQU     %d' % len(ALBERI))
+    print('ALBERI_LEN_ATTESA EQU   %d\t; guardia: la lunghezza del .raw' % len(blob))
+    print('VENTO_PASSI     EQU     %d' % VENTO_PASSI)
+    print('AlberiTab:')
+    for i, c in enumerate(canali):
+        for nome, y0, y1 in c:
+            p = [q for q in pezzi if q[0] == nome][0]
+            print('\tdc.w\t%d,%d,%d,%d,%d,%d\t; canale %d, %s'
+                  % (p[6][0], p[6][1], p[6][2], p[2], p[1], p[7], i, nome))
+    print('VentoSeno:')
+    riga = ['\tdc.b\t']
+    vals = [int(round(VENTO_AMPIEZZA*math.sin(2*math.pi*k/VENTO_PASSI)))
+            for k in range(VENTO_PASSI)]
+    print('\tdc.b\t' + ','.join(str(v) for v in vals))
+
+    palette = [grafica.rgb24(grafica.equ('CIELO_FISSO_RGB')),
+               grafica.rgb24(grafica.equ('SKYLINE_C1_RGB')),
+               grafica.rgb24(grafica.equ('SKYLINE_C2_RGB')),
+               grafica.rgb24(grafica.equ('SKYLINE_C3_RGB'))]
+
+    def decodifica(dati):
+        """Anteprima: una colonna da 64 px per CANALE, alta VIS.
+
+        Non si fida degli offset calcolati qui sopra: PERCORRE LA LISTA COME IL
+        DMA. Parte dal primo blocco del canale, legge VSTART/VSTOP dai byte
+        veri, disegna le righe fino a VSTOP, poi legge il blocco che segue; si
+        ferma quando trova il terminatore (blocco di controllo a zero).
+
+        E' questo che rende l'anteprima una verifica e non un disegno: se un
+        terminatore sta in mezzo alla lista - il bug del 5 settembre - la
+        colonna mostra la sola cima, esattamente come lo schermo.
+        """
+        rowb = (SPR_W*len(canali))//8
+        psz = rowb*VIS
+        p = bytearray(psz*PIANI)
+        rendiconto = []
+        for k, c in enumerate(canali):
+            nome = c[0][0]
+            pos = [q for q in pezzi if q[0] == nome][0][6][0]
+            visti, righe_tot = 0, 0
+            while pos + CTRL_B <= len(dati):
+                sprpos = int.from_bytes(dati[pos:pos+2], 'big')
+                sprctl = int.from_bytes(dati[pos+8:pos+10], 'big')
+                if sprpos == 0 and sprctl == 0:
+                    break                       # terminatore: canale finito
+                vstart = ((sprctl & 4) << 6) | (sprpos >> 8)
+                vstop = ((sprctl & 2) << 7) | (sprctl >> 8)
+                righe = vstop - vstart
+                if righe <= 0 or righe > VIS:
+                    rendiconto.append('%s: blocco malformato a %d' % (nome, pos))
+                    break
+                for r in range(righe):
+                    o = pos + CTRL_B + r*RIGA_B
+                    y = (vstart - RASTER0) + r
+                    if not (0 <= y < VIS): continue
+                    for j in range(8):
+                        dst = y*rowb + k*8 + j
+                        p[dst] = dati[o+j]
+                        p[psz+dst] = dati[o+8+j]
+                visti += 1
+                righe_tot += righe
+                pos += CTRL_B + righe*RIGA_B
+            rendiconto.append('canale %d  %-4s  pezzi letti dal DMA: %d  righe: %d'
+                              % (k, nome, visti, righe_tot))
+        for r in rendiconto:
+            print('   ' + r)
+        return bytes(p)
+
+    print()
+    print('; --- rilettura del .raw seguendo la lista come il DMA ---')
+    n, n_iff, p_iff = grafica.salva_sprite(DEST, blob, decodifica,
+                                           SPR_W*len(canali), VIS, PIANI, palette)
+    print()
+    print('alberi_parallasse.raw  %d byte' % n)
+    print('anteprima: %s' % os.path.relpath(p_iff, RADICE))
+    return 0 if len(canali) <= 7 else 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -17,6 +17,9 @@
 # qui da Pannello.raw: nessuna tinta finisce mai sopra la carrozzeria.
 # ============================================================================
 import os, random
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import grafica
 from PIL import Image
 
 W, H, PIANI_PAN = 320, 80, 4
@@ -33,26 +36,35 @@ PAN = leggi_pannello()
 def nero(x, y):
     return 0 <= x < W and 0 <= y < H and PAN[y][x] == NERO
 
-def salva_raw(celle, cw, ch, cols, rows, path):
-    """celle[r][c] = matrice ch x cw di valori 0..3 -> raw a 2 piani."""
+# Le palette dell'IFF si LEGGONO da dove stanno le tinte vere: i tre grigi
+# dalla palette del pannello (Pannello.cop), i gialli e i rossi dalle EQU di
+# Gioco.s. Aprendo l'IFF si vedono i colori che avra' a schermo, non dei
+# segnaposto. Il colore 0 e' trasparente e nell'IFF e' dichiarato tale.
+# ATTENZIONE al nome: NERO in questo script e' gia' l'INDICE 15 del pannello,
+# quello con cui nero(x,y) riconosce i buchi. Chiamare NERO anche la terna RGB
+# lo ombreggiava, nero() smetteva di trovare un solo pixel e la lancetta del
+# quadrante veniva lunga zero. Se ne e' accorto il controllo che questo script
+# stampa a ogni giro ("accesi fuori dal nero" da 0 a 44): senza quel numero
+# sarebbe finito nel .raw in silenzio.
+NERO_RGB = (0, 0, 0)
+PAL_GRIGI  = [NERO_RGB] + [grafica.rgb12(grafica.colore_pannello(i)) for i in (4, 5, 6)]
+PAL_GIALLI = [NERO_RGB] + [grafica.rgb12(grafica.equ(n)) for n in ('SPIA_COL1','SPIA_COL2','SPIA_COL3')]
+PAL_ROSSI  = [NERO_RGB] + [grafica.rgb12(grafica.equ(n)) for n in ('ROSSA_COL1','ROSSA_COL2','ROSSA_COL3')]
+
+def salva_raw(celle, cw, ch, cols, rows, path, palette):
+    """celle[r][c] = matrice ch x cw di valori 0..3. Scrive .raw E .iff:
+    vedi la regola in tools/grafica.py."""
     sw, sh = cw*cols, ch*rows
-    rowb = sw // 8
-    assert sw % 8 == 0
-    psz = rowb * sh
-    d = bytearray(psz * 2)
+    m = [[0]*sw for _ in range(sh)]
     for r in range(rows):
         for c in range(cols):
-            m = celle[r][c]
+            cel = celle[r][c]
             for y in range(ch):
                 for x in range(cw):
-                    v = m[y][x]
-                    if not v: continue
-                    X, Y = c*cw + x, r*ch + y
-                    for k in range(2):
-                        if (v >> k) & 1:
-                            d[k*psz + Y*rowb + (X>>3)] |= 1 << (7-(X&7))
-    open(path, 'wb').write(bytes(d))
-    return len(d), sw, sh, rowb, psz
+                    m[r*ch + y][c*cw + x] = cel[y][x]
+    n, n_iff, p_iff = grafica.salva(path, m, sw, sh, 2, palette)
+    print('   %-18s %5d byte' % (os.path.basename(p_iff), n_iff))
+    return n, sw, sh, sw//8, (sw//8)*sh
 
 def vuota(cw, ch): return [[0]*cw for _ in range(ch)]
 
@@ -112,7 +124,7 @@ def cella_immagine(n):
 sch = [[vuota(SCH_W, SCH_H) for _ in range(SCH_COLS)] for _ in range(SCH_ROWS)]
 for f in range(SCH_NEVE):  sch[0][f] = cella_neve(f)
 for i in range(SCH_IMG):   sch[1][i] = cella_immagine(i+1)
-n, sw, sh, rowb, psz = salva_raw(sch, SCH_W, SCH_H, SCH_COLS, SCH_ROWS, 'grafica/schermo.raw')
+n, sw, sh, rowb, psz = salva_raw(sch, SCH_W, SCH_H, SCH_COLS, SCH_ROWS, 'grafica/schermo.raw', PAL_GRIGI)
 print('schermo.raw    %5d byte  %dx%d  rowb %d  piano %d  cella %dx%d  a x%d y%d'
       % (n, sw, sh, rowb, psz, SCH_W, SCH_H, SCH_X, SCH_Y))
 
@@ -160,7 +172,7 @@ def cella_spia(liv, off):
 spia = [[cella_spia(LIV[f], SPIE[r][2]) for f in range(SPIA_FASI)]
         for r in range(len(SPIE))]
 n, sw, sh, rowb, psz = salva_raw(spia, SPIA_CELL_W, SPIA_H, SPIA_FASI, len(SPIE),
-                                 'grafica/spia.raw')
+                                 'grafica/spia.raw', PAL_GIALLI)
 print('spia.raw       %5d byte  %dx%d  rowb %d  piano %d  cella %dx%d'
       % (n, sw, sh, rowb, psz, SPIA_CELL_W, SPIA_H))
 
@@ -189,7 +201,7 @@ ROSSA = (224, 49, 0)
 
 rossa = [[cella_spia(LIV[f], ROSSA[2]) for f in range(SPIA_FASI)]]
 n, sw, sh, rowb, psz = salva_raw(rossa, SPIA_CELL_W, SPIA_H, SPIA_FASI, 1,
-                                 'grafica/spia_rossa.raw')
+                                 'grafica/spia_rossa.raw', PAL_ROSSI)
 print('spia_rossa.raw %5d byte  %dx%d  rowb %d  piano %d  cella %dx%d'
       % (n, sw, sh, rowb, psz, SPIA_CELL_W, SPIA_H))
 bx, by, off = ROSSA
@@ -300,7 +312,7 @@ def cella_quadrante(i, fase):
     return m
 
 qua = [[cella_quadrante(i, r) for i in range(QUA_ANG)] for r in range(QUA_RIGHE)]
-n, sw, sh, rowb, psz = salva_raw(qua, QUA_W, QUA_H, QUA_ANG, QUA_RIGHE, 'grafica/quadrante.raw')
+n, sw, sh, rowb, psz = salva_raw(qua, QUA_W, QUA_H, QUA_ANG, QUA_RIGHE, 'grafica/quadrante.raw', PAL_GRIGI)
 print('quadrante.raw  %5d byte  %dx%d  rowb %d  piano %d  cella %dx%d  a x%d y%d'
       % (n, sw, sh, rowb, psz, QUA_W, QUA_H, QUA_X, QUA_Y))
 fuori = 0

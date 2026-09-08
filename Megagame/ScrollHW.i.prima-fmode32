@@ -60,10 +60,7 @@
 ; numeri in ballo e si convergono in pochi tentativi.
 ;=====================================================================
 
-; Il blocco di prefetch a sinistra e' UN fetch intero, quindi segue FMODE:
-; 8 byte a 64 bit, 4 a 32. Deve restare uguale a DELTA_MAPPAVERA, e adesso lo
-; e' per costruzione perche' discendono dalla stessa EQU.
-SCROLL_GUARD_BYTES  EQU     SCROLL_BYTES_FETCH      ; blocco di prefetch a sinistra
+SCROLL_GUARD_BYTES  EQU     8               ; blocco di prefetch a sinistra
 ; IL PITCH DEVE ESSERE QUELLO VERO DEL BUFFER, NON UN VALORE CABLATO.
 ; Era 48+SCROLL_GUARD_BYTES = 56, mentre SFONDO_PITCH vale 64 da quando la
 ; riga deve contenere guardia + mappa intera. La parte verticale fa
@@ -114,27 +111,17 @@ SCROLL_BPLMOD       EQU     SFONDO_PITCH-SCROLL_FETCH_BYTES
 ScrollHWCalc:
         MOVEM.L D4-D5,-(SP)
 
-        ; --- orizzontale: un blocco di fetch + il ritardo che resta -
-        ; Il blocco e' SCROLL_BLOCCO_PX px (64, 32 o 16 secondo SCROLL_FETCH_BIT) e
-        ; il ritardo copre 0..blocco-1. Gli shift sono EQU perche' cambiano
-        ; insieme a FMODE: vedi SCROLL_FETCH_BIT in testa a Gioco.s.
-        ; La parte BPLCON1 piu' sotto NON cambia: sa gia' gestire 0..63, e a
-        ; 32 bit riceve semplicemente valori che non superano 31.
+        ; --- orizzontale: blocco da 64 px + ritardo 0..63 -----------
         MOVE.W  D0,D4
-        ADD.W   #SCROLL_BLOCCO_PX-1,D4
-        LSR.W   #SCROLL_BLOCCO_SH,D4    ; D4 = ceil(CameraX/blocco) in blocchi
+        ADD.W   #63,D4
+        LSR.W   #6,D4                   ; D4 = ceil(CameraX/64) in blocchi
         MOVE.W  D4,D5
-        LSL.W   #SCROLL_BLOCCO_SH,D5    ; D5 = blocchi*blocco (in pixel)
-        SUB.W   D0,D5                   ; D5 = D = ritardo 0..blocco-1
-        ; UNICA fonte del ritardo. Darkplane e parallasse vivono in coordinate
-        ; SCHERMO e devono compensarlo: se lo ricalcolassero per conto loro,
-        ; basterebbe cambiare la dimensione del blocco per farli scattare - ed
-        ; e' esattamente quello che e' successo il 2 settembre.
-        MOVE.W  D5,PathBDelay
+        LSL.W   #6,D5                   ; D5 = 8B = blocchi*64 (in pixel)
+        SUB.W   D0,D5                   ; D5 = D = ritardo 0..63
 
-        LSL.W   #SCROLL_BYTES_SH,D4     ; D4 = blocchi*byte = offset byte
+        LSL.W   #3,D4                   ; D4 = blocchi*8 = offset byte
         ; il blocco di prefetch: si resta dentro il buffer perche' la
-        ; base include gia' i byte di guardia (SCROLL_GUARD_BYTES)
+        ; base include gia' gli 8 byte di guardia
         MOVEQ   #0,D2
         MOVE.W  D4,D2                   ; D2 = offset orizzontale in byte
 
