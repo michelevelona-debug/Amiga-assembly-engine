@@ -445,6 +445,62 @@ CIELO_GRADIENTE         EQU     0
 CIELO_FISSO_RGB         EQU     $7090c0
 CIELO_FISSO_HI  EQU     ((((CIELO_FISSO_RGB>>20)&15)<<8)|(((CIELO_FISSO_RGB>>12)&15)<<4)|((CIELO_FISSO_RGB>>4)&15))
 CIELO_FISSO_LO  EQU     ((((CIELO_FISSO_RGB>>16)&15)<<8)|(((CIELO_FISSO_RGB>>8)&15)<<4)|(CIELO_FISSO_RGB&15))
+; ---- LE DUE RAMPE DEGLI ALBERI ----
+; Uno sprite Amiga ha TRE colori per pixel, e fino al 7 settembre gli alberi ne
+; usavano UNO: il valore del pixel portava la profondita' (1 = vicino, 3 =
+; lontano) mentre la profondita' e' gia' decisa da QUALE CANALE ospita l'albero.
+; Due terzi della palette sprite stavano fermi.
+; Adesso il valore porta l'OMBREGGIATURA - 1 ombra, 2 corpo, 3 luce - e la
+; profondita' la fa la coppia: coppie 0 e 1 (canali 0..3) i vicini, coppie 2 e 3
+; (canali 4..6) i lontani. Costo: zero canali, zero piani, zero chip, zero
+; righe raster. Sono le stesse dodici voci che la copperlist scriveva gia'.
+;
+; ATTENZIONE, VINCOLO PORTANTE: questa divisione vale solo finche' i canali
+; 0..3 ospitano vicini e i 4..6 lontani. Se un albero cambiasse canale uscirebbe
+; con la rampa sbagliata, e a schermo si vedrebbe un vicino color nebbia.
+; Lo controlla tools/genera-alberi-sprite.py, che si rifiuta di generare se la
+; mappa canale->livello non e' 1,1,1,1,3,3,3.
+;
+; Le sei tinte sono DERIVATE, non scelte: il CORPO e' la tinta di sempre, la
+; LUCE e' il corpo mescolato al cielo (e' di li' che viene la luce), l'OMBRA e'
+; il corpo scalato verso il nero. Cambiando SKYLINE_C1_RGB o SKYLINE_C3_RGB si
+; muove tutta la rampa, e non c'e' un secondo posto da aggiornare.
+; I DUE LATI NON SONO SIMMETRICI: l'ombra e' piu' marcata della luce, perche' su
+; un cielo chiaro scurire AUMENTA il contrasto della sagoma mentre schiarire lo
+; riduce. Vedi la nota di SKYLINE_MIX qui sopra: e' lo stesso errore.
+ALB_LUCE_MIX		EQU		42			; centesimi di cielo dentro la luce
+ALB_OMBRA_VIC		EQU		62			; centesimi del corpo che restano in ombra
+ALB_OMBRA_LON		EQU		69			; i lontani sono gia' chiari: meno buio
+
+CIELO_R		EQU		(CIELO_FISSO_RGB>>16)&255
+CIELO_G		EQU		(CIELO_FISSO_RGB>>8)&255
+CIELO_B		EQU		CIELO_FISSO_RGB&255
+ALB_V_R		EQU		(SKYLINE_C1_RGB>>16)&255
+ALB_V_G		EQU		(SKYLINE_C1_RGB>>8)&255
+ALB_V_B		EQU		SKYLINE_C1_RGB&255
+ALB_L_R		EQU		(SKYLINE_C3_RGB>>16)&255
+ALB_L_G		EQU		(SKYLINE_C3_RGB>>8)&255
+ALB_L_B		EQU		SKYLINE_C3_RGB&255
+
+ALBERI_V_CORPO_RGB	EQU		SKYLINE_C1_RGB
+ALBERI_V_OMBRA_RGB	EQU		(((ALB_V_R*ALB_OMBRA_VIC/100)<<16)|((ALB_V_G*ALB_OMBRA_VIC/100)<<8)|(ALB_V_B*ALB_OMBRA_VIC/100))
+ALBERI_V_LUCE_RGB	EQU		((((ALB_V_R*(100-ALB_LUCE_MIX)+CIELO_R*ALB_LUCE_MIX)/100)<<16)|(((ALB_V_G*(100-ALB_LUCE_MIX)+CIELO_G*ALB_LUCE_MIX)/100)<<8)|((ALB_V_B*(100-ALB_LUCE_MIX)+CIELO_B*ALB_LUCE_MIX)/100))
+ALBERI_L_CORPO_RGB	EQU		SKYLINE_C3_RGB
+ALBERI_L_OMBRA_RGB	EQU		(((ALB_L_R*ALB_OMBRA_LON/100)<<16)|((ALB_L_G*ALB_OMBRA_LON/100)<<8)|(ALB_L_B*ALB_OMBRA_LON/100))
+ALBERI_L_LUCE_RGB	EQU		((((ALB_L_R*(100-ALB_LUCE_MIX)+CIELO_R*ALB_LUCE_MIX)/100)<<16)|(((ALB_L_G*(100-ALB_LUCE_MIX)+CIELO_G*ALB_LUCE_MIX)/100)<<8)|((ALB_L_B*(100-ALB_LUCE_MIX)+CIELO_B*ALB_LUCE_MIX)/100))
+
+ALB_V_OMBRA_HI	EQU		((((ALBERI_V_OMBRA_RGB>>20)&15)<<8)|(((ALBERI_V_OMBRA_RGB>>12)&15)<<4)|((ALBERI_V_OMBRA_RGB>>4)&15))
+ALB_V_OMBRA_LO	EQU		((((ALBERI_V_OMBRA_RGB>>16)&15)<<8)|(((ALBERI_V_OMBRA_RGB>>8)&15)<<4)|(ALBERI_V_OMBRA_RGB&15))
+ALB_V_CORPO_HI	EQU		((((ALBERI_V_CORPO_RGB>>20)&15)<<8)|(((ALBERI_V_CORPO_RGB>>12)&15)<<4)|((ALBERI_V_CORPO_RGB>>4)&15))
+ALB_V_CORPO_LO	EQU		((((ALBERI_V_CORPO_RGB>>16)&15)<<8)|(((ALBERI_V_CORPO_RGB>>8)&15)<<4)|(ALBERI_V_CORPO_RGB&15))
+ALB_V_LUCE_HI	EQU		((((ALBERI_V_LUCE_RGB>>20)&15)<<8)|(((ALBERI_V_LUCE_RGB>>12)&15)<<4)|((ALBERI_V_LUCE_RGB>>4)&15))
+ALB_V_LUCE_LO	EQU		((((ALBERI_V_LUCE_RGB>>16)&15)<<8)|(((ALBERI_V_LUCE_RGB>>8)&15)<<4)|(ALBERI_V_LUCE_RGB&15))
+ALB_L_OMBRA_HI	EQU		((((ALBERI_L_OMBRA_RGB>>20)&15)<<8)|(((ALBERI_L_OMBRA_RGB>>12)&15)<<4)|((ALBERI_L_OMBRA_RGB>>4)&15))
+ALB_L_OMBRA_LO	EQU		((((ALBERI_L_OMBRA_RGB>>16)&15)<<8)|(((ALBERI_L_OMBRA_RGB>>8)&15)<<4)|(ALBERI_L_OMBRA_RGB&15))
+ALB_L_CORPO_HI	EQU		((((ALBERI_L_CORPO_RGB>>20)&15)<<8)|(((ALBERI_L_CORPO_RGB>>12)&15)<<4)|((ALBERI_L_CORPO_RGB>>4)&15))
+ALB_L_CORPO_LO	EQU		((((ALBERI_L_CORPO_RGB>>16)&15)<<8)|(((ALBERI_L_CORPO_RGB>>8)&15)<<4)|(ALBERI_L_CORPO_RGB&15))
+ALB_L_LUCE_HI	EQU		((((ALBERI_L_LUCE_RGB>>20)&15)<<8)|(((ALBERI_L_LUCE_RGB>>12)&15)<<4)|((ALBERI_L_LUCE_RGB>>4)&15))
+ALB_L_LUCE_LO	EQU		((((ALBERI_L_LUCE_RGB>>16)&15)<<8)|(((ALBERI_L_LUCE_RGB>>8)&15)<<4)|(ALBERI_L_LUCE_RGB&15))
 
 ; ROTELLA DEL PUNTEGGIO - grafica/rotella_punteggio.raw
 ; Striscia 320x16 a 2 piani SEPARATI, com'esce dall'editor: prima tutto il
@@ -933,21 +989,23 @@ PIETRA_PLANE_SIZE     EQU     PIETRA_BYTES_PER_ROW*PIETRA_SHEET_H	; 512 byte/pia
 ; MAPPA_COLS / MAPPA_ROWS sono definite PIU' SU (prima di SFONDO_PITCH, che
 ; ora ne discende). Qui restano solo le costanti che dipendono da loro.
 BUFFER_COLS			EQU		MAPPA_COLS		; Path B: il buffer contiene TUTTA la mappa
-; Finestra orizzontale di display: larga 336 px (21 tile), DIW_H_START = 160.
-; Il valore e' incastrato fra due vincoli e la finestra utile e' 159..160.
-;   A SINISTRA il dato deve essere gia' arrivato quando la finestra apre. Il
-;   primo pixel arriva a DDFSTRT*2 + LATENZA + D, con D = ritardo BPLCON1
-;   (0..63 a FMODE=3). LATENZA = 48 px, MISURATA col monitor: DL=62 con la
-;   banda vuota a 7 px, e 7 = 62 - (151 - 48 - LATENZA). Serve quindi
-;   DIW >= 48+48+63 = 159, se no a ritardo grande compaiono px vuoti a sinistra.
-;   A DESTRA la finestra deve stare dentro il dato prelevato, 48 + 7*64 = 496,
-;   quindi DIW <= 496 - 336 = 160.
-; E' un incastro ESATTO, senza margine a destra. Se il bordo destro desse
-; problemi la slack si ottiene solo restringendo: VIS_COLS 21 -> 20 libera
-; 16 px da distribuire fra i due lati.
-; PREZZO della finestra larga: la camera scorre 64 px invece di 80, una tile
-; in meno. In compenso il puntatore di display avanza al massimo di un blocco
-; invece di due, e SFONDO_PITCH resta 64.
+; Finestra orizzontale di display. I VALORI VERI, letti dalle EQU e non da
+; questo commento: DIW_H_START $81 = 129, DIW_H_STOP $C1, DIW_WIDTH 320 px,
+; VIS_COLS 20. Se qui sotto leggi altri numeri, e' questo commento a essere
+; vecchio: li stampa tools/valori.py, che valuta anche i rami condizionali.
+; IL VINCOLO A SINISTRA: quando la finestra apre, il dato del primo pixel deve
+; essere gia' arrivato. Arriva a DDFSTRT*2 + LATENZA + D, con D il ritardo
+; BPLCON1, che copre 0..SCROLL_BLOCCO_PX-1. Nella configurazione di oggi
+; (prelievo a 16 bit) DDFSTRT vale 96 px e D arriva a 15, quindi con la
+; finestra a 129 la latenza di pipeline ha 18 px di spazio.
+; ATTENZIONE: la LATENZA di 48 px misurata col monitor apparteneva alla
+; configurazione a 64 bit, dove il prelievo e' largo un blocco intero e la
+; pipeline e' piu' lunga. NON e' un numero valido qui, e per il prelievo a 16
+; bit una misura non c'e': quello che si sa e' che a schermo funziona.
+; IL VINCOLO A DESTRA: la finestra deve stare dentro il dato prelevato, cioe'
+; DDFSTRT*2 + SCROLL_FETCHES*SCROLL_BLOCCO_PX.
+; SINTOMO da riconoscere: px vuoti sul bordo sinistro che compaiono solo a
+; ritardo BPLCON1 grande, cioe' in certe posizioni di camera e non in altre.
 
 ; FINESTRA ORIZZONTALE. Valori trovati SUL FERRO, non da un modello: sono gli
 ; stessi della schermata del titolo, e con BRDRBLNK acceso danno bordi neri
@@ -8037,26 +8095,32 @@ GamePalLo:
 	; A sei bitplane l'arte arriva all'indice 63, quindi 64..255 sono liberi:
 	; BPLCON4 con ESPRM=OSPRM=$4 manda gli sprite alle voci 64..79, dove non
 	; puo' arrivare nessun pixel di bitplane. BPLAM resta $00.
-	; Le coppie di canali condividono le tinte, quindi le tre profondita' si
-	; scrivono QUATTRO volte, una per coppia: 65/66/67 per SPR0-1, 69/70/71 per
+	; Le tinte sono PER COPPIA di canali: 65/66/67 per SPR0-1, 69/70/71 per
 	; SPR2-3, 73/74/75 per SPR4-5, 77/78/79 per SPR6-7. Dodici voci contro le
 	; 192 dei banchi 2..7 che servivano quando la parallasse stava nei bitplane.
-	; LE COPPIE SONO QUATTRO, non tre: il 5 settembre ne avevo scritte tre e
-	; l'albero del canale 6 e' uscito MARRONE, col colore che nessuno aveva mai
-	; inizializzato. Se si aggiunge un canale si aggiunge la sua coppia.
+	; LE COPPIE SONO QUATTRO, non tre: scrivendone tre l'albero del canale 6
+	; esce col colore che nessuno ha inizializzato. Chi aggiunge un canale
+	; aggiunge la sua coppia.
 	; Le voci sopra la 31 vogliono la BANCA 2 in BPLCON3 (colori 64..95): li'
 	; i registri $0180..$019e SONO quelle voci.
+	;
+	; DENTRO una coppia i tre valori sono OMBRA, CORPO, LUCE - non tre
+	; profondita'. La profondita' la fa la coppia: 0 e 1 (canali 0..3) i vicini,
+	; 2 e 3 (canali 4..6) i lontani. E' quello che ha sbloccato i due terzi di
+	; palette sprite che stavano fermi: ogni albero usava un colore su tre.
+	; Il generatore si rifiuta di produrre l'arte se la mappa canale->livello
+	; non e' 1,1,1,1,3,3,3, perche' da qui in poi quella mappa e' portante.
 	dc.w	$010c,$0044			; BPLCON4: ESPRM=OSPRM=$4, sprite a 64..79
 	dc.w	$0106,(2<<BPLCON3_BANK_SHIFT)|BPLCON3_LOCT0
-	dc.w	$0182,SKYLINE_C1_HI,$0184,SKYLINE_C2_HI,$0186,SKYLINE_C3_HI
-	dc.w	$018a,SKYLINE_C1_HI,$018c,SKYLINE_C2_HI,$018e,SKYLINE_C3_HI
-	dc.w	$0192,SKYLINE_C1_HI,$0194,SKYLINE_C2_HI,$0196,SKYLINE_C3_HI
-	dc.w	$019a,SKYLINE_C1_HI,$019c,SKYLINE_C2_HI,$019e,SKYLINE_C3_HI
+	dc.w	$0182,ALB_V_OMBRA_HI,$0184,ALB_V_CORPO_HI,$0186,ALB_V_LUCE_HI
+	dc.w	$018a,ALB_V_OMBRA_HI,$018c,ALB_V_CORPO_HI,$018e,ALB_V_LUCE_HI
+	dc.w	$0192,ALB_L_OMBRA_HI,$0194,ALB_L_CORPO_HI,$0196,ALB_L_LUCE_HI
+	dc.w	$019a,ALB_L_OMBRA_HI,$019c,ALB_L_CORPO_HI,$019e,ALB_L_LUCE_HI
 	dc.w	$0106,(2<<BPLCON3_BANK_SHIFT)|BPLCON3_LOCT1
-	dc.w	$0182,SKYLINE_C1_LO,$0184,SKYLINE_C2_LO,$0186,SKYLINE_C3_LO
-	dc.w	$018a,SKYLINE_C1_LO,$018c,SKYLINE_C2_LO,$018e,SKYLINE_C3_LO
-	dc.w	$0192,SKYLINE_C1_LO,$0194,SKYLINE_C2_LO,$0196,SKYLINE_C3_LO
-	dc.w	$019a,SKYLINE_C1_LO,$019c,SKYLINE_C2_LO,$019e,SKYLINE_C3_LO
+	dc.w	$0182,ALB_V_OMBRA_LO,$0184,ALB_V_CORPO_LO,$0186,ALB_V_LUCE_LO
+	dc.w	$018a,ALB_V_OMBRA_LO,$018c,ALB_V_CORPO_LO,$018e,ALB_V_LUCE_LO
+	dc.w	$0192,ALB_L_OMBRA_LO,$0194,ALB_L_CORPO_LO,$0196,ALB_L_LUCE_LO
+	dc.w	$019a,ALB_L_OMBRA_LO,$019c,ALB_L_CORPO_LO,$019e,ALB_L_LUCE_LO
 	dc.w	$0106,BPLCON3_LOCT0	; banca 0, LOCT 0: da qui in giu' tutto come prima
 
 ; Gradiente cielo: e' parte della copperlist perche' cambia COLOR00 riga per

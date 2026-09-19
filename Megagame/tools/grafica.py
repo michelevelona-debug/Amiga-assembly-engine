@@ -33,17 +33,50 @@ IFF_DIR = os.path.join('risorse', 'grafica')
 def _radice():
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+_TABELLA = {}
+
+
+def _risolutore(sorgente):
+    if sorgente not in _TABELLA:
+        import importlib.util
+        pv = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'valori.py')
+        sp = importlib.util.spec_from_file_location('valori', pv)
+        mv = importlib.util.module_from_spec(sp)
+        sp.loader.exec_module(mv)
+        _TABELLA[sorgente] = mv.leggi(os.path.join(_radice(), sorgente))
+    return _TABELLA[sorgente]
+
+
 def equ(nome, sorgente='Gioco.s'):
-    """Il valore di una EQU letto DAL SORGENTE. Solo le forme semplici:
-    un numero decimale o $esadecimale. Se non c'e', si alza: meglio fermarsi
-    che scrivere un colore inventato."""
+    """Il valore di una EQU letto DAL SORGENTE.
+
+    LA FONTE E' tools/valori.py, che risolve le espressioni e - soprattutto -
+    valuta i rami IFEQ/IFNE. Meta' delle EQU di questo progetto sono definite
+    piu' volte, una per configurazione del prelievo: chi cerca "^NOME EQU" e
+    prende la prima riga legge il ramo sbagliato in silenzio. Prima qui c'era
+    proprio quella ricerca, e su SCROLL_BYTES_FETCH, SCROLL_PASSO_CC,
+    PANNELLO_ART_BYTE_OFS e altre quattro dava il valore della configurazione a
+    64 bit mentre il gioco gira a 16.
+
+    La ricerca semplice resta come CONTROLLO: dove il nome e' definito una volta
+    sola le due strade devono dare lo stesso numero, e se non lo danno ci si
+    ferma invece di scegliere. Se non si risolve si alza: meglio fermarsi che
+    scrivere un colore inventato."""
+    tab = _risolutore(sorgente)
+    if nome not in tab:
+        raise KeyError('EQU %s non risolta in %s' % (nome, sorgente))
+    v = tab[nome]
     t = open(os.path.join(_radice(), sorgente), encoding='utf-8').read()
-    m = re.search(r'^%s\s+EQU\s+\$?([0-9a-fA-F]+)\s*(?:;.*)?$' % re.escape(nome),
-                  t, re.M)
-    if not m:
-        raise KeyError('EQU %s non trovata in %s' % (nome, sorgente))
-    g = m.group(0)
-    return int(m.group(1), 16 if '$' in g.split('EQU')[1] else 10)
+    righe = re.findall(r'^%s\s+EQU\s+(.+)$' % re.escape(nome), t, re.M)
+    if len(righe) == 1:
+        m = re.fullmatch(r'\$?([0-9a-fA-F]+)\s*(?:;.*)?', righe[0].strip())
+        if m:
+            semplice = int(m.group(1), 16 if righe[0].strip().startswith('$') else 10)
+            if semplice != v:
+                raise ValueError('EQU %s: la lettura diretta da %d, il '
+                                 'risolutore %d' % (nome, semplice, v))
+    return v
+
 
 def colore_pannello(i, cop='Pannello.cop'):
     """La voce i della palette del pannello, dal blocco copper. Stessa lettura

@@ -84,15 +84,6 @@ VENTO_CICLO = [int(round((VENTO_POSE-1)/2.0
                          * (1 + math.sin(2*math.pi*k/VENTO_CICLO_N))))
                for k in range(VENTO_CICLO_N)]
 VENTO_AMPIEZZA = 4              # px di flessione della CIMA, dal centro
-
-# ---------------------------------------------------------- l'ombreggiatura
-# I tre valori di un pixel sprite non sono piu' tre livelli di profondita' ma
-# tre gradi di LUCE dentro un albero solo. La profondita' la decide il canale:
-# le coppie 0 e 1 (canali 0..3) portano la rampa dei vicini, le coppie 2 e 3
-# (canali 4..6) quella dei lontani, e i colori li scrive la copperlist.
-OMBRA, CORPO, LUCE = 1, 2, 3
-OMBRA_DA = 3                    # spessore minimo per la lama scura
-LUCE_DA = 4                     # ... e per quella chiara, che chiede di piu'
 # piega di ogni posa: -A .. +A, con la posa centrale dritta
 PIEGHE = [(-1.0 + 2.0*k/(VENTO_POSE-1)) * VENTO_AMPIEZZA
           for k in range(VENTO_POSE)]
@@ -252,42 +243,8 @@ def sagoma(altezza, largh_base, largh_chioma, val, seme, quanti, piega):
         disegna_conifera(tela, cx, altezza-1, alt,
                          largh_base * rnd.uniform(0.80, 1.0),
                          largh_chioma * stretta * rnd.uniform(0.85, 1.05),
-                         CORPO, rnd, p)
-    return cilindro(tela)
-
-
-def cilindro(tela):
-    """Il tronco letto come un CILINDRO: una lama di LUCE a sinistra e una di
-    OMBRA a destra, messe solo dove la sagoma e' abbastanza spessa.
-
-    I due lati NON sono simmetrici, e il motivo e' il fondo. Il cielo e' chiaro:
-    SCURIRE aumenta il contrasto della sagoma, quindi l'ombra si puo' caricare;
-    SCHIARIRE lo riduce, e su un ramo da un pixel lo fa proprio sparire. E' lo
-    stesso errore gia' annotato in SKYLINE_MIX, dove il mix col cielo scioglieva
-    i rami. Per questo la lama chiara parte da uno spessore piu' alto di quella
-    scura, e nessuna delle due tocca i rami sottili.
-
-    Il valore del pixel non porta piu' la profondita': quella la decide QUALE
-    CANALE ospita l'albero. Porta l'ombreggiatura, e i tre colori di ogni
-    coppia di sprite sono la rampa del suo livello."""
-    H = len(tela); W = len(tela[0])
-    out = [r[:] for r in tela]
-    for y in range(H):
-        x = 0
-        while x < W:
-            if not tela[y][x]:
-                x += 1; continue
-            a = x
-            while x < W and tela[y][x]:
-                x += 1
-            sp = x - a                       # spessore del tratto pieno
-            if sp >= OMBRA_DA:
-                out[y][x-1] = OMBRA
-                if sp >= OMBRA_DA*2: out[y][x-2] = OMBRA
-            if sp >= LUCE_DA:
-                out[y][a] = LUCE
-                if sp >= LUCE_DA*2: out[y][a+1] = LUCE
-    return out
+                         val, rnd, p)
+    return tela
 
 
 def impagina(tela, vstart, vstop):
@@ -362,20 +319,6 @@ def main():
     picco = max(sum(1 for _, l, b, a, *_ in ALBERI if b-a <= y <= b)
                 for y in range(VIS))
 
-    # La COPPIA di sprite decide il colore, quindi l'assegnazione canale->livello
-    # non e' piu' un dettaglio interno: se un vicino finisse in un canale alto
-    # uscirebbe con la rampa dei lontani. Qui si controlla che i canali 0..3
-    # siano tutti vicini e i 4..6 tutti lontani, che e' quello che la copperlist
-    # da' per scontato scrivendo due terne invece di quattro.
-    liv_di = {n: l for n, l, *_ in ALBERI}
-    mappa = [liv_di[c[0][0]] for c in canali]
-    atteso = [1, 1, 1, 1, 3, 3, 3]
-    if mappa != atteso:
-        print('canale->livello e\' %s, la copperlist si aspetta %s' % (mappa, atteso))
-        print('le due coppie basse devono essere i vicini e le due alte i lontani')
-        return 1
-    print('canale->livello: %s   coppie: vicini 0-1, lontani 2-3   OK' % mappa)
-
     print('alberi: %d   pose: %d   canali necessari: %d   picco su una riga: %d   %s'
           % (len(ALBERI), VENTO_POSE, len(canali), picco,
              'OK' if len(canali) <= 7 else 'SFORA I SETTE CANALI'))
@@ -405,19 +348,10 @@ def main():
     print('VentoCiclo:')
     print('\tdc.b\t' + ','.join(str(v) for v in VENTO_CICLO))
 
-    # L'anteprima ha TRE piani, non due come il .raw: il bit 2 dice il livello,
-    # cosi' vicini e lontani si vedono con la LORO rampa invece che con una
-    # rampa sola buona per meta' dell'immagine. Le sei tinte si leggono dalle
-    # stesse EQU che scrive la copperlist, non si ricopiano.
-    PIANI_IFF = 3
     palette = [grafica.rgb24(grafica.equ('CIELO_FISSO_RGB')),
-               grafica.rgb24(grafica.equ('ALBERI_V_OMBRA_RGB')),
-               grafica.rgb24(grafica.equ('ALBERI_V_CORPO_RGB')),
-               grafica.rgb24(grafica.equ('ALBERI_V_LUCE_RGB')),
-               grafica.rgb24(grafica.equ('CIELO_FISSO_RGB')),
-               grafica.rgb24(grafica.equ('ALBERI_L_OMBRA_RGB')),
-               grafica.rgb24(grafica.equ('ALBERI_L_CORPO_RGB')),
-               grafica.rgb24(grafica.equ('ALBERI_L_LUCE_RGB'))]
+               grafica.rgb24(grafica.equ('SKYLINE_C1_RGB')),
+               grafica.rgb24(grafica.equ('SKYLINE_C2_RGB')),
+               grafica.rgb24(grafica.equ('SKYLINE_C3_RGB'))]
 
     def decodifica(dati):
         """Anteprima: una colonna da 64 px per POSA, alta VIS, gli alberi in
@@ -434,12 +368,11 @@ def main():
         colonne = len(canali) * VENTO_POSE
         rowb = (SPR_W*colonne)//8
         psz = rowb*VIS
-        p = bytearray(psz*PIANI_IFF)
+        p = bytearray(psz*PIANI)
         rendiconto = []
         for i, c in enumerate(canali):
             nome = c[0][0]
             q = [z for z in pezzi if z[0] == nome][0]
-            lontano = (q[1] != 1)
             letti = []
             for k in range(VENTO_POSE):
                 pos = q[6] + k*q[7]
@@ -464,10 +397,6 @@ def main():
                             dst = y*rowb + col*8 + j
                             p[dst] = dati[o+j]
                             p[psz+dst] = dati[o+8+j]
-                            if lontano:
-                                # terzo piano acceso dove c'e' un pixel: manda
-                                # questo albero sulla seconda meta' della palette
-                                p[2*psz+dst] = dati[o+j] | dati[o+8+j]
                     visti += 1
                     pos += CTRL_B + righe*RIGA_B
                 letti.append(visti)
@@ -486,7 +415,7 @@ def main():
     print('; --- rilettura del .raw seguendo la lista come il DMA ---')
     n, n_iff, p_iff = grafica.salva_sprite(
         DEST, blob, decodifica,
-        SPR_W*len(canali)*VENTO_POSE, VIS, PIANI_IFF, palette)
+        SPR_W*len(canali)*VENTO_POSE, VIS, PIANI, palette)
     print()
     print('alberi_parallasse.raw  %d byte' % n)
     print('anteprima: %s' % os.path.relpath(p_iff, RADICE))
