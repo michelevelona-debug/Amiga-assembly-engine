@@ -22,9 +22,9 @@
 # via esattamente. NON ricopia il backup: cosi' le modifiche fatte a Gioco.s
 # mentre gli innesti erano dentro non si perdono.
 #
-# Il backup c'e' lo stesso (Gioco.s.prima-misura-sprite, il suffisso che usa
-# gia' il progetto) e serve all'INVARIANTE che lo script stampa: dopo --togli
-# il file deve tornare IDENTICO byte per byte. Se non lo e', lo dice.
+# Il backup c'e' lo stesso (backup/Gioco.s.prima-misura-sprite, instradato da
+# tools/copie.py) e serve all'INVARIANTE che lo script stampa: dopo --togli il
+# file deve tornare IDENTICO byte per byte. Se non lo e', lo dice.
 #
 # ---------------------------------------------------------------------------
 # DUE COSE IMPARATE A CARO PREZZO, ed e' il motivo della forma degli innesti
@@ -41,11 +41,22 @@
 # stringa. Ogni ancora porta con se' il testo che DEVE trovarci: se non lo
 # trova si ferma, perche' vuol dire che il sorgente si e' mosso sotto i piedi.
 # ============================================================================
-import os, sys, shutil
+import os, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import copie
 
 RADICE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SORG = os.path.join(RADICE, 'Gioco.s')
-BACKUP = SORG + '.prima-misura-sprite'
+SUFFISSO = 'misura-sprite'
+
+
+def backup():
+    """La copia di Gioco.s di questo innesto. NON e' una costante: sta in
+    backup/, ma se un innesto e' stato messo prima del trasloco la sua copia
+    e' ancora accanto a Gioco.s, e `--togli` deve trovare quella. Lo decide
+    copie.dove(), che guarda i due posti."""
+    return copie.dove(SORG, SUFFISSO)
 
 TAG = 'MISURA SPRITE'          # sta in ogni marcatore: e' quello che cerca --togli
 
@@ -413,15 +424,16 @@ def main():
         out, tolte, n_salti = togli(righe)
         scrivi(out)
         print('tolte %d righe, %d salto/i rimessi a .k_prof' % (tolte, n_salti))
-        if os.path.isfile(BACKUP):
-            a = open(BACKUP, 'rb').read()
+        bk = backup()
+        if os.path.isfile(bk):
+            a = open(bk, 'rb').read()
             b = open(SORG, 'rb').read()
             print('INVARIANTE: identico al backup? %s' % ('SI' if a == b else 'NO'))
             if a != b:
                 print('  NO va benissimo se hai modificato Gioco.s mentre gli')
                 print('  innesti erano dentro: quelle modifiche sono ancora li\'.')
                 print('  Per esserne sicuro: diff col backup %s'
-                      % os.path.basename(BACKUP))
+                      % os.path.relpath(bk, RADICE))
         else:
             print('(nessun backup con cui confrontare)')
         return 0
@@ -429,8 +441,8 @@ def main():
     if innestato(righe):
         sys.exit('Gioco.s HA GIA\' gli innesti. Prima --togli.')
 
-    shutil.copy2(SORG, BACKUP)
-    print('backup: %s' % os.path.basename(BACKUP))
+    print('backup: %s'
+          % os.path.relpath(copie.metti_da_parte(SORG, SUFFISSO), RADICE))
     scrivi(metti(righe))
     print('\nGioco.s innestato. Per tornare indietro: '
           'py tools\\innesta-misura-sprite.py --togli')

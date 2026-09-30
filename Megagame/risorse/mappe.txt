@@ -1,0 +1,22 @@
+; La GRIGLIA dei blocchi. UNA RIGA PER BLOCCO:
+;
+;   nome     sinistra  destra   sopra   sotto
+;
+; Il nome e' quello dei file del blocco: risorse/<nome>.txt e' la fonte,
+; grafica/<nome>.raw e' il prodotto (py tools\mappa.py --mappa N).
+; Un collegamento e' il NOME di un altro blocco, oppure `-` per "quel bordo e'
+; un muro". **Si scrive per nome e non per numero**: gli indici li assegna
+; tools/mappe.py nell'ordine di questo file, e infilare un blocco in mezzo non
+; sposta niente di quello che c'e' scritto qui.
+;
+; LA RECIPROCITA' E' OBBLIGATORIA: se la destra di A e' B, la sinistra di B
+; deve essere A. Non e' una buona abitudine, e' un controllo - tools/mappe.py
+; si rifiuta di generare Mappe.i se non torna. Quello che l'assemblatore non
+; puo' verificare lo verifica lo strumento, prima che diventi una porta che
+; porta nel posto sbagliato.
+;
+; Dopo ogni modifica:  py tools\mappe.py  e poi  py tools\porte.py
+;
+;nome      sinistra  destra    sopra     sotto
+mappa1     -         mappa2    -         -
+mappa2     mappa1    -         -         -

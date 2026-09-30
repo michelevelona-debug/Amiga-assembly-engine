@@ -76,6 +76,26 @@ def _espandi(path, visti=None):
     return fuori
 
 
+# Le SEI forme condizionali che il sorgente usa davvero. Fino al 19 settembre
+# 2026 questo modulo ne conosceva DUE: il regex era `IF(NE|EQ)`, quindi IFGE,
+# IFGT, IFLE e IFLT non venivano nemmeno riconosciute come condizionali - le
+# loro righe passavano come normali e, peggio, la ENDC che le chiude POPPAVA
+# un ramo che non era loro. Conseguenza misurata: `SFONDO_ROW_NEED` (righe
+# 488-493 di Gioco.s) e' scelto da una coppia IFGE/IFLT, e il modulo prendeva
+# sempre il PRIMO ramo -> pitch 56 invece di 64, e con lui SFONDO_PLANE_SIZE e
+# tutto l'inventario della chip. E' lo STESSO difetto del 6 settembre, in un
+# altro punto: uno strumento che non vede un ramo legge il ramo sbagliato e non
+# se ne accorge.
+_CONDIZIONI = {
+    'NE': lambda v: v != 0,
+    'EQ': lambda v: v == 0,
+    'GE': lambda v: v >= 0,
+    'GT': lambda v: v > 0,
+    'LE': lambda v: v <= 0,
+    'LT': lambda v: v < 0,
+}
+
+
 def leggi(path=SORGENTE):
     """Le EQU con il valore del ramo VIVO, include compresi."""
     righe = _espandi(path)
@@ -85,11 +105,11 @@ def leggi(path=SORGENTE):
         nuove = 0
         for l in righe:
             c = l.split(';')[0].rstrip()
-            m = re.match(r'^\s+IF(NE|EQ)\s+(.+)$', c, re.I)
+            m = re.match(r'^\s+IF(NE|EQ|GE|GT|LE|LT)\s+(.+)$', c, re.I)
             if m:
                 try:
                     v = _numero(m.group(2).strip(), tab)
-                    vivo = (v != 0) if m.group(1).upper() == 'NE' else (v == 0)
+                    vivo = _CONDIZIONI[m.group(1).upper()](v)
                 except Exception:
                     vivo = None              # non ancora calcolabile: si tiene
                 pila.append(pila[-1] and (vivo is not False))

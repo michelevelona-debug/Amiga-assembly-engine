@@ -45,6 +45,9 @@
 # ============================================================================
 import os, re, sys, shutil
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import copie
+
 RAW        = 'grafica/Pannello.raw'
 COP        = 'Pannello.cop'
 W, H, PIANI = 320, 80, 4
@@ -219,18 +222,13 @@ def main():
         return
 
     # backup numerato: lo script si rilancia a ogni ri-esportazione, quindi il
-    # backup non puo' essere uno solo.
-    n = 0
-    while True:
-        backup = '%s.prima-rimappa%s' % (praw, '' if n == 0 else str(n))
-        if not os.path.exists(backup):
-            break
-        n += 1
-    shutil.copy2(praw, backup)
+    # backup non puo' essere uno solo. Il numero e la cartella li sceglie
+    # copie.py: qui si dice solo di che copia si tratta.
+    backup = copie.metti_da_parte(praw, 'rimappa', numera=True)
     open(praw, 'wb').write(nuovo)
     print()
     print('Scritto %s (%d byte). Originale in %s.'
-          % (RAW, len(nuovo), os.path.basename(backup)))
+          % (RAW, len(nuovo), os.path.relpath(backup, radice)))
     print('Adesso tocca a %s: le righe qui sopra marcate DA CAMBIARE.' % COP)
 
 

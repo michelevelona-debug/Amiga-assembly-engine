@@ -182,8 +182,8 @@ BOB_COLL_W       	EQU     BOB_W
 BOB_COLL_H       	EQU     BOB_H
 ; ===================== DIMENSIONI DELLA MAPPA =====================
 ; Le uniche due manopole del livello, e descrivono un FILE: la mappa non e'
-; piu' un blocco dc.w qui dentro ma grafica/mappa1.raw, una word per tile,
-; prodotto da tools/mappa.py a partire da risorse/mappa1.txt. Questi due
+; piu' un blocco dc.w qui dentro ma grafica/mappa.raw, una word per tile,
+; prodotto da tools/mappa.py a partire da risorse/mappa.txt. Questi due
 ; numeri li STAMPA quello strumento a ogni conversione: si ricopiano da li',
 ; e se sbagliano la guardia GUARDIA_MAPPA_RAW ferma l'assemblaggio invece di
 ; far leggere oltre la fine del file.
@@ -4399,7 +4399,7 @@ InitPlayer:
 	; TILE_VIA che cerca TrovaPartenza in coda a questa routine: questi due
 	; valori restano solo per una mappa che non ne abbia nessuna, cosi' il
 	; gioco parte lo stesso. Chi li guarda per sapere dove nasce il player
-	; guarda il posto sbagliato: e' risorse/mappa1.txt.
+	; guarda il posto sbagliato: e' risorse/mappa.txt.
 	MOVE.W	#PLAYER_SPAWN_X,bob_WorldX(A0)
 	MOVE.W	#PLAYER_SPAWN_Y,bob_WorldY(A0)
 	MOVE.W	#0,bob_AI(A0)
@@ -6495,7 +6495,7 @@ TrovaFalo:
 * TrovaPartenza - mette il player dove la mappa ha la tile TILE_VIA
 *   Stessa idea di TrovaFalo qui sopra, e per la stessa ragione: la posizione
 *   di un'entita' sta NELLA MAPPA, cosi' spostare il punto di partenza vuol
-*   dire spostare una casella di risorse/mappa1.txt e non ricalcolare un EQU in
+*   dire spostare una casella di risorse/mappa.txt e non ricalcolare un EQU in
 *   pixel. Si prende la PRIMA tile trovata, scandendo per righe.
 *   SE NELLA MAPPA NON C'E' NESSUNA TILE_VIA il player resta dove l'ha messo
 *   InitPlayer, cioe' su PLAYER_SPAWN_X/Y, e il gioco parte lo stesso. Non
@@ -9311,7 +9311,7 @@ GUARDIA_TILEFLAGS	EQU		1/0
 	even	; padding per allineamento word
 
 * LA MAPPA, che e' un FILE e non piu' un blocco dc.w.
-* La fonte e' risorse/mappa1.txt (un numero per tile, si modifica a mano);
+* La fonte e' risorse/mappa.txt (un numero per tile, si modifica a mano);
 * tools/mappa.py ne fa questo .raw, l'anteprima montata con le tile vere e la
 * sagoma delle collisioni. Il formato e' banale: MAPPA_ROWS righe da
 * MAPPA_COLS word, big-endian, in ordine di lettura.

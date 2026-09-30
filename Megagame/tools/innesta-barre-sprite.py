@@ -18,12 +18,22 @@
 # a ogni consegna e i numeri invecchiano subito. Ogni ancora deve comparire UNA
 # volta sola nel file pulito, e lo script si ferma se non e' cosi'.
 # ============================================================================
-import os, sys, shutil
+import os, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import copie
 
 RADICE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SORG = os.path.join(RADICE, 'Gioco.s')
-BACKUP = SORG + '.prima-barre'
+SUFFISSO = 'barre'
 TAG = 'BARRE SPRITE'
+
+
+def backup():
+    """La copia di Gioco.s di questo innesto. Vedi copie.dove(): sta in
+    backup/, ma una copia fatta prima del trasloco e' ancora accanto a
+    Gioco.s e `--togli` deve trovare quella."""
+    return copie.dove(SORG, SUFFISSO)
 
 EQU = """;=== BARRE SPRITE - EQU (togliere dopo la prova) ===========================
 BARRE_N				EQU		8
@@ -252,8 +262,9 @@ def main():
         if not t.endswith('\n'): t += '\n'
         open(SORG, 'w', encoding='utf-8', newline='\n').write(t)
         print('tolte %d righe' % n)
-        if os.path.isfile(BACKUP):
-            uguale = open(BACKUP, 'rb').read() == open(SORG, 'rb').read()
+        bk = backup()
+        if os.path.isfile(bk):
+            uguale = open(bk, 'rb').read() == open(SORG, 'rb').read()
             print('INVARIANTE: identico al backup?', 'SI' if uguale else 'NO')
         return 0
 
@@ -275,8 +286,8 @@ def main():
             posizioni.append((n - 1, blocco))
     print('tutte le %d ancore trovate una volta sola' % len(posizioni))
 
-    shutil.copy2(SORG, BACKUP)
-    print('backup: %s' % os.path.basename(BACKUP))
+    print('backup: %s'
+          % os.path.relpath(copie.metti_da_parte(SORG, SUFFISSO), RADICE))
     for n, blocco in sorted(posizioni, key=lambda t: -t[0]):
         righe[n:n] = blocco.split('\n')
         print('  riga %5d: +%d righe' % (n, len(blocco.split('\n'))))

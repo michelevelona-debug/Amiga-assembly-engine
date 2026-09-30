@@ -182,8 +182,8 @@ BOB_COLL_W       	EQU     BOB_W
 BOB_COLL_H       	EQU     BOB_H
 ; ===================== DIMENSIONI DELLA MAPPA =====================
 ; Le uniche due manopole del livello, e descrivono un FILE: la mappa non e'
-; piu' un blocco dc.w qui dentro ma grafica/mappa1.raw, una word per tile,
-; prodotto da tools/mappa.py a partire da risorse/mappa1.txt. Questi due
+; piu' un blocco dc.w qui dentro ma grafica/mappa.raw, una word per tile,
+; prodotto da tools/mappa.py a partire da risorse/mappa.txt. Questi due
 ; numeri li STAMPA quello strumento a ogni conversione: si ricopiano da li',
 ; e se sbagliano la guardia GUARDIA_MAPPA_RAW ferma l'assemblaggio invece di
 ; far leggere oltre la fine del file.
@@ -436,21 +436,6 @@ GUARDIA_BPLCON0_TENDA	EQU		1/0
 ; video - c'e' l'ultimo fotogramma dell'alba - e spegnere i piani vorrebbe dire
 ; buttare via proprio la cosa che lo rende gradevole.
 TENDA_PASSAGGIO	EQU		0
-
-; I QUATTRO VERSI di un passaggio. Sono l'ORDINE delle word in MappaLink, e
-; stanno qui e non nel file generato perche' sono un fatto del motore: chi
-; genera Mappe.i li LEGGE da queste righe, cosi' cambiando l'ordine qui la
-; tabella lo segue invece di contraddirlo in silenzio.
-; I valori devono restare 0..VERSI_N-1 consecutivi: tools/mappe.py lo verifica
-; e si rifiuta di generare se non lo sono.
-VERSO_SX		EQU		0		; bordo sinistro -> si entra da destra
-VERSO_DX		EQU		1		; bordo destro   -> si entra da sinistra
-VERSO_SU		EQU		2		; bordo alto     -> si entra dal basso
-VERSO_GIU		EQU		3		; bordo basso    -> si entra dall'alto
-VERSI_N			EQU		4
-	IFNE	VERSI_N-4
-GUARDIA_VERSI_N	EQU		1/0		; l'aritmetica di ControllaPassaggio ne vuole 4
-	ENDC
 
 ; Le voci del BANCO 1, cioe' i colori 32..63: lo sfondo NOTTURNO, che e' il
 ; banco 0 dimezzato e lo sceglie il bit 5 dell'indice, cioe' il darkplane.
@@ -3418,63 +3403,23 @@ ControllaPassaggio:
 .niente:
 	RTS
 .spinge:
-	MOVEM.L	D0-D3/A0,-(SP)
-
-	; ----- ORIZZONTALE: si riconosce dall'INTENTO ------------------------
-	; L'ordine (orizzontale prima, verticale dopo) non e' indifferente: in un
-	; angolo il player puo' soddisfare due bordi nello stesso quadro. Tenere
-	; davanti l'orizzontale conserva alla lettera il comportamento delle due
-	; porte che c'erano prima che i bordi verticali esistessero.
-	MOVEQ	#VERSO_DX,D2
-	MOVE.W	IntentX,D0
-	BEQ.S	.vert					; non spinge di lato: guarda i verticali
+	MOVEM.L	D0-D2/A0,-(SP)
+	MOVEQ	#1,D2					; verso 1 = destra
+	TST.W	IntentX
 	BPL.S	.destra
-	MOVEQ	#VERSO_SX,D2
+	MOVEQ	#0,D2					; verso 0 = sinistra
 	TST.W	Player+bob_WorldX
-	BEQ.S	.trova					; contro il bordo sinistro
-	BRA.S	.vert
+	BNE.S	.esce					; non e' contro il bordo sinistro
+	BRA.S	.trova
 .destra:
 	CMP.W	#PLAYER_MAX_X,Player+bob_WorldX
-	BGE.S	.trova
-
-	; ----- VERTICALE: si riconosce dalla VELOCITA', non dall'intento ------
-	; `IntentY` non e' un tasto: lo produce la fisica. "Spingere in giu'" non
-	; esiste, si CADE, quindi l'intento non distingue niente.
-	; Il SEGNO della velocita' serve soprattutto all'ARRIVO, ed e' lui a
-	; rendere simmetrici i due bordi: chi entra dal bordo basso salendo ci si
-	; trova sopra per un quadro, e senza il segno la porta di sotto
-	; riscatterebbe subito rimandandolo da dove e' venuto.
-	; FINESTRA DI UN QUADRO, sul bordo basso, e va saputa: appena il player
-	; viene fissato a PLAYER_MAX_Y, il quadro dopo `.y_blocked` in
-	; AggPosizioneGlobalePlayer lo dichiara `Grounded` e gli azzera `VelY` -
-	; a mezz'aria, perche' sotto la riga 23 non c'e' niente su cui stare.
-	; Quindi l'unico quadro in cui "e' in fondo E sta cadendo" e' quello in cui
-	; ci arriva, ed e' esattamente quello che serve.
-.vert:
-	; I due salti a `.esce` qui sotto sono LUNGHI (.W) e non corti: con
-	; l'arrivo dei bordi verticali la routine e' cresciuta e
-	; `tools/misura-salti.py` li ha misurati a +132 e +120 byte, cioe' il primo
-	; oltre i 127 di uno spiazzamento corto. Costano due byte l'uno e non
-	; dipendono da quanto cresce ancora il blocco qui sotto.
-	MOVE.W	Player+bob_VelY,D0
-	BEQ.W	.esce					; ne' sale ne' scende: nessun bordo verticale
-	BPL.S	.giu
-	MOVEQ	#VERSO_SU,D2
-	TST.W	Player+bob_WorldY
-	BEQ.S	.trova					; testa al bordo alto, e sta salendo
-	BRA.W	.esce
-.giu:
-	MOVEQ	#VERSO_GIU,D2
-	CMP.W	#PLAYER_MAX_Y,Player+bob_WorldY
-	BLT.S	.esce
+	BLT.S	.esce					; non e' contro il bordo destro
 .trova:
-	; MappaLink[mappa][verso], VERSI_N word per blocco. I due versi verticali
-	; ci sono in tabella ma nessuno li scatta ancora: li accendera' la consegna
-	; dei bordi alto e basso, e fino ad allora valgono -1 come qualunque muro.
+	; MappaLink[mappa] = due word: sinistra, destra
 	MOVE.W	MappaCorrente,D0
-	MULU.W	#VERSI_N*2,D0			; byte di tabella per blocco
+	LSL.W	#2,D0					; 4 byte di tabella per mappa
 	MOVE.W	D2,D1
-	ADD.W	D1,D1					; il verso in byte
+	ADD.W	D1,D1					; il verso in byte: 0 = sinistra, 2 = destra
 	ADD.W	D1,D0
 	LEA		MappaLink,A0
 	MOVE.W	(A0,D0.W),D0
@@ -3482,10 +3427,6 @@ ControllaPassaggio:
 
 	MOVE.W	D0,TransDest
 	MOVE.W	D2,TransVerso
-	; Si fotografano ENTRAMBE le coordinate: quale delle due sopravvive lo
-	; decide il verso, e deciderlo qui vorrebbe dire ripetere quella scelta in
-	; due posti.
-	MOVE.W	Player+bob_WorldX,TransX
 	MOVE.W	Player+bob_WorldY,TransY
 	MOVE.W	Player+bob_VelY,TransVelY
 	MOVE.W	Player+bob_FracY,TransFracY
@@ -3508,7 +3449,7 @@ ControllaPassaggio:
 	ENDC
 	ENDC
 .esce:
-	MOVEM.L	(SP)+,D0-D3/A0
+	MOVEM.L	(SP)+,D0-D2/A0
 	RTS
 
 * EseguiPassaggio - si attraversa: mappa nuova, player al bordo opposto
@@ -3533,46 +3474,24 @@ ControllaPassaggio:
 *   Richiede A6 = $DFF000 (lo vuole RicostruisciMondo).
 *   DISTRUGGE: nulla (salva tutto).
 EseguiPassaggio:
-	MOVEM.L	D0-D3/A0,-(SP)
+	MOVEM.L	D0-D2/A0,-(SP)
 
 	; ----- 1. la mappa nuova, tenendo da parte quella di prima -----------
-	MOVE.W	MappaCorrente,D3		; per poter tornare indietro
+	MOVE.W	MappaCorrente,D2		; per poter tornare indietro
 	MOVE.W	TransDest,D0
 	BSR.W	ImpostaBlocco
 
-	; ----- 2. dove si entra: l'asse ATTRAVERSATO si specchia, l'altro si
-	;          conserva. Una regola sola per tutti e quattro i versi.
-	MOVE.W	TransX,D0
+	; ----- 2. la X specchiata --------------------------------------------
+	MOVEQ	#0,D0					; verso 1 (uscito a destra) -> entra a 0
+	TST.W	TransVerso
+	BNE.S	.hoX
+	MOVE.W	#PLAYER_MAX_X,D0		; verso 0 (uscito a sinistra) -> entra a destra
+.hoX:
+	; ----- 3. la Y: quella di prima, o la piu' vicina che sta ------------
 	MOVE.W	TransY,D1
-	MOVE.W	TransVerso,D2
-	CMP.W	#VERSO_SX,D2
-	BNE.S	.nosx
-	MOVE.W	#PLAYER_MAX_X,D0		; uscito a sinistra -> entra dal bordo destro
-	BRA.S	.cercaY
-.nosx:
-	CMP.W	#VERSO_DX,D2
-	BNE.S	.nodx
-	MOVEQ	#0,D0					; uscito a destra -> entra dal bordo sinistro
-	BRA.S	.cercaY
-.nodx:
-	CMP.W	#VERSO_SU,D2
-	BNE.S	.nosu
-	MOVE.W	#PLAYER_MAX_Y,D1		; uscito in alto -> entra dal bordo basso
-	BRA.S	.cercaX
-.nosu:
-	MOVEQ	#0,D1					; VERSO_GIU: caduto giu' -> entra dal bordo alto
-
-	; ----- 3. la casella d'arrivo si VALIDA, cercando sull'asse che si
-	;          CONSERVA: la coordinata specchiata e' il bordo, e spostarla
-	;          vorrebbe dire entrare in mezzo alla mappa invece che dal bordo.
-.cercaX:
-	BSR.W	CercaXLibera
-	BMI.S	.rinuncia
-	BRA.S	.mettiamo
-.cercaY:
 	BSR.W	CercaYLibera
 	BMI.S	.rinuncia
-.mettiamo:
+
 	MOVE.W	D0,Player+bob_WorldX
 	MOVE.W	D1,Player+bob_WorldY
 	MOVE.W	TransVelY,Player+bob_VelY
@@ -3582,16 +3501,16 @@ EseguiPassaggio:
 	; ----- 4. il mondo nuovo ---------------------------------------------
 	BSR.W	TrovaFalo				; la TILE_LUCE della mappa nuova
 	BSR.W	RicostruisciMondo
-	MOVEM.L	(SP)+,D0-D3/A0
+	MOVEM.L	(SP)+,D0-D2/A0
 	RTS
 
 .rinuncia:
 	; Nessuna quota libera sulla colonna di bordo: si rimette la mappa di prima
 	; e non si sposta niente. La dissolvenza finisce il suo giro e riaccende sul
 	; mondo di partenza, che a schermo si legge come "la porta non si e' aperta".
-	MOVE.W	D3,D0
+	MOVE.W	D2,D0
 	BSR.W	ImpostaBlocco
-	MOVEM.L	(SP)+,D0-D3/A0
+	MOVEM.L	(SP)+,D0-D2/A0
 	RTS
 
 * ImpostaBlocco - il blocco corrente, indice e puntatore nello stesso posto
@@ -3662,54 +3581,6 @@ CercaYLibera:
 	; tocca il CCR, quindi la TST va QUI, dopo il ripristino, e D1 non e' fra i
 	; registri ripristinati proprio perche' e' l'uscita.
 	TST.W	D1
-	RTS
-
-* CercaXLibera - la colonna piu' vicina a D0 in cui il box del player non collide
-*   La gemella di CercaYLibera per i bordi ALTO e BASSO: la' si attraversa in
-*   verticale, quindi la coordinata che si conserva e la' che va spostata se la
-*   casella e' occupata. Stessa forma, stessi passi da 16 px, stessa regola del
-*   "a pari distanza vince quello prima" - qui vuol dire a sinistra.
-*   Input:  D0 = X desiderata, D1 = Y d'arrivo (non cambia)
-*   Output: D0 = X buona, oppure NEGATIVA se non ce n'e' nessuna (BMI)
-*   DIPENDENZA DICHIARATA: il ciclo tiene la Y in D1 ATTRAVERSO le chiamate a
-*   IsBoxBlocked, quindi si appoggia al fatto che quella non se la porti via.
-*   E' vero - AggPosizioneGlobalePlayer usa D1 subito dopo averla chiamata - ma
-*   e' un contratto di un'altra routine, non una proprieta' di questa: se un
-*   giorno IsBoxBlocked comincia a usare D1 come appunto, qui la ricerca si
-*   mette a sondare quote a caso senza dare errore. La gemella CercaYLibera non
-*   ha questo appoggio perche' ricarica la sua coordinata da D3 a ogni sonda.
-*   DISTRUGGE: D0 (e' l'uscita). Salva il resto, A1 compreso, per la stessa
-*   ragione scritta su CercaYLibera.
-CercaXLibera:
-	MOVEM.L	D1-D4/A1,-(SP)
-	MOVE.W	D0,D3					; D3 = la colonna chiesta
-	MOVEQ	#0,D4					; D4 = distanza
-.giro:
-	MOVE.W	D3,D0
-	SUB.W	D4,D0
-	BMI.S	.destra					; oltre il bordo sinistro: salta
-	BSR.W	IsBoxBlocked
-	BEQ.S	.trovata
-.destra:
-	TST.W	D4
-	BEQ.S	.avanti					; distanza 0: sinistra e destra coincidono
-	MOVE.W	D3,D0
-	ADD.W	D4,D0
-	CMP.W	#PLAYER_MAX_X,D0
-	BGT.S	.avanti					; oltre il bordo destro: salta
-	BSR.W	IsBoxBlocked
-	BEQ.S	.trovata
-.avanti:
-	ADDQ.W	#8,D4
-	ADDQ.W	#8,D4					; passo 16: ADDQ arriva a 8
-	CMP.W	#PLAYER_MAX_X,D4
-	BLE.S	.giro
-	MOVE.W	#-1,D0					; nessuna colonna libera
-.trovata:
-	MOVEM.L	(SP)+,D1-D4/A1
-	; La TST come sulla gemella: il chiamante decide con un BMI e l'uscita
-	; positiva arriva da un BEQ dopo IsBoxBlocked, che lascia N a un valore suo.
-	TST.W	D0
 	RTS
 
 * MondoNascondi / MondoMostra - la tenda sul campo di gioco
@@ -4399,7 +4270,7 @@ InitPlayer:
 	; TILE_VIA che cerca TrovaPartenza in coda a questa routine: questi due
 	; valori restano solo per una mappa che non ne abbia nessuna, cosi' il
 	; gioco parte lo stesso. Chi li guarda per sapere dove nasce il player
-	; guarda il posto sbagliato: e' risorse/mappa1.txt.
+	; guarda il posto sbagliato: e' risorse/mappa.txt.
 	MOVE.W	#PLAYER_SPAWN_X,bob_WorldX(A0)
 	MOVE.W	#PLAYER_SPAWN_Y,bob_WorldY(A0)
 	MOVE.W	#0,bob_AI(A0)
@@ -5410,14 +5281,10 @@ TransLivello:	dc.w	FADE_LIVELLI-1	; livello corrente: si parte da palette piena
 ; Il passaggio deciso allo scatto e lo stato di moto FOTOGRAFATO in quel
 ; momento. Non si rileggono dal player alla fase 2: fra lo scatto e il nero
 ; passano FADE_LIVELLI quadri e in quelli il gioco continua a girare.
-TransDest:		dc.w	0			; il blocco di destinazione
-TransVerso:		dc.w	0			; VERSO_SX / DX / SU / GIU: il bordo attraversato
-; ENTRAMBE le coordinate, sempre. Quale sopravvive lo decide il verso, in un
-; posto solo (EseguiPassaggio): fotografarne una sola vorrebbe dire ripetere
-; quella scelta anche qui.
-TransX:			dc.w	0
+TransDest:		dc.w	0			; mappa di destinazione
+TransVerso:		dc.w	0			; 0 = uscito a sinistra, 1 = uscito a destra
 TransY:			dc.w	0
-TransVelY:		dc.w	0			; il salto e la caduta proseguono di la'
+TransVelY:		dc.w	0
 TransFracY:		dc.w	0
 TransSuolo:		dc.w	0
 
@@ -6495,7 +6362,7 @@ TrovaFalo:
 * TrovaPartenza - mette il player dove la mappa ha la tile TILE_VIA
 *   Stessa idea di TrovaFalo qui sopra, e per la stessa ragione: la posizione
 *   di un'entita' sta NELLA MAPPA, cosi' spostare il punto di partenza vuol
-*   dire spostare una casella di risorse/mappa1.txt e non ricalcolare un EQU in
+*   dire spostare una casella di risorse/mappa.txt e non ricalcolare un EQU in
 *   pixel. Si prende la PRIMA tile trovata, scandendo per righe.
 *   SE NELLA MAPPA NON C'E' NESSUNA TILE_VIA il player resta dove l'ha messo
 *   InitPlayer, cioe' su PLAYER_SPAWN_X/Y, e il gioco parte lo stesso. Non
@@ -9311,7 +9178,7 @@ GUARDIA_TILEFLAGS	EQU		1/0
 	even	; padding per allineamento word
 
 * LA MAPPA, che e' un FILE e non piu' un blocco dc.w.
-* La fonte e' risorse/mappa1.txt (un numero per tile, si modifica a mano);
+* La fonte e' risorse/mappa.txt (un numero per tile, si modifica a mano);
 * tools/mappa.py ne fa questo .raw, l'anteprima montata con le tile vere e la
 * sagoma delle collisioni. Il formato e' banale: MAPPA_ROWS righe da
 * MAPPA_COLS word, big-endian, in ordine di lettura.
@@ -9325,20 +9192,46 @@ GUARDIA_TILEFLAGS	EQU		1/0
 * da quei due numeri discendono il pitch del world buffer, SCROLL_OFS_MAX,
 * PLAYER_MAX_X/Y e la dimensione dei tre buffer. Una mappa di forma diversa
 * vorrebbe un altro buffer, non un altro file. La guardia per file lo impone.
+MAPPE_N				EQU		2
 MAPPA_ATTESA		EQU		MAPPA_COLS*MAPPA_ROWS*2
 
-* L'ELENCO DEI BLOCCHI E I LORO COLLEGAMENTI SONO GENERATI, non scritti qui.
-* La fonte e' `risorse/mappe.txt`, dove si scrivono per NOME, e il generatore e'
-* `tools/mappe.py`. Il motivo non e' l'eleganza: i collegamenti portano dentro
-* un invariante che nessun assemblatore puo' controllare - **se la destra di A
-* e' B, la sinistra di B deve essere A** - e con i sedici blocchi che serviranno
-* a coprire il rettangolone dell'originale sono sessantaquattro numeri. Il
-* generatore si rifiuta di scrivere Mappe.i se la reciprocita' non torna, e
-* controlla anche che ogni .raw esista e sia della misura giusta.
-* Da Mappe.i arrivano: MAPPE_N, gli incbin MAPPAn con la loro guardia,
-* MappaBase (i puntatori) e MappaLink (VERSI_N word per blocco).
-* Dopo ogni modifica alla griglia:  py tools\mappe.py  e poi  py tools\porte.py
-	include	"Mappe.i"
+MAPPA1:
+	incbin	"grafica/mappa.raw"
+MAPPA1_FINE:
+	IFNE	(MAPPA1_FINE-MAPPA1)-MAPPA_ATTESA
+GUARDIA_MAPPA1_RAW	EQU		1/0
+	ENDC
+MAPPA2:
+	incbin	"grafica/mappa2.raw"
+MAPPA2_FINE:
+	IFNE	(MAPPA2_FINE-MAPPA2)-MAPPA_ATTESA
+GUARDIA_MAPPA2_RAW	EQU		1/0
+	ENDC
+
+* Le basi, indicizzate dal numero di mappa.
+MappaBase:
+	dc.l	MAPPA1
+	dc.l	MAPPA2
+MappaBaseFine:
+	IFNE	(MappaBaseFine-MappaBase)/4-MAPPE_N
+GUARDIA_MAPPA_BASE	EQU		1/0
+	ENDC
+
+* DOVE PORTANO I BORDI: per ogni mappa, la destinazione a SINISTRA e quella a
+* DESTRA. **-1 = nessun passaggio**, cioe' il bordo resta un muro come prima.
+* E' una tabella e non due IF perche' aggiungere una mappa deve essere una riga
+* di dati: il giorno che diventano dodici, un albero di confronti sarebbe il
+* posto dove si nasconde il collegamento sbagliato.
+* NB: i collegamenti non sono controllati a vicenda. Se la 0 manda a destra
+* verso la 1, non e' detto che la 1 rimandi a sinistra verso la 0 - e a volte
+* e' voluto (un passaggio a senso unico). Chi vuole la reciprocita' la scrive.
+MappaLink:
+	dc.w	-1,1				; mappa 0: a sinistra muro, a destra la 1
+	dc.w	 0,-1				; mappa 1: a sinistra la 0, a destra muro
+MappaLinkFine:
+	IFNE	(MappaLinkFine-MappaLink)/4-MAPPE_N
+GUARDIA_MAPPA_LINK	EQU		1/0
+	ENDC
 
 * LA MAPPA VIVA. E' l'unico posto che dice quale mappa si sta giocando: le
 * cinque routine che leggono le tile (DisegnaSfondo, IsTileBlocked, TrovaFalo,

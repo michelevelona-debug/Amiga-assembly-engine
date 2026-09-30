@@ -182,8 +182,8 @@ BOB_COLL_W       	EQU     BOB_W
 BOB_COLL_H       	EQU     BOB_H
 ; ===================== DIMENSIONI DELLA MAPPA =====================
 ; Le uniche due manopole del livello, e descrivono un FILE: la mappa non e'
-; piu' un blocco dc.w qui dentro ma grafica/mappa1.raw, una word per tile,
-; prodotto da tools/mappa.py a partire da risorse/mappa1.txt. Questi due
+; piu' un blocco dc.w qui dentro ma grafica/mappa.raw, una word per tile,
+; prodotto da tools/mappa.py a partire da risorse/mappa.txt. Questi due
 ; numeri li STAMPA quello strumento a ogni conversione: si ricopiano da li',
 ; e se sbagliano la guardia GUARDIA_MAPPA_RAW ferma l'assemblaggio invece di
 ; far leggere oltre la fine del file.
@@ -407,99 +407,6 @@ BPLCON3_LOCT1		EQU		$0E00|BPLCON3_BRDRBLNK
 ;            solo la CPU. ImpostaDisplayGioco e' percio' corta di dodici
 ;            valori: non e' una dimenticanza, e' dove passa il confine.
 ; ============================================================================
-; BPLCON0 della FASCIA DI GIOCO, e il suo gemello a zero piani. Stanno qui
-; perche' li leggono in DUE posti: la copperlist (CL_Bplcon0) e le due righe
-; della tenda (MondoNascondi/MondoMostra). Scritti in binario nei due posti
-; sarebbero la solita coppia che diverge in silenzio.
-; Sei piani: i due della parallasse sono passati agli sprite il 5 settembre,
-; e il prelievo a 16 bit che apre i sette canali ne regge sei in lores.
-BPLCON0_GIOCO	EQU		%0110001000000001	; BPU=6, COLOR (color burst) + ECSENA
-BPLCON0_ZERO	EQU		%0000001000000001	; BPU=0: nessun piano, resta il resto
-	; I due valori devono differire SOLO per il numero di piani: se un domani
-	; qualcuno tocca un altro bit di BPLCON0_GIOCO, la tenda lo spegnerebbe
-	; senza rimetterlo, e il difetto uscirebbe alla prima porta. La differenza
-	; deve valere esattamente BPU=6, e la sottrazione basta a dirlo perche' il
-	; campo BPU dello zero e' zero: niente XOR e niente complemento, che in
-	; questo sorgente non sono mai stati assemblati ne' da vasm ne' da Devpac.
-	IFNE	BPLCON0_GIOCO-BPLCON0_ZERO-(6<<12)
-GUARDIA_BPLCON0_TENDA	EQU		1/0
-	ENDC
-
-; LA TENDA SUL PASSAGGIO FRA BLOCCHI. 0 = come prima, 1 = il campo di gioco
-; resta spento per i ~44 quadri di RicostruisciMondo.
-; Oggi va lasciata a 0, e il motivo e' che la porta rimanda alla STESSA mappa:
-; i due buffer vengono riscritti con contenuto identico, quindi a schermo si
-; vede solo un fermo, mentre la tenda farebbe comparire un secondo di cielo
-; piatto che prima non c'era. **Il giorno che la destinazione cambia va messa
-; a 1**, se no si guarda il mondo nuovo che si disegna una tile alla volta.
-; All'AVVIO la tenda non serve e non va chiamata: li' il mondo non e' ancora a
-; video - c'e' l'ultimo fotogramma dell'alba - e spegnere i piani vorrebbe dire
-; buttare via proprio la cosa che lo rende gradevole.
-TENDA_PASSAGGIO	EQU		0
-
-; I QUATTRO VERSI di un passaggio. Sono l'ORDINE delle word in MappaLink, e
-; stanno qui e non nel file generato perche' sono un fatto del motore: chi
-; genera Mappe.i li LEGGE da queste righe, cosi' cambiando l'ordine qui la
-; tabella lo segue invece di contraddirlo in silenzio.
-; I valori devono restare 0..VERSI_N-1 consecutivi: tools/mappe.py lo verifica
-; e si rifiuta di generare se non lo sono.
-VERSO_SX		EQU		0		; bordo sinistro -> si entra da destra
-VERSO_DX		EQU		1		; bordo destro   -> si entra da sinistra
-VERSO_SU		EQU		2		; bordo alto     -> si entra dal basso
-VERSO_GIU		EQU		3		; bordo basso    -> si entra dall'alto
-VERSI_N			EQU		4
-	IFNE	VERSI_N-4
-GUARDIA_VERSI_N	EQU		1/0		; l'aritmetica di ControllaPassaggio ne vuole 4
-	ENDC
-
-; Le voci del BANCO 1, cioe' i colori 32..63: lo sfondo NOTTURNO, che e' il
-; banco 0 dimezzato e lo sceglie il bit 5 dell'indice, cioe' il darkplane.
-; **Dal 25 settembre 2026 questo banco lo scrive il COPPER**, non la CPU al
-; boot. Il perche' non e' eleganza: di notte ogni pixel del mondo pesca qui, e
-; un banco che vive solo nei registri non si puo' far sfumare senza che la CPU
-; scriva BPLCON3 e 32 registri di colore mentre il copper riscrive BPLCON3 per
-; conto suo. E' la corsa che COLOR00 ha gia' fatto pagare un pomeriggio.
-NOTTE_VOCI              EQU     32
-
-; ============================================================================
-; LA DISSOLVENZA SUL PASSAGGIO
-; Al bordo: fade out della palette fino al nero pieno, fermo sul nero per la
-; ricostruzione del mondo, fade in. Il PANNELLO non sfuma: ha una palette sua
-; in Pannello.cop, su una fascia raster diversa, e non toccarla e' gratis.
-;
-; LE VOCI CHE SFUMANO sono 76, e sono tutte quelle che il COPPER scrive:
-;   32  banco 0, il mondo di giorno     (GamePalHi / GamePalLo)
-;   32  banco 1, il mondo di notte      (NotteHi / NotteLo)
-;   12  banco 2, le tinte degli alberi  (AlberiPalHi / AlberiPalLo)
-; Le dodici degli alberi sono le sei tinte vere ripetute su due coppie di
-; canali: la tabella sotto le elenca nell'ordine in cui le scrive la
-; copperlist, non nell'ordine in cui esistono.
-FADE_VOCI_MONDO		EQU		32
-FADE_VOCI_ALBERI	EQU		12
-FADE_VOCI			EQU		FADE_VOCI_MONDO+NOTTE_VOCI+FADE_VOCI_ALBERI
-FADE_BLOCCHI		EQU		6		; i sei spazi di copperlist da riscrivere
-
-; Livelli di luminosita': 0 = nero pieno, FADE_LIVELLI-1 = palette piena.
-; Il costo e' tutto in tabella (FADE_VOCI*2 word per livello) e il tempo di una
-; dissolvenza e' FADE_LIVELLI*FADE_RITMO quadri per verso.
-FADE_LIVELLI		EQU		16
-FADE_RITMO			EQU		1		; quadri per livello
-	IFLT	FADE_LIVELLI-2
-GUARDIA_FADE_LIVELLI	EQU		1/0	; con un livello solo non c'e' dissolvenza
-	ENDC
-	IFLT	FADE_RITMO-1
-GUARDIA_FADE_RITMO		EQU		1/0
-	ENDC
-
-; 0 = la porta resta quella di prima (ricostruzione secca, eventualmente dietro
-; TENDA_PASSAGGIO); 1 = la porta passa dalla dissolvenza.
-; NOTA: con la dissolvenza accesa **TENDA_PASSAGGIO non serve piu'** - lo
-; schermo e' nero perche' lo e' la palette, non perche' i piani sono spenti.
-; Restano due meccanismi per lo stesso lavoro: se la dissolvenza convince, la
-; tenda va togliesta.
-FADE_PASSAGGIO		EQU		1
-; ============================================================================
-
 TIT_FMODE		EQU		$0003			; BPL32+BPAGEM: prelievo bitplane a 64 bit
 TIT_BPLCON0		EQU		%0000001000010001	; BPU3=1 (8 piani) + COLOR + ECSENA
 TIT_BPLCON1		EQU		$0000
@@ -1905,48 +1812,35 @@ START:
 	MOVE.W	#0,$c8(A6)				; AUD2VOL = 0
 	MOVE.W	#0,$d8(A6)				; AUD3VOL = 0
 
-	; ====================================================================
-	; QUI NON SI PASSA AL DISPLAY DEL GIOCO. Il blocco che lo fa - spegnere
-	; BPL+COP, puntare i bitplane, caricare la palette, riaccendere il DMA e
-	; far partire la copperlist - sta IN FONDO, subito prima di .mainloop.
-	;
-	; PERCHE', ed e' l'unico motivo: fino al 24 settembre 2026 stava qui, e
-	; quindi tutto quello che viene dopo - le Init*, le Build* e soprattutto
-	; la costruzione del mondo, che da sola dura 41 quadri - girava con lo
-	; schermo del gioco GIA' acceso su un SFONDOGRANDE ancora vuoto. Si vedeva
-	; la mappa comparire una tile alla volta per quasi un secondo.
-	; Spostando il passaggio in fondo, per tutto quel tempo resta a video
-	; l'ultimo fotogramma dell'alba, che l'intro lascia li' com'e'; poi si
-	; passa, e il mondo compare gia' fatto.
-	;
-	; COSA LO RENDE POSSIBILE, verificato e non sperato:
-	;  - i buffer non si sovrappongono. TitoloBuf, PathBMaster, PathBDarkPlane,
-	;    SFONDOGRANDE, SFONDOGRANDE_B, PannelloBuf e AlbaImg sono blocchi
-	;    distinti in PLANEVUOTO,BSS_C: costruire il mondo non tocca un byte di
-	;    quello che l'alba sta mostrando;
-	;  - il blitter e' acceso. TIT_DMASET, che regge titolo e intro, contiene
-	;    DMA_BLITTER: e' l'unico canale che serve a chi costruisce;
-	;  - nessuna delle routine qui sotto scrive un registro di colore. La
-	;    palette del gioco la carica InitPalette8BPL, che e' dentro il blocco
-	;    spostato: se girasse adesso ripingerebbe l'alba sotto i piedi;
-	;  - chi scrive nella copperlist del GIOCO (AggiornaCopper*, PathBInit,
-	;    BuildSkyCopper, InitParallasseSprite) lo fa mentre il copper sta
-	;    eseguendo IntroCopperList, che e' un'altra lista: nessuna corsa.
-	;
-	; PREZZO, dichiarato: durante la costruzione gira il blocco copper
-	; dell'alba, che sono 528 MOVE per quadro, cioe' ~9 righe raster rubate al
-	; blitter a ogni giro. Su 41 quadri fa circa un quadro in piu': **RQ al
-	; boot salira' di 1-2 e non e' una regressione**. Il copper non si puo'
-	; spegnere per risparmiarlo: e' lui che ricarica i BPLxPT a ogni quadro, e
-	; senza di lui l'immagine dell'alba scivolerebbe via dopo un quadro solo.
-	; ====================================================================
+	; ----- Spegne BPL+COP DMA prima di riconfigurare per il gioco -----
+	; (audio DMA preservato per il restart musica successivo)
+	MOVE.W	#$0180,$96(A6)			; CLR BPLEN+COPEN
 
-	; PRIMA di tutto quello che legge la mappa, e InitPlayer la legge subito:
-	; in coda chiama TrovaPartenza, che cerca la TILE_VIA. ImpostaBlocco mette
-	; MappaPtr dal blocco che dice MappaCorrente, e finche' non gira quel
-	; puntatore vale zero.
-	MOVE.W	MappaCorrente,D0
-	BSR.W	ImpostaBlocco
+*	PUNTIAMO I BITPLANES DELLE TILES
+
+	MOVE.L	#SFONDOGRANDE,D0		; Path B visualizza direttamente il world buffer
+	MOVE.L	#PathBDarkPlane,D2		; darkplane di Path B (i doppi buffer vecchi non ci sono piu')
+
+	BSR.W	AggiornaCopperBPL 		; aggiorna i puntatori bitplane nella copperlist
+
+	BSR.W	AggiornaCopperSPR 		; aggiorna anche i puntatori sprite nella copperlist
+
+	; ----- Banchi palette 1..7 (colori 32..255) per gli 8 bitplane.
+	; Copper DMA ancora spento: BPLCON3 e' tutto nostro, niente race.
+	BSR.W	InitPalette8BPL
+
+	LEA		$dff000,A6
+	MOVE.W	#DMASET,$96(A6)			; DMACON - abilita dma
+	MOVE.L	#CopperList,$80(A6)		; Puntiamo la nostra COP
+	MOVE.W	D0,$88(A6)				; Facciamo partire la COP
+
+	; Rimette i registri di display DEL GIOCO: il titolo aveva i suoi, e questi
+	; tre la copperlist del gioco non li scrive (vedi ImpostaDisplayGioco).
+	BSR.W	ImpostaDisplayGioco
+	; Gli otto SPRxPT non si scrivono da qui: AggiornaCopperSPR li ha gia' messi
+	; a EmptySprite nella copperlist col DMA spento, e il copper li ricarica da
+	; li' a ogni quadro. Le otto MOVE.L che stavano qui erano un ripiego
+	; dell'epoca in cui la copperlist non li aggiornava.
 
 	BSR.W   InitPlayer				; <-- INIZIALIZZA IL PLAYER
 	BSR.W   InitEnemies				; <-- INIZIALIZZA I NEMICI
@@ -1973,26 +1867,16 @@ START:
 	MOVE.B	#0,MusicOnPrev
 
 	; La sequenza che ricostruisce il mondo comincia QUI e finisce con
-	; PathBBuildDark, e si misura al boot gratis: tasto P, voci RQ e RV.
-	; DAL 24 SETTEMBRE questa misura si prende con l'ALBA a video, quindi col
-	; blocco copper dell'alba (528 MOVE per quadro) che ruba cicli al blitter:
-	; il 41 di prima diventa 42-43 e NON e' un peggioramento del disegno, e'
-	; un'altra condizione di misura. Il numero da confrontare col passaggio
-	; resta quello, ma sapendo che adesso i due sono meno lontani per questo.
-	; ATTENZIONE, non e' la stessa che gira al passaggio fra blocchi: qui dentro
-	; ci sono anche DisegnaPannello, InitParallasseSprite,
-	; AggiornaParallasseSprite e PathBInit, che sono preparazione UNA TANTUM e
-	; RicostruisciMondo non rifa' (il perche' di ognuna sta scritto la').
-	; Quindi il 41 del boot e il 44 del passaggio non sono lo stesso insieme di
-	; lavoro, e la differenza non e' il prezzo della porta.
+	; PathBBuildDark. E' la stessa che servira' al passaggio fra blocchi, ed e'
+	; il numero che decide se quel passaggio puo' stare dietro a una tenda:
+	; si misura al boot, gratis, e si legge col tasto P alle voci RQ e RV.
 	IFNE	PROFILING
 	BSR.W	MisuraRicAvvia
 	ENDC
 	BSR.W	DisegnaSfondo			; Routine che disegna lo sfondo
-	; DOPO DisegnaSfondo: da qui in poi tutti - parallasse, ScrollPathB, la
-	; posizione a schermo dei bob - leggono la camera giusta.
-	; (Fino al 24 settembre l'ordine era un VINCOLO, perche' DisegnaSfondo
-	; leggeva TileX. Adesso e' solo il modo sensato di metterli.)
+	; SUBITO DOPO, e non prima: DisegnaSfondo vuole TileX a zero (legge da li'
+	; la colonna di partenza nella mappa), e da qui in poi tutti - parallasse,
+	; ScrollPathB, la posizione a schermo dei bob - leggono la camera giusta.
 	BSR.W	CentraCameraSulPlayer	; il player nasce dove dice TILE_VIA
 
 	; Pre-render su entrambi i buffer per evitare il primo frame nero
@@ -2026,56 +1910,6 @@ START:
 	ENDC
 	BSR.W	BuildLightMask			; costruisce una volta la maschera del disco di luce
 
-	; ====================================================================
-	; PASSAGGIO AL DISPLAY DEL GIOCO. Da qui in giu' l'alba non c'e' piu' e il
-	; mondo, che e' gia' completo, va a video in un colpo solo. Questo blocco
-	; stava PRIMA di InitPlayer fino al 24 settembre 2026: il motivo dello
-	; spostamento e' scritto per esteso la' dove stava.
-	; Il blocco e' AUTOSUFFICIENTE di proposito - si rimette A6 da solo -
-	; perche' fra la sua vecchia e la sua nuova posizione ci sono una ventina
-	; di BSR e nessuna promette di conservarlo.
-	; ====================================================================
-	LEA		$dff000,A6
-
-	; ----- Spegne BPL+COP DMA prima di riconfigurare per il gioco -----
-	; (audio DMA preservato per il restart musica successivo)
-	MOVE.W	#$0180,$96(A6)			; CLR BPLEN+COPEN
-
-*	PUNTIAMO I BITPLANES DELLE TILES
-
-	MOVE.L	#SFONDOGRANDE,D0		; Path B visualizza direttamente il world buffer
-	MOVE.L	#PathBDarkPlane,D2		; darkplane di Path B (i doppi buffer vecchi non ci sono piu')
-
-	BSR.W	AggiornaCopperBPL 		; aggiorna i puntatori bitplane nella copperlist
-
-	BSR.W	AggiornaCopperSPR 		; aggiorna anche i puntatori sprite nella copperlist
-
-	; ----- Banchi palette 1..7 (colori 32..255) per gli 8 bitplane.
-	; Copper DMA ancora spento: BPLCON3 e' tutto nostro, niente race.
-	BSR.W	InitPalette8BPL
-	; Dopo, e non prima: i livelli si scalano da GamePal24 e GamePalBk, che li
-	; riempie lei. Non serve applicarne nessuno adesso - la copperlist nasce
-	; gia' con la palette piena, e il livello FADE_LIVELLI-1 la riproduce
-	; esatta.
-	BSR.W	BuildFadeTab
-
-	; La LEA c'era gia' qui prima dello spostamento, e ci resta: una delle tre
-	; BSR qui sopra si porta via A6. Quella in testa al blocco e' IN PIU', non
-	; al suo posto - serve alla CLR di BPLEN+COPEN, che nella posizione nuova
-	; non trova piu' l'A6 lasciato dalle scritture dei volumi audio.
-	LEA		$dff000,A6
-	MOVE.W	#DMASET,$96(A6)			; DMACON - abilita dma
-	MOVE.L	#CopperList,$80(A6)		; Puntiamo la nostra COP
-	MOVE.W	D0,$88(A6)				; Facciamo partire la COP
-
-	; Rimette i registri di display DEL GIOCO: il titolo aveva i suoi, e questi
-	; tre la copperlist del gioco non li scrive (vedi ImpostaDisplayGioco).
-	BSR.W	ImpostaDisplayGioco
-	; Gli otto SPRxPT non si scrivono da qui: AggiornaCopperSPR li ha gia' messi
-	; a EmptySprite nella copperlist col DMA spento, e il copper li ricarica da
-	; li' a ogni quadro. Le otto MOVE.L che stavano qui erano un ripiego
-	; dell'epoca in cui la copperlist non li aggiornava.
-
 .mainloop:
 	PROFMARK PH_INPUT,$0404			; viola scuro
 	; NB: LeggiTastiera deve stare QUI, prima di tutto. Provata dopo la parallasse
@@ -2087,10 +1921,6 @@ START:
 	BSR.W	RettangoloScrollNelCentro		; Se bob NON al centro, azzera ScrllX/Y
 	BSR.W	AggiornaFisicaPlayer		; gravita' + salto -> IntentY
 	BSR.W	AggPosizioneGlobalePlayer	; Aggiorna bob_WorldX/Y (Fase 2)
-	; SUBITO DOPO il clamp e PRIMA che camera e bordi lavorino sulla posizione:
-	; se il player spinge oltre la colonna 72 si attraversa la porta, e il
-	; resto del quadro deve gia' vedere il mondo nuovo.
-	BSR.W	ControllaPassaggio			; il bordo destro e' una porta
 	BSR.W	CalcolaInseguimentoCameraY	; camera insegue il player in verticale -> ScrllY
 	BSR.W	ControllaBordi			; Controllo dei bordi
 	PROFMARK PH_SCROLL,$0F80		; arancione
@@ -2196,11 +2026,6 @@ START:
 	BSR.W	AspettaVBL
 	PROFMARK PH_VBLEND,$0008		; BLU = inizio lavoro (musica + swap)
  	BSR.W	GestisciMusica			; start/stop + tick PT Player (chiama _mt_music ogni VBL)
-	; La dissolvenza scrive QUI, e il punto conta: dopo AspettaVBL il copper ha
-	; gia' letto il blocco palette per questo quadro, quindi il livello nuovo
-	; vale dal prossimo e non si vede mai mezza palette. A6 e' $DFF000, che e'
-	; quello che RicostruisciMondo chiede quando la fase 1 arriva al nero.
-	BSR.W	AggiornaTransizione
 	; Ora SwapParBuffers torna: scrive BPL7PT/BPL8PT sul parallasse vero,
 	; che ha finalmente il pitch giusto. Il darkplane non ha doppio buffer:
 	; e' statico, e il suo BPL6PT lo aggiorna ScrollPathB insieme ai puntatori
@@ -3346,13 +3171,11 @@ ControllaBordi:
 *   la frazione di pixel deve essere zero, esattamente come li' - per questo si
 *   limita la camera IN PIXEL e poi si divide, invece di limitare la tile.
 *
-*   VA CHIAMATA DOPO DisegnaSfondo, ma dal 24 settembre 2026 NON E' PIU' UN
-*   VINCOLO: e' solo l'ordine che ha senso. Prima lo era davvero, perche'
-*   DisegnaSfondo leggeva TileX per scegliere la colonna di partenza - relitto
-*   di Path A - e con TileX diverso da zero montava lo sfondo spostato. Quel
-*   relitto e' stato tolto, ed e' quello che permette a RicostruisciMondo di
-*   rifare la sequenza a gioco acceso, con la camera dove l'ha lasciata il
-*   giocatore.
+*   VA CHIAMATA DOPO DisegnaSfondo, e non e' un dettaglio: DisegnaSfondo legge
+*   TileX per scegliere la colonna di mappa da cui partire - relitto di Path A,
+*   quando il buffer teneva una finestra e non tutta la mappa - e con TileX
+*   diverso da zero monterebbe lo sfondo spostato, leggendo oltre la fine di
+*   MAPPA. Finche' quel MOVE.W TileX resta li', l'ordine e' un vincolo.
 *   DISTRUGGE: nulla (salva tutto).
 CentraCameraSulPlayer:
 	MOVEM.L	D0-D1,-(SP)
@@ -3389,461 +3212,13 @@ CentraCameraSulPlayer:
 	MOVEM.L	(SP)+,D0-D1
 	RTS
 
-* ControllaPassaggio - i bordi VERTICALI della mappa sono PORTE
-*   Dal 26 settembre 2026 guarda tutti e due i bordi e la destinazione la legge
-*   da MappaLink: -1 vuol dire che quel bordo resta un muro.
-*
-*   COME SI RICONOSCE "SUPERARE IL BORDO". Non come posizione: non ci si arriva
-*   mai. AggPosizioneGlobalePlayer fissa il player fra 0 e PLAYER_MAX_X
-*   (= MAPPA_COLS*16-BOB_COLL_W = colonna 71 col corpo su 71 e 72), quindi
-*   bob_WorldX non esce da quell'intervallo per costruzione. Si riconosce come
-*   INTENTO: fermo contro il limite E ancora premuto in quella direzione.
-*
-*   COSA FOTOGRAFA, e perche' non basta rileggerlo dopo: fra questo istante e
-*   il nero passano FADE_LIVELLI quadri, e in quei quadri il gioco continua a
-*   girare - il player cammina e cade. Lo stato che deve attraversare la porta
-*   (Y, velocita', frazione, appoggio) e' quello di ADESSO, non quello che si
-*   trovera' fra sedici quadri.
-*
-*   VA CHIAMATA SUBITO DOPO AggPosizioneGlobalePlayer, cioe' dopo il clamp e
-*   prima che camera e bordi lavorino sulla posizione.
-*   DISTRUGGE: D0-D2/A0 - **e non "nulla" come diceva prima**: adesso indicizza
-*   una tabella e i registri servono. Sono salvati, ma il commento va letto
-*   come contratto e non come rassicurazione.
-ControllaPassaggio:
-	TST.B	TransFase
-	BNE.S	.niente					; una transizione e' gia' in corso
-	TST.W	IntentX
-	BNE.S	.spinge
-.niente:
-	RTS
-.spinge:
-	MOVEM.L	D0-D3/A0,-(SP)
-
-	; ----- ORIZZONTALE: si riconosce dall'INTENTO ------------------------
-	; L'ordine (orizzontale prima, verticale dopo) non e' indifferente: in un
-	; angolo il player puo' soddisfare due bordi nello stesso quadro. Tenere
-	; davanti l'orizzontale conserva alla lettera il comportamento delle due
-	; porte che c'erano prima che i bordi verticali esistessero.
-	MOVEQ	#VERSO_DX,D2
-	MOVE.W	IntentX,D0
-	BEQ.S	.vert					; non spinge di lato: guarda i verticali
-	BPL.S	.destra
-	MOVEQ	#VERSO_SX,D2
-	TST.W	Player+bob_WorldX
-	BEQ.S	.trova					; contro il bordo sinistro
-	BRA.S	.vert
-.destra:
-	CMP.W	#PLAYER_MAX_X,Player+bob_WorldX
-	BGE.S	.trova
-
-	; ----- VERTICALE: si riconosce dalla VELOCITA', non dall'intento ------
-	; `IntentY` non e' un tasto: lo produce la fisica. "Spingere in giu'" non
-	; esiste, si CADE, quindi l'intento non distingue niente.
-	; Il SEGNO della velocita' serve soprattutto all'ARRIVO, ed e' lui a
-	; rendere simmetrici i due bordi: chi entra dal bordo basso salendo ci si
-	; trova sopra per un quadro, e senza il segno la porta di sotto
-	; riscatterebbe subito rimandandolo da dove e' venuto.
-	; FINESTRA DI UN QUADRO, sul bordo basso, e va saputa: appena il player
-	; viene fissato a PLAYER_MAX_Y, il quadro dopo `.y_blocked` in
-	; AggPosizioneGlobalePlayer lo dichiara `Grounded` e gli azzera `VelY` -
-	; a mezz'aria, perche' sotto la riga 23 non c'e' niente su cui stare.
-	; Quindi l'unico quadro in cui "e' in fondo E sta cadendo" e' quello in cui
-	; ci arriva, ed e' esattamente quello che serve.
-.vert:
-	; I due salti a `.esce` qui sotto sono LUNGHI (.W) e non corti: con
-	; l'arrivo dei bordi verticali la routine e' cresciuta e
-	; `tools/misura-salti.py` li ha misurati a +132 e +120 byte, cioe' il primo
-	; oltre i 127 di uno spiazzamento corto. Costano due byte l'uno e non
-	; dipendono da quanto cresce ancora il blocco qui sotto.
-	MOVE.W	Player+bob_VelY,D0
-	BEQ.W	.esce					; ne' sale ne' scende: nessun bordo verticale
-	BPL.S	.giu
-	MOVEQ	#VERSO_SU,D2
-	TST.W	Player+bob_WorldY
-	BEQ.S	.trova					; testa al bordo alto, e sta salendo
-	BRA.W	.esce
-.giu:
-	MOVEQ	#VERSO_GIU,D2
-	CMP.W	#PLAYER_MAX_Y,Player+bob_WorldY
-	BLT.S	.esce
-.trova:
-	; MappaLink[mappa][verso], VERSI_N word per blocco. I due versi verticali
-	; ci sono in tabella ma nessuno li scatta ancora: li accendera' la consegna
-	; dei bordi alto e basso, e fino ad allora valgono -1 come qualunque muro.
-	MOVE.W	MappaCorrente,D0
-	MULU.W	#VERSI_N*2,D0			; byte di tabella per blocco
-	MOVE.W	D2,D1
-	ADD.W	D1,D1					; il verso in byte
-	ADD.W	D1,D0
-	LEA		MappaLink,A0
-	MOVE.W	(A0,D0.W),D0
-	BMI.S	.esce					; -1: quel bordo e' un muro
-
-	MOVE.W	D0,TransDest
-	MOVE.W	D2,TransVerso
-	; Si fotografano ENTRAMBE le coordinate: quale delle due sopravvive lo
-	; decide il verso, e deciderlo qui vorrebbe dire ripetere quella scelta in
-	; due posti.
-	MOVE.W	Player+bob_WorldX,TransX
-	MOVE.W	Player+bob_WorldY,TransY
-	MOVE.W	Player+bob_VelY,TransVelY
-	MOVE.W	Player+bob_FracY,TransFracY
-	MOVE.W	Player+bob_Grounded,TransSuolo
-
-	IFNE	FADE_PASSAGGIO
-	; Non si attraversa niente QUI: si accende la dissolvenza, e il passaggio
-	; vero avviene quando lo schermo e' nero, dentro AggiornaTransizione.
-	MOVE.W	#FADE_LIVELLI-1,TransLivello
-	CLR.B	TransRitmo
-	MOVE.B	#1,TransFase
-	ENDC
-	IFEQ	FADE_PASSAGGIO
-	IFNE	TENDA_PASSAGGIO
-	BSR.W	MondoNascondi
-	ENDC
-	BSR.W	EseguiPassaggio
-	IFNE	TENDA_PASSAGGIO
-	BSR.W	MondoMostra
-	ENDC
-	ENDC
-.esce:
-	MOVEM.L	(SP)+,D0-D3/A0
-	RTS
-
-* EseguiPassaggio - si attraversa: mappa nuova, player al bordo opposto
-*   Gira quando lo schermo e' nero (o subito, con FADE_PASSAGGIO a 0).
-*   1. MappaPtr passa alla mappa di destinazione;
-*   2. la X e' quella SPECCHIATA (si esce a destra, si entra a sinistra) e la Y
-*      e' quella fotografata allo scatto;
-*   3. **velocita', frazione e appoggio si rimettono**: un salto prosegue
-*      attraverso la porta e atterra di la';
-*   4. la casella d'arrivo si VALIDA. Tenere la Y non garantisce che la
-*      colonna di bordo della mappa nuova sia libera a quella quota, e uno
-*      spawn dentro un muro in questo progetto e' gia' costato due volte
-*      ("player bloccato", "nemico murato"). Se nessuna quota e' libera il
-*      passaggio si ANNULLA e si torna alla mappa di prima: meglio una porta
-*      che non si apre di un player murato.
-*   5. il falo' si ricerca nella mappa nuova, poi si ricostruisce il mondo.
-*
-*   COSA NON FA ANCORA: i nemici. EnemyInitTable ha coordinate scritte a mano
-*   che appartengono alla mappa 0, e nessuno le rifa' qui. Dopo una porta i
-*   nemici restano dove erano. E' il buco noto, e si chiude con una TILE_NEMICO
-*   piu' una scansione, come si e' fatto per la partenza e per il falo'.
-*   Richiede A6 = $DFF000 (lo vuole RicostruisciMondo).
-*   DISTRUGGE: nulla (salva tutto).
-EseguiPassaggio:
-	MOVEM.L	D0-D3/A0,-(SP)
-
-	; ----- 1. la mappa nuova, tenendo da parte quella di prima -----------
-	MOVE.W	MappaCorrente,D3		; per poter tornare indietro
-	MOVE.W	TransDest,D0
-	BSR.W	ImpostaBlocco
-
-	; ----- 2. dove si entra: l'asse ATTRAVERSATO si specchia, l'altro si
-	;          conserva. Una regola sola per tutti e quattro i versi.
-	MOVE.W	TransX,D0
-	MOVE.W	TransY,D1
-	MOVE.W	TransVerso,D2
-	CMP.W	#VERSO_SX,D2
-	BNE.S	.nosx
-	MOVE.W	#PLAYER_MAX_X,D0		; uscito a sinistra -> entra dal bordo destro
-	BRA.S	.cercaY
-.nosx:
-	CMP.W	#VERSO_DX,D2
-	BNE.S	.nodx
-	MOVEQ	#0,D0					; uscito a destra -> entra dal bordo sinistro
-	BRA.S	.cercaY
-.nodx:
-	CMP.W	#VERSO_SU,D2
-	BNE.S	.nosu
-	MOVE.W	#PLAYER_MAX_Y,D1		; uscito in alto -> entra dal bordo basso
-	BRA.S	.cercaX
-.nosu:
-	MOVEQ	#0,D1					; VERSO_GIU: caduto giu' -> entra dal bordo alto
-
-	; ----- 3. la casella d'arrivo si VALIDA, cercando sull'asse che si
-	;          CONSERVA: la coordinata specchiata e' il bordo, e spostarla
-	;          vorrebbe dire entrare in mezzo alla mappa invece che dal bordo.
-.cercaX:
-	BSR.W	CercaXLibera
-	BMI.S	.rinuncia
-	BRA.S	.mettiamo
-.cercaY:
-	BSR.W	CercaYLibera
-	BMI.S	.rinuncia
-.mettiamo:
-	MOVE.W	D0,Player+bob_WorldX
-	MOVE.W	D1,Player+bob_WorldY
-	MOVE.W	TransVelY,Player+bob_VelY
-	MOVE.W	TransFracY,Player+bob_FracY
-	MOVE.W	TransSuolo,Player+bob_Grounded
-
-	; ----- 4. il mondo nuovo ---------------------------------------------
-	BSR.W	TrovaFalo				; la TILE_LUCE della mappa nuova
-	BSR.W	RicostruisciMondo
-	MOVEM.L	(SP)+,D0-D3/A0
-	RTS
-
-.rinuncia:
-	; Nessuna quota libera sulla colonna di bordo: si rimette la mappa di prima
-	; e non si sposta niente. La dissolvenza finisce il suo giro e riaccende sul
-	; mondo di partenza, che a schermo si legge come "la porta non si e' aperta".
-	MOVE.W	D3,D0
-	BSR.W	ImpostaBlocco
-	MOVEM.L	(SP)+,D0-D3/A0
-	RTS
-
-* ImpostaBlocco - il blocco corrente, indice e puntatore nello stesso posto
-*   D0.W = indice del blocco. DISTRUGGE: nulla.
-*
-*   `MappaCorrente` (l'indice) e `MappaPtr` (il puntatore) sono lo STESSO fatto
-*   detto in due modi: il puntatore esiste solo perche' le cinque routine che
-*   leggono la mappa lo vogliono pronto - IsTileBlocked lo rilegge a ogni sonda
-*   del box, e un LSL piu' una LEA per sonda si pagherebbero. Due variabili per
-*   un fatto solo divergono: qui c'e' l'UNICO posto che le scrive, e chi cambia
-*   blocco passa da qui o sbaglia.
-*   Per lo stesso motivo `MappaPtr` NASCE A ZERO e non a MAPPA1: il nome della
-*   prima mappa sta scritto in un posto solo, `MappaBase`, e al boot ci arriva
-*   questa routine leggendo `MappaCorrente`.
-ImpostaBlocco:
-	MOVEM.L	D0/A0,-(SP)
-	MOVE.W	D0,MappaCorrente
-	LSL.W	#2,D0					; una voce di MappaBase e' un long
-	LEA		MappaBase,A0
-	MOVE.L	(A0,D0.W),MappaPtr
-	MOVEM.L	(SP)+,D0/A0
-	RTS
-
-* CercaYLibera - la quota piu' vicina a D1 in cui il box del player non collide
-*   Input:  D0 = X d'arrivo (non cambia), D1 = Y desiderata
-*   Output: D1 = Y buona, oppure NEGATIVA se non ce n'e' nessuna (BMI)
-*   Prova prima la quota chiesta, poi si allontana a passi di 16 px alternando
-*   SOPRA e SOTTO: la piu' vicina vince, e a pari distanza vince quella sopra,
-*   perche' un player spinto in alto da un pavimento e' piu' naturale di uno
-*   tirato in basso da un soffitto.
-*   Il passo e' 16 px, la tile: dentro una tile non c'e' niente da cercare.
-*   DISTRUGGE: D1 (e' l'uscita). Salva il resto, **A1 compreso**: IsBoxBlocked
-*   se lo porta via passando da IsTileBlocked, e se non lo salvassi qui la
-*   catena EseguiPassaggio -> AggiornaTransizione direbbe "distrugge nulla"
-*   raccontando una bugia.
-CercaYLibera:
-	MOVEM.L	D0/D2-D4/A1,-(SP)
-	MOVE.W	D1,D3					; D3 = la quota chiesta
-	MOVEQ	#0,D4					; D4 = distanza
-.giro:
-	MOVE.W	D3,D1
-	SUB.W	D4,D1
-	BMI.S	.sotto					; sopra il bordo alto: salta
-	BSR.W	IsBoxBlocked
-	BEQ.S	.trovata
-.sotto:
-	TST.W	D4
-	BEQ.S	.avanti					; distanza 0: sopra e sotto sono la stessa
-	MOVE.W	D3,D1
-	ADD.W	D4,D1
-	CMP.W	#PLAYER_MAX_Y,D1
-	BGT.S	.avanti					; sotto il bordo basso: salta
-	BSR.W	IsBoxBlocked
-	BEQ.S	.trovata
-.avanti:
-	ADDQ.W	#8,D4
-	ADDQ.W	#8,D4					; passo 16: ADDQ arriva a 8
-	CMP.W	#PLAYER_MAX_Y,D4
-	BLE.S	.giro
-	MOVE.W	#-1,D1					; nessuna quota libera
-.trovata:
-	MOVEM.L	(SP)+,D0/D2-D4/A1
-	; LA TST NON E' DECORATIVA. Il chiamante decide con un BMI, cioe' legge il
-	; flag N: sull'uscita POSITIVA ci si arriva da un `BEQ` dopo IsBoxBlocked,
-	; che lascia N a un valore suo, e su quel valore il BMI avrebbe annullato
-	; il passaggio a caso - un difetto che si presenta come "a volte la porta
-	; non si apre" e non porta a IsBoxBlocked nemmeno per sbaglio. MOVEM non
-	; tocca il CCR, quindi la TST va QUI, dopo il ripristino, e D1 non e' fra i
-	; registri ripristinati proprio perche' e' l'uscita.
-	TST.W	D1
-	RTS
-
-* CercaXLibera - la colonna piu' vicina a D0 in cui il box del player non collide
-*   La gemella di CercaYLibera per i bordi ALTO e BASSO: la' si attraversa in
-*   verticale, quindi la coordinata che si conserva e la' che va spostata se la
-*   casella e' occupata. Stessa forma, stessi passi da 16 px, stessa regola del
-*   "a pari distanza vince quello prima" - qui vuol dire a sinistra.
-*   Input:  D0 = X desiderata, D1 = Y d'arrivo (non cambia)
-*   Output: D0 = X buona, oppure NEGATIVA se non ce n'e' nessuna (BMI)
-*   DIPENDENZA DICHIARATA: il ciclo tiene la Y in D1 ATTRAVERSO le chiamate a
-*   IsBoxBlocked, quindi si appoggia al fatto che quella non se la porti via.
-*   E' vero - AggPosizioneGlobalePlayer usa D1 subito dopo averla chiamata - ma
-*   e' un contratto di un'altra routine, non una proprieta' di questa: se un
-*   giorno IsBoxBlocked comincia a usare D1 come appunto, qui la ricerca si
-*   mette a sondare quote a caso senza dare errore. La gemella CercaYLibera non
-*   ha questo appoggio perche' ricarica la sua coordinata da D3 a ogni sonda.
-*   DISTRUGGE: D0 (e' l'uscita). Salva il resto, A1 compreso, per la stessa
-*   ragione scritta su CercaYLibera.
-CercaXLibera:
-	MOVEM.L	D1-D4/A1,-(SP)
-	MOVE.W	D0,D3					; D3 = la colonna chiesta
-	MOVEQ	#0,D4					; D4 = distanza
-.giro:
-	MOVE.W	D3,D0
-	SUB.W	D4,D0
-	BMI.S	.destra					; oltre il bordo sinistro: salta
-	BSR.W	IsBoxBlocked
-	BEQ.S	.trovata
-.destra:
-	TST.W	D4
-	BEQ.S	.avanti					; distanza 0: sinistra e destra coincidono
-	MOVE.W	D3,D0
-	ADD.W	D4,D0
-	CMP.W	#PLAYER_MAX_X,D0
-	BGT.S	.avanti					; oltre il bordo destro: salta
-	BSR.W	IsBoxBlocked
-	BEQ.S	.trovata
-.avanti:
-	ADDQ.W	#8,D4
-	ADDQ.W	#8,D4					; passo 16: ADDQ arriva a 8
-	CMP.W	#PLAYER_MAX_X,D4
-	BLE.S	.giro
-	MOVE.W	#-1,D0					; nessuna colonna libera
-.trovata:
-	MOVEM.L	(SP)+,D1-D4/A1
-	; La TST come sulla gemella: il chiamante decide con un BMI e l'uscita
-	; positiva arriva da un BEQ dopo IsBoxBlocked, che lascia N a un valore suo.
-	TST.W	D0
-	RTS
-
-* MondoNascondi / MondoMostra - la tenda sul campo di gioco
-*   Spengono e riaccendono i SOLI piani della fascia di gioco, scrivendo il
-*   dato della copperlist (CL_Bplcon0) e non il registro. Scriverlo con la CPU
-*   varrebbe fino al quadro dopo e basta: il copper riscrive BPLCON0 a ogni
-*   giro, ed e' la stessa lezione che BPLCON1 ha gia' insegnato a questo
-*   progetto.
-*
-*   QUELLO CHE RESTA A VIDEO, e non e' un dettaglio: il PANNELLO. La sua
-*   fascia ha un BPLCON0 suo, piu' in basso nella copperlist, che questa
-*   coppia non tocca - quindi durante il passaggio strumenti, punteggio e
-*   scritta restano al loro posto, e si spegne solo il mondo. Spegnere BPLEN
-*   in DMACON sarebbe stato una riga sola e avrebbe portato via anche quelli.
-*
-*   Il campo di gioco senza piani mostra la voce 0, cioe' la tinta del cielo
-*   che il copper scrive comunque: non nero, ma lo stesso colore su cui e'
-*   disegnata la parallasse.
-*   DISTRUGGE: nulla.
-MondoNascondi:
-	MOVE.W	#BPLCON0_ZERO,CL_Bplcon0+2
-	RTS
-
-MondoMostra:
-	MOVE.W	#BPLCON0_GIOCO,CL_Bplcon0+2
-	RTS
-
-* RicostruisciMondo - il pezzo RIPETIBILE della sequenza di boot
-*   NON e' la stessa sequenza dello START, e il 24 settembre 2026 qui c'era
-*   scritto che lo era. Il blocco misurato al boot contiene QUATTRO chiamate in
-*   piu', e ognuna resta fuori da qui per un motivo che si puo' controllare:
-*     DisegnaPannello          PannelloBuf si costruisce una volta e i suoi
-*                              puntatori nella copperlist non si toccano piu'.
-*     InitParallasseSprite     mette i canali sulla posa 0 perche' il display
-*                              non parta su puntatori mai scritti. Al passaggio
-*                              sono gia' scritti.
-*     AggiornaParallasseSprite la rifa' il ciclo principale a ogni quadro.
-*     PathBInit                pezza i segnaposto di CL_Ddf e CL_BplMod: e' la
-*                              geometria di Path B, non cambia mai.
-*   Piu' il `MOVE.L ...,CurrentDarkDraw`, che ha UN solo punto di scrittura in
-*   tutto il sorgente (il boot) e da li' non si muove.
-*   **Quindi i numeri RQ del boot e del passaggio NON misurano lo stesso
-*   insieme**: il passaggio fa strettamente MENO lavoro. Chi confronta i due
-*   numeri come se fossero la stessa cosa attribuisce al passaggio una
-*   differenza che sta altrove.
-*
-*   MISURATO (voce RQ del monitor, tasto P): **41 quadri al boot** (che e'
-*   sempre di GIORNO, NightMode nasce a 0) e **44 quadri al primo passaggio
-*   vero**, 0,88 secondi di gioco fermo. Il sospetto per la differenza e'
-*   PathBBuildDark, che di giorno riempie e torna mentre di notte scandisce
-*   tutte le 1752 celle della mappa e punzona un cerchio per ogni TILE_LUCE:
-*   si separa in un tasto, passando la porta di giorno e poi di notte (N).
-*
-*   Finche' la destinazione e' la STESSA mappa non serve nessuna tenda - i due
-*   buffer vengono riscritti con lo stesso identico contenuto, e a schermo si
-*   vede solo un fermo. **Il giorno che la destinazione cambia la tenda diventa
-*   obbligatoria**, altrimenti si guarda il mondo nuovo che si disegna una tile
-*   alla volta.
-*
-*   Il passaggio si MISURA da solo: le stesse MisuraRicAvvia/Chiudi del boot
-*   avvolgono la sequenza, quindi dopo la prima porta RQ e RV non sono piu' il
-*   numero dell'avvio ma quello della transizione vera, col gioco acceso.
-*   Conseguenza da sapere: il quadro del passaggio dura decine di giri di
-*   raster, quindi FineLavoro lo conta come quadro perso e DR sale. **Dopo una
-*   porta si preme R prima di rimisurare.** R azzera DR, WO e i primi
-*   PROF_SLOTS valori, NON RQ e RV: per questo il numero del passaggio
-*   sopravvive alla misura del caso peggiore.
-*
-*   Richiede A6 = $DFF000.
-*   DISTRUGGE: nulla (salva tutto).
-RicostruisciMondo:
-	; Si salva TUTTO e non solo quello che serve qui: sotto ci sono
-	; DisegnaSfondo (che si porta via anche D7, perche' la sua MOVEM ne salva
-	; solo sei), PathBBuildMaster e PathBBuildDark. Una routine che ne chiama
-	; tre e dichiara "distrugge nulla" deve coprire anche quello che
-	; distruggono loro, se no il commento e' una bugia che costa un pomeriggio.
-	MOVEM.L	D0-D7/A0-A5,-(SP)
-	IFNE	PROFILING
-	BSR.W	MisuraRicAvvia
-	ENDC
-
-	; ----- QUI NON SI TOCCA IL PLAYER -----------------------------------
-	; Fino al 26 settembre 2026 questa routine chiamava TrovaPartenza e azzerava
-	; ScrllX/Y, IntentX/Y, bob_VelY, bob_FracY e bob_Grounded. Adesso **dove sta
-	; il player lo decide CHI CHIAMA**, e sono due con esigenze opposte:
-	;   il boot   - InitPlayer ha gia' chiamato TrovaPartenza in coda a se
-	;               stesso, quindi la posizione c'e' e le variabili di moto
-	;               sono gli zeri con cui nasce la BSS;
-	;   la porta  - EseguiPassaggio mette X specchiata e Y conservata, e
-	;               RIMETTE velocita' e slancio, perche' un salto deve
-	;               proseguire attraverso la porta e atterrare di la'.
-	; Azzerare qui vorrebbe dire cancellare proprio quello che la porta ha
-	; appena deciso. La routine e' diventata quello che il nome dice: ricostruisce
-	; IL MONDO, non lo stato del gioco.
-
-	; ----- il mondo ----------------------------------------------------
-	BSR.W	DisegnaSfondo
-	BSR.W	CentraCameraSulPlayer
-	LEA		SFONDOGRANDE,A0
-	LEA		PathBMaster,A1
-	BSR.W	PathBBuildMaster		; copia pulita per il restore dei BOB
-	LEA		SFONDOGRANDE,A0
-	LEA		SFONDOGRANDE_B,A1
-	BSR.W	PathBBuildMaster		; stessa mappa nel secondo buffer
-	BSR.W	PathBBuildDark			; darkplane statico, in coordinate mondo
-
-	; ----- 4. i rettangoli sporchi dei due buffer ----------------------
-	; Parlano del mondo di PRIMA. Ripristinarli non sporcherebbe niente - il
-	; master e' appena stato rifatto, quindi la sorgente e' giusta - ma sarebbe
-	; lavoro su coordinate che non vogliono piu' dire niente, e il primo quadro
-	; dopo la porta e' gia' il piu' caro di tutti. Si svuotano.
-	LEA		DirtySetA,A0
-	CLR.W	dirty_Count(A0)
-	LEA		DirtySetB,A0
-	CLR.W	dirty_Count(A0)
-
-	IFNE	PROFILING
-	BSR.W	MisuraRicChiudi
-	ENDC
-	MOVEM.L	(SP)+,D0-D7/A0-A5
-	RTS
-
 DisegnaSfondo:
 	MOVEM.L	D0-D6/A0-A2,-(SP)
 
-	MOVEA.L	MappaPtr,A0			; la mappa VIVA, non un'etichetta fissa
-	; QUI C'ERA un `MOVE.W TileX,D0 / ADD.W D0,D0 / ADDA.W D0,A0` che saltava
-	; TileX colonne: relitto di Path A, quando il buffer teneva una FINESTRA
-	; sulla mappa. In Path B il buffer tiene la mappa INTERA e si parte sempre
-	; dalla colonna 0, quindi quella somma valeva zero a ogni avvio - ma
-	; obbligava chiunque chiamasse questa routine ad azzerare prima TileX, e
-	; quel vincolo era scritto solo in un commento. Tolto il 24 settembre 2026
-	; per poter ricostruire il mondo a gioco acceso (vedi RicostruisciMondo):
-	; e' un no-op dimostrabile, perche' al boot TileX vale 0.
+	LEA		MAPPA,A0			; Salvo in A0 il punt. alla mappa
+	MOVE.W	TileX,D0			; colonna di partenza
+	ADD.W	D0,D0				; *2 perché ogni tile è una word
+	ADDA.W	D0,A0				; salta le colonne a sinistra
 	MOVE.L	#SFONDOGRANDE+DELTA_MAPPAVERA+BG_ORIGIN_OFS,PuntaSfondoGr	; guardia + origine
 	MOVEQ	#BUFFER_COLS-1,D1	; d1 = numero colonne
 	; BUFFER_ROWS ora include la riga di margine, che NON contiene tile:
@@ -3925,10 +3300,6 @@ DisegnaSfondo:
 ; costante del chipset, e la usa anche la palette degli sprite. Dentro l'IFEQ
 ; sparirebbe insieme al gradiente portandosi via una cosa che non c'entra.
 BPLCON3_BANK_SHIFT      EQU     13
-; NOTTE_VOCI stava qui. E' salita accanto a TENDA_PASSAGGIO perche' da lei
-; discende FADE_VOCI, che serve a ControllaPassaggio - e quello sta PRIMA di
-; questa riga. Devpac valuta una EQU dove la incontra: definirla qui voleva
-; dire un riferimento in avanti e un errore solo sull'Amiga.
 	IFNE	CIELO_GRADIENTE
 	IFEQ	PROFILING*PROF_KILL_SKY
 ; Una voce di SkylineTinte: base a 24 bit, peso del mix col cielo, bit BANK.
@@ -4399,7 +3770,7 @@ InitPlayer:
 	; TILE_VIA che cerca TrovaPartenza in coda a questa routine: questi due
 	; valori restano solo per una mappa che non ne abbia nessuna, cosi' il
 	; gioco parte lo stesso. Chi li guarda per sapere dove nasce il player
-	; guarda il posto sbagliato: e' risorse/mappa1.txt.
+	; guarda il posto sbagliato: e' risorse/mappa.txt.
 	MOVE.W	#PLAYER_SPAWN_X,bob_WorldX(A0)
 	MOVE.W	#PLAYER_SPAWN_Y,bob_WorldY(A0)
 	MOVE.W	#0,bob_AI(A0)
@@ -4658,7 +4029,7 @@ IsTileBlocked:
 	ADD.W	D1,D1					; *2 perche' dc.w (word per ogni tile)
 
 	; Recupero il numero di tile
-	MOVEA.L	MappaPtr,A1			; la mappa viva
+	LEA		MAPPA,A1
 	MOVE.W	(A1,D1.W),D2			; D2 = numero della tile
 
 	; Lookup nel TileFlags (indicizzato come byte)
@@ -4990,11 +4361,9 @@ InitPalette8BPL:
 	AND.L	#$007F7F7F,D0
 	MOVE.L	D0,(A1)+
 	DBRA	D7,.half1
-	; Qui stava `LEA GamePalBk,A0 / MOVEQ #1,D4 / BSR.W WriteAGABank32`, cioe'
-	; il banco 1 scritto UNA VOLTA nei registri dalla CPU. Adesso lo riempie
-	; nella copperlist BuildNotteCopper e lo riscrive il copper a ogni quadro:
-	; il motivo sta su NOTTE_VOCI. GamePalBk resta la sorgente a 24 bit.
-	BSR.W	BuildNotteCopper
+	LEA		GamePalBk,A0
+	MOVEQ	#1,D4
+	BSR.W	WriteAGABank32
 
 	; I banchi 2..7 (colori 64..255) portavano le tre tinte della parallasse
 	; combinate con lo sfondo: 192 voci per ottenere che la parallasse stesse
@@ -5021,273 +4390,11 @@ InitPalette8BPL:
 	OR.W	D1,D2
 	RTS
 
-* BuildNotteCopper - riempie il blocco copper del BANCO 1 (colori 32..63)
-*   Scrive nei due spazi `NotteHi` e `NotteLo` della copperlist 32 coppie
-*   (numero di registro, valore): i registri $0180..$01BE, i valori i nibble
-*   alti e bassi delle voci di `GamePalBk`, che e' il banco 0 dimezzato.
-*   Le due coppie di BPLCON3 che scelgono banco e LOCT sono letterali nella
-*   lista e non passano da qui.
-*
-*   VA CHIAMATA COL COPPER SPENTO o comunque prima che la lista vada a video:
-*   `ds.w` lascia zeri, e uno zero in una copperlist e' un MOVE su BLTDDAT -
-*   innocuo, ma per un quadro il banco 1 sarebbe tutto nero. Al boot gira
-*   dentro InitPalette8BPL, che sta nel blocco dove COPEN e' ancora spento.
-*
-*   L'estrazione dei nibble e' la stessa di LoadAGAPalette256 e di
-*   WriteAGABank32, riga per riga: non e' una terza variante da controllare.
-*   DISTRUGGE: nulla (salva tutto).
-BuildNotteCopper:
-	MOVEM.L	D0-D3/D7/A0-A2,-(SP)
-	LEA		GamePalBk,A0			; 32 long $00RRGGBB, gia' dimezzati
-	LEA		NotteHi,A1
-	LEA		NotteLo,A2
-	MOVE.W	#$0180,D3				; COLOR00 del banco: con BANK=1 e' la voce 32
-	MOVEQ	#NOTTE_VOCI-1,D7
-.voce:
-	MOVE.L	(A0)+,D0				; D0 = $00RRGGBB
-	MOVE.W	D3,(A1)+				; il registro, passata ALTA
-	MOVE.W	D3,(A2)+				; e passata BASSA
-
-	; ----- nibble ALTI: $0RGB preso dai bit 23-20, 15-12, 7-4 -----
-	MOVE.L	D0,D2
-	LSR.L	#4,D2
-	AND.W	#$000F,D2				; B alto
-	MOVE.L	D0,D1
-	LSR.L	#8,D1
-	AND.W	#$00F0,D1				; G alto, gia' in posizione 7-4
-	OR.W	D1,D2
-	MOVE.L	D0,D1
-	LSR.L	#8,D1
-	LSR.L	#4,D1					; shift totale 12: l'immediato arriva a 8
-	AND.W	#$0F00,D1				; R alto in posizione 11-8
-	OR.W	D1,D2
-	MOVE.W	D2,(A1)+
-
-	; ----- nibble BASSI: dai bit 19-16, 11-8, 3-0 -----
-	MOVE.W	D0,D2
-	AND.W	#$000F,D2				; B basso
-	MOVE.W	D0,D1
-	LSR.W	#4,D1
-	AND.W	#$00F0,D1				; G basso
-	OR.W	D1,D2
-	MOVE.L	D0,D1
-	LSR.L	#8,D1
-	AND.W	#$0F00,D1				; R basso
-	OR.W	D1,D2
-	MOVE.W	D2,(A2)+
-
-	ADDQ.W	#2,D3					; prossimo registro di colore
-	DBRA	D7,.voce
-	MOVEM.L	(SP)+,D0-D3/D7/A0-A2
-	RTS
-
-* BuildFadeTab - i livelli della dissolvenza, una volta al boot
-*   Prima raccoglie in FadePal24 le 76 voci che il copper scrive - giorno,
-*   notte, alberi - poi per ogni livello le scala e le spezza in nibble alti e
-*   bassi. Il livello FADE_LIVELLI-1 riproduce la palette ESATTA (x15/15), non
-*   una sua approssimazione: la dissolvenza in entrata finisce sui colori veri.
-*   Il livello 0 e' nero pieno perche' la scala passa per zero.
-*
-*   VA CHIAMATA DOPO InitPalette8BPL, che e' chi riempie GamePal24 e GamePalBk.
-*   DISTRUGGE: nulla (salva tutto).
-BuildFadeTab:
-	MOVEM.L	D0-D7/A0-A2,-(SP)
-
-	; ----- 1. la sorgente: giorno, notte, alberi, in quest'ordine ----------
-	LEA		FadePal24,A1
-	LEA		GamePal24,A0
-	MOVEQ	#FADE_VOCI_MONDO-1,D7
-.cg:
-	MOVE.L	(A0)+,(A1)+
-	DBRA	D7,.cg
-	LEA		GamePalBk,A0
-	MOVEQ	#NOTTE_VOCI-1,D7
-.cn:
-	MOVE.L	(A0)+,(A1)+
-	DBRA	D7,.cn
-	LEA		AlberiPal24,A0
-	MOVEQ	#FADE_VOCI_ALBERI-1,D7
-.ca:
-	MOVE.L	(A0)+,(A1)+
-	DBRA	D7,.ca
-
-	; ----- 2. un blocco di nibble alti + bassi per livello -----------------
-	LEA		FadeTab,A1				; A1 = nibble ALTI del livello corrente
-	MOVEQ	#0,D5					; D5 = livello
-.livello:
-	MOVEA.L	A1,A2
-	ADDA.W	#FADE_VOCI*2,A2			; A2 = nibble BASSI dello stesso livello
-	LEA		FadePal24,A0
-	MOVEQ	#FADE_VOCI-1,D7
-.voce:
-	MOVE.L	(A0)+,D0				; D0 = $00RRGGBB a piena luce
-
-	; Le tre componenti scalate a livello/(FADE_LIVELLI-1). La MULU scrive
-	; tutti e 32 i bit, quindi si porta via da sola la word alta sporca che
-	; l'estrazione di B lascia in giro: e' il motivo per cui non serve
-	; ripulirla a mano.
-	MOVE.L	D0,D1
-	LSR.L	#8,D1
-	LSR.L	#8,D1
-	AND.W	#$00FF,D1				; R
-	MULU.W	D5,D1
-	DIVU.W	#FADE_LIVELLI-1,D1
-	AND.W	#$00FF,D1				; il quoziente: il resto sta nella word alta
-
-	MOVE.L	D0,D2
-	LSR.L	#8,D2
-	AND.W	#$00FF,D2				; G
-	MULU.W	D5,D2
-	DIVU.W	#FADE_LIVELLI-1,D2
-	AND.W	#$00FF,D2
-
-	MOVE.L	D0,D3
-	AND.W	#$00FF,D3				; B
-	MULU.W	D5,D3
-	DIVU.W	#FADE_LIVELLI-1,D3
-	AND.W	#$00FF,D3
-
-	; nibble ALTI: $0RGB coi bit 7-4 di ogni componente
-	MOVE.W	D1,D4
-	LSR.W	#4,D4
-	LSL.W	#8,D4					; R in 11-8
-	MOVE.W	D2,D6
-	AND.W	#$00F0,D6				; G e' gia' in 7-4
-	OR.W	D6,D4
-	MOVE.W	D3,D6
-	LSR.W	#4,D6					; B in 3-0
-	OR.W	D6,D4
-	MOVE.W	D4,(A1)+
-
-	; nibble BASSI: gli stessi con i bit 3-0
-	MOVE.W	D1,D4
-	AND.W	#$000F,D4
-	LSL.W	#8,D4
-	MOVE.W	D2,D6
-	AND.W	#$000F,D6
-	LSL.W	#4,D6
-	OR.W	D6,D4
-	MOVE.W	D3,D6
-	AND.W	#$000F,D6
-	OR.W	D6,D4
-	MOVE.W	D4,(A2)+
-
-	DBRA	D7,.voce
-	MOVEA.L	A2,A1					; il livello dopo comincia dove finisce questo
-	ADDQ.W	#1,D5
-	CMP.W	#FADE_LIVELLI,D5
-	BLT.W	.livello
-	MOVEM.L	(SP)+,D0-D7/A0-A2
-	RTS
-
-* FadeApplica - scrive nella copperlist il livello D0.W
-*   Sei passeggiate, una per blocco: coppie da 4 byte col valore a +2. Sono
-*   FADE_VOCI*2 = 152 word, circa 1300 cicli, 0,02 quadri: non si misura.
-*   Si scrive il DATO della copperlist e non $180(A6), per la stessa ragione di
-*   BPLCON1 e BPLCON0 - un registro che il copper riscrive a ogni quadro, se lo
-*   tocca la CPU, vale fino al quadro dopo e non oltre.
-*   VA CHIAMATA dopo AspettaVBL: li' il copper ha gia' letto il blocco per
-*   questo quadro e il nuovo valore vale dal prossimo, quindi non si vede mai
-*   mezza palette.
-*   DISTRUGGE: nulla (salva tutto).
-FadeApplica:
-	MOVEM.L	D0-D3/A0-A3,-(SP)
-	MULU.W	#FADE_VOCI*4,D0			; byte per livello
-	LEA		FadeTab,A0
-	ADDA.L	D0,A0					; A0 = base del livello
-	LEA		FadeDest,A1
-	MOVEQ	#FADE_BLOCCHI-1,D3
-.blocco:
-	MOVEA.L	(A1)+,A2				; dove scrivere, nella copperlist
-	MOVE.W	(A1)+,D1				; offset in WORD dentro il livello
-	ADD.W	D1,D1					; -> byte
-	MOVEA.L	A0,A3
-	ADDA.W	D1,A3					; A3 = sorgente dentro il livello
-	MOVE.W	(A1)+,D2				; quante voci
-	SUBQ.W	#1,D2
-.voce:
-	MOVE.W	(A3)+,2(A2)				; il VALORE: +2 salta il numero di registro
-	ADDQ.L	#4,A2
-	DBRA	D2,.voce
-	DBRA	D3,.blocco
-	MOVEM.L	(SP)+,D0-D3/A0-A3
-	RTS
-
-* AggiornaTransizione - la macchina a stati della porta
-*   Da chiamare UNA volta per quadro, dopo AspettaVBL. Quando TransFase e' 0
-*   costa una TST e un RTS.
-*
-*   Fase 1 spegne un livello per volta fino al nero. Arrivata al nero fa il
-*   lavoro - RicostruisciMondo, 44 quadri - e passa alla fase 3, che riaccende.
-*   **Il lavoro sta DENTRO la fase, non fra due fasi**: cosi' il quadro nero e'
-*   gia' a video quando comincia, e nessuno vede il mondo che si ridisegna.
-*
-*   Il livello 0 viene applicato DUE volte: una in coda allo spegnimento e una
-*   subito prima del lavoro. Non e' una sbavatura, e' quello che garantisce che
-*   il nero sia sullo schermo e non solo in tabella quando il blitter parte.
-*
-*   IL GIOCO NON SI FERMA durante le fasi 1 e 3, ed e' una semplificazione
-*   dichiarata: il player continua a camminare e i nemici a muoversi mentre lo
-*   schermo si spegne. Nessuno lo vede, e ControllaPassaggio non riscatta
-*   perche' guarda TransFase. **Servira' un fermo il giorno che lo stato di
-*   moto va conservato attraverso la porta**: fra lo scatto e la fase 2 passano
-*   FADE_LIVELLI quadri, e in quei quadri la velocita' cambia - quindi il moto
-*   andra' FOTOGRAFATO allo scatto, non riletto qui.
-*
-*   Il monitor del profiler resta leggibile: vive nel pannello, che ha una
-*   palette sua e non sfuma.
-*   DISTRUGGE: nulla (salva tutto). Richiede A6 = $DFF000 (lo vuole
-*   RicostruisciMondo).
-AggiornaTransizione:
-	; L'uscita a vuoto e' scritta al ROVESCIO di proposito: con un `BEQ.S` alla
-	; fine della routine il salto misurava +136 byte, cioe' fuori dai 127 di uno
-	; spiazzamento corto. Saltare AVANTI di due istruzioni costa due byte e non
-	; dipende da quanto cresce il corpo qui sotto.
-	TST.B	TransFase
-	BNE.S	.attiva
-	RTS
-.attiva:
-	MOVEM.L	D0,-(SP)
-	ADDQ.B	#1,TransRitmo
-	CMP.B	#FADE_RITMO,TransRitmo
-	BLO.S	.esce					; non e' ancora il quadro del livello dopo
-	CLR.B	TransRitmo
-	CMP.B	#1,TransFase
-	BEQ.S	.spegne
-	CMP.B	#3,TransFase
-	BEQ.S	.accende
-	BRA.S	.esce					; fase sconosciuta: non si inventa niente
-.spegne:
-	SUBQ.W	#1,TransLivello
-	BGE.S	.mostra
-	CLR.W	TransLivello			; il nero e' il livello 0, non il -1
-	MOVEQ	#0,D0
-	BSR.W	FadeApplica				; il nero A VIDEO, prima del lavoro
-	BSR.W	EseguiPassaggio			; mappa nuova, player al bordo opposto
-	MOVE.B	#3,TransFase
-	BRA.S	.esce
-.accende:
-	ADDQ.W	#1,TransLivello
-	CMP.W	#FADE_LIVELLI-1,TransLivello
-	BLT.S	.mostra
-	MOVE.W	#FADE_LIVELLI-1,TransLivello
-	CLR.B	TransFase				; finita: palette piena e porta chiusa
-.mostra:
-	MOVE.W	TransLivello,D0
-	BSR.W	FadeApplica
-.esce:
-	MOVEM.L	(SP)+,D0
-	RTS
-
 ; .pair costruiva un banco [tinta skyline, sfondo 1..31] e la sua meta'
 ; notturna, ed era chiamata tre volte per i banchi 2..7. Rimossa il 5
 ; settembre insieme ai banchi che riempiva.
 
 * WriteAGABank32
-*   SENZA CHIAMANTI dal 25 settembre 2026: il banco 1 era il suo unico cliente
-*   e adesso lo scrive il copper (vedi BuildNotteCopper). Resta perche' e' il
-*   modo giusto di scrivere un banco dalla CPU e servira' al primo banco che
-*   non stia in una lista; chi la trova sappia che oggi non gira.
 *   Scrive 32 colori AGA nel banco D4 (0..7). A0 = 32 long $00RRGGBB.
 *   Stessa meccanica hi/lo di LoadAGAPalette256, parametrizzata sul banco.
 *   DISTRUGGE: D0-D3/A0-A2 (preserva D4). Richiede A6 = $DFF000.
@@ -5349,77 +4456,6 @@ GamePal24:
 	ds.l	32						; 32 colori base ricostruiti a init
 GamePalBk:
 	ds.l	32						; scratch per costruire ogni banco
-
-; ----- LA DISSOLVENZA: sorgenti e tabella dei livelli ------------------------
-; FadePal24 e' la palette PIENA a 24 bit nell'ordine in cui la scrive il fade:
-; 32 voci di giorno, 32 di notte, 12 di alberi. La riempie BuildFadeTab da
-; GamePal24, GamePalBk e AlberiPal24, cioe' si DERIVA dalle stesse fonti che
-; usano la copperlist e InitPalette8BPL. Ritoccare un colore domani non chiede
-; di ricordarsi della dissolvenza.
-FadePal24:
-	ds.l	FADE_VOCI
-; Per ogni livello: FADE_VOCI word di nibble ALTI e poi FADE_VOCI word di
-; nibble BASSI. Un livello e' FADE_VOCI*4 byte, la tabella FADE_LIVELLI volte
-; tanto - con 16 livelli e 76 voci sono 4864 byte di memoria pubblica.
-FadeTab:
-	ds.w	FADE_LIVELLI*FADE_VOCI*2
-
-; Le dodici tinte degli alberi a 24 bit, NELL'ORDINE in cui le scrive la
-; copperlist: due coppie di canali vicini e due lontane, cioe' le sei tinte
-; vere ripetute. I valori non sono ricopiati, sono le stesse EQU di
-; AlberiPalHi/AlberiPalLo.
-AlberiPal24:
-	dc.l	ALBERI_V_OMBRA_RGB,ALBERI_V_CORPO_RGB,ALBERI_V_LUCE_RGB
-	dc.l	ALBERI_V_OMBRA_RGB,ALBERI_V_CORPO_RGB,ALBERI_V_LUCE_RGB
-	dc.l	ALBERI_L_OMBRA_RGB,ALBERI_L_CORPO_RGB,ALBERI_L_LUCE_RGB
-	dc.l	ALBERI_L_OMBRA_RGB,ALBERI_L_CORPO_RGB,ALBERI_L_LUCE_RGB
-AlberiPal24Fine:
-	IFNE	(AlberiPal24Fine-AlberiPal24)/4-FADE_VOCI_ALBERI
-GUARDIA_ALBERI_24	EQU		1/0
-	ENDC
-
-; Dove va scritto ogni pezzo di un livello: indirizzo nella copperlist, offset
-; in WORD dentro il livello, quante voci. I sei blocchi coprono esattamente le
-; FADE_VOCI*2 word di un livello, e l'ordine e' alti-alti-alti / bassi-bassi-bassi
-; perche' e' cosi' che la tabella e' disposta.
-FadeDest:
-	dc.l	GamePalHi
-	dc.w	0,FADE_VOCI_MONDO
-	dc.l	NotteHi
-	dc.w	FADE_VOCI_MONDO,NOTTE_VOCI
-	dc.l	AlberiPalHi
-	dc.w	FADE_VOCI_MONDO+NOTTE_VOCI,FADE_VOCI_ALBERI
-	dc.l	GamePalLo
-	dc.w	FADE_VOCI,FADE_VOCI_MONDO
-	dc.l	NotteLo
-	dc.w	FADE_VOCI+FADE_VOCI_MONDO,NOTTE_VOCI
-	dc.l	AlberiPalLo
-	dc.w	FADE_VOCI+FADE_VOCI_MONDO+NOTTE_VOCI,FADE_VOCI_ALBERI
-FadeDestFine:
-	IFNE	(FadeDestFine-FadeDest)/8-FADE_BLOCCHI
-GUARDIA_FADE_DEST	EQU		1/0
-	ENDC
-
-; Lo stato della transizione. Descrive un sottosistema unico - non esiste una
-; seconda porta che si apra insieme a questa - quindi resta globale e non va
-; nella struct bob_*.
-TransFase:		dc.b	0			; 0 niente, 1 spegne, 2 lavoro, 3 accende
-TransRitmo:		dc.b	0			; quadri contati dentro il livello corrente
-		even
-TransLivello:	dc.w	FADE_LIVELLI-1	; livello corrente: si parte da palette piena
-; Il passaggio deciso allo scatto e lo stato di moto FOTOGRAFATO in quel
-; momento. Non si rileggono dal player alla fase 2: fra lo scatto e il nero
-; passano FADE_LIVELLI quadri e in quelli il gioco continua a girare.
-TransDest:		dc.w	0			; il blocco di destinazione
-TransVerso:		dc.w	0			; VERSO_SX / DX / SU / GIU: il bordo attraversato
-; ENTRAMBE le coordinate, sempre. Quale sopravvive lo decide il verso, in un
-; posto solo (EseguiPassaggio): fotografarne una sola vorrebbe dire ripetere
-; quella scelta anche qui.
-TransX:			dc.w	0
-TransY:			dc.w	0
-TransVelY:		dc.w	0			; il salto e la caduta proseguono di la'
-TransFracY:		dc.w	0
-TransSuolo:		dc.w	0
 
 	IFNE	TITLE_TEST_FILL
 * TitleTestFill - prova a costanti note sui piani della schermata del titolo
@@ -6459,17 +5495,14 @@ InitFalo:
 *   Se nella mappa non c'e' nessuna TILE_LUCE, bob_WorldX resta NEGATIVA e
 *   DisegnaBOB la scarta con il cull che ha gia' ("X mondo negativa -> fuori
 *   dal buffer"): niente fuoco, esattamente come niente luce.
-*   Girava una volta al boot, quando la mappa era una sola. **Dal 26 settembre
-*   2026 la richiama anche EseguiPassaggio**: la TILE_LUCE della mappa nuova sta
-*   altrove, e senza questa chiamata il falo' resterebbe alle coordinate di
-*   quella di prima. Legge MappaPtr, quindi non ha bisogno di sapere quale.
+*   Gira una volta al boot: la mappa non cambia.
 *   DISTRUGGE: nulla (salva tutto).
 TrovaFalo:
 	MOVEM.L	D2-D3/A0-A1,-(SP)
 	LEA		BobFalo,A1
 	MOVE.W	#-1,bob_WorldX(A1)		; "non trovata", finche' non si dimostra
 	MOVE.W	#0,bob_WorldY(A1)
-	MOVEA.L	MappaPtr,A0			; la mappa viva
+	LEA		MAPPA,A0
 	MOVEQ	#0,D2					; D2 = riga
 .riga:
 	MOVEQ	#0,D3					; D3 = colonna
@@ -6495,7 +5528,7 @@ TrovaFalo:
 * TrovaPartenza - mette il player dove la mappa ha la tile TILE_VIA
 *   Stessa idea di TrovaFalo qui sopra, e per la stessa ragione: la posizione
 *   di un'entita' sta NELLA MAPPA, cosi' spostare il punto di partenza vuol
-*   dire spostare una casella di risorse/mappa1.txt e non ricalcolare un EQU in
+*   dire spostare una casella di risorse/mappa.txt e non ricalcolare un EQU in
 *   pixel. Si prende la PRIMA tile trovata, scandendo per righe.
 *   SE NELLA MAPPA NON C'E' NESSUNA TILE_VIA il player resta dove l'ha messo
 *   InitPlayer, cioe' su PLAYER_SPAWN_X/Y, e il gioco parte lo stesso. Non
@@ -6510,7 +5543,7 @@ TrovaFalo:
 TrovaPartenza:
 	MOVEM.L	D2-D3/A0-A1,-(SP)
 	LEA		Player,A1
-	MOVEA.L	MappaPtr,A0			; la mappa viva
+	LEA		MAPPA,A0
 	MOVEQ	#0,D2					; D2 = riga
 .riga:
 	MOVEQ	#0,D3					; D3 = colonna
@@ -8723,8 +7756,8 @@ PathBBuildDark:
 	MOVE.W	D7,D2
 	MULU.W	#MAPPA_COLS,D2
 	ADD.W	D2,D2
-	MOVEA.L	MappaPtr,A0			; la mappa viva
-	ADDA.W	D2,A0					; A0 = &mappa[D7][0]
+	LEA		MAPPA,A0
+	ADDA.W	D2,A0					; A0 = &MAPPA[D7][0]
 .col:
 	MOVE.W	(A0)+,D2
 	CMP.W	#TILE_LUCE,D2
@@ -8785,14 +7818,9 @@ PathBInit:
 ; E' l'ultima a scrivere prima dello swap, quindi i numeri stanno sopra a tutto.
 ; Scrive su TUTTI E 5 i piani: colore 31 su fondo 0, leggibile ovunque e senza
 ; dover pulire prima.
-PROF_VALUES     EQU     PROF_SLOTS+9    ; 11 fasi + WorstLines + DropCount + DDFSTRT
+PROF_VALUES     EQU     PROF_SLOTS+8    ; 11 fasi + WorstLines + DropCount + DDFSTRT
                                         ; + swap + ritardo + offset + i due della
-                                        ; ricostruzione (RQ, RV) + il blocco (MP)
-; L'ULTIMA CELLA LIBERA E' STATA SPESA QUI. Il blocco e' PROF_COLS(4) x
-; PROF_ROWS_N(5) = 20 celle e adesso PROF_VALUES vale 20: pieno. Le righe non si
-; possono aggiungere (GUARDIA_PROF_PAN_ALTEZZA le ferma a SPIA_Y0 = 40) e il
-; salto legale successivo sulle colonne e' 8, cioe' la larghezza intera del
-; pannello. Chi ha bisogno di una voce in piu' paga quel salto.
+                                        ; ricostruzione (RQ, RV)
 PROF_COLS       EQU     4               ; voci per riga (4 x 80px = 320)
 PROF_ROWS_N     EQU     (PROF_VALUES+PROF_COLS-1)/PROF_COLS
 ; Il rettangolo che il testo sporca, per registrarlo come fa ogni BOB. E'
@@ -8899,10 +7927,6 @@ MostraProfilo:
         MOVE.W  CL_Ddf+2,ProfDdf
         MOVE.W  PathBDelay,ProfDelay
         MOVE.W  ParSprOfs,ProfParOfs
-        ; MP: quale blocco si sta giocando. Con due mappe uguali al byte e'
-        ; l'UNICO modo di sapere se la porta ha portato da qualche parte -
-        ; guardare lo schermo non risponde alla domanda.
-        MOVE.W  MappaCorrente,ProfMappa
 
         LEA     ProfLabels,A3
         LEA     ProfWorst,A2                    ; WorstLines/DropCount/DDF seguono
@@ -8992,7 +8016,7 @@ ProfPanRipristina:
 ; Etichette a 2 lettere, nello stesso ordine di ProfWorst + i due extra.
 ; Maiuscole per leggibilita' a 8x8; il font Metal ha anche le minuscole.
 ProfLabels:
-        dc.b    'VBINSCPATIDKFACVENBOBLWODRDFSWDLPORQRVMP'
+        dc.b    'VBINSCPATIDKFACVENBOBLWODRDFSWDLPORQRV'
         even
 
 ; ============================================================================
@@ -9230,7 +8254,6 @@ ProfParOfs:     dc.w    0       ; PO: offset della parallasse
 ; MostraProfilo: chi ne aggiunge altre le mette QUI SOTTO e alza PROF_VALUES.
 ProfRicTOD:     dc.w    0       ; RQ: quadri contati dal TOD del CIA-A
 ProfRicVPOS:    dc.w    0       ; RV: quadri contati dai giri del pennello
-ProfMappa:      dc.w    0       ; MP: il blocco corrente (MappaCorrente)
 ProfFineBlocco:                 ; <-- IL BLOCCO FINISCE QUI, e adesso lo dice
                                 ;     una guardia invece di un commento.
 
@@ -9279,7 +8302,7 @@ TileFlags:
 ;   tile:   0   1   2   3   4   5   6   7   8   9  10  11  12  13  14  15
 	dc.b	0,	0,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	0,	0,	0,	0
 ;   tile:  16  17  18  19  20  21  22  23  24  25  26  27  28  29  30  31
-	dc.b	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0
+	dc.b	0,	0,	0,	0,	0,	0,	0,	0,	0,	1,	1,	0,	0,	0,	0,	0
 ;   tile:  32  33  34  35  36  37  38  39  40  41  42  43  44  45  46  47
 	dc.b	1,	1,	1,	1,	1,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0
 ;   tile:  48  49  50  51  52  53  54  55  56  57  58  59  60  61  62  63
@@ -9311,7 +8334,7 @@ GUARDIA_TILEFLAGS	EQU		1/0
 	even	; padding per allineamento word
 
 * LA MAPPA, che e' un FILE e non piu' un blocco dc.w.
-* La fonte e' risorse/mappa1.txt (un numero per tile, si modifica a mano);
+* La fonte e' risorse/mappa.txt (un numero per tile, si modifica a mano);
 * tools/mappa.py ne fa questo .raw, l'anteprima montata con le tile vere e la
 * sagoma delle collisioni. Il formato e' banale: MAPPA_ROWS righe da
 * MAPPA_COLS word, big-endian, in ordine di lettura.
@@ -9320,37 +8343,13 @@ GUARDIA_TILEFLAGS	EQU		1/0
 * regola 5 del progetto vuole protetto. Se il .raw non ha la dimensione che
 * discende da quei due numeri, GUARDIA_MAPPA_RAW ferma l'assemblaggio; senza,
 * si leggerebbe oltre la fine in silenzio.
-* DAL 26 SETTEMBRE 2026 LE MAPPE SONO PIU' DI UNA, e tutte con la STESSA
-* geometria: MAPPA_COLS x MAPPA_ROWS. Non e' una comodita', e' un vincolo -
-* da quei due numeri discendono il pitch del world buffer, SCROLL_OFS_MAX,
-* PLAYER_MAX_X/Y e la dimensione dei tre buffer. Una mappa di forma diversa
-* vorrebbe un altro buffer, non un altro file. La guardia per file lo impone.
+MAPPA:
+	incbin	"grafica/mappa.raw"
+MAPPA_FINE:
 MAPPA_ATTESA		EQU		MAPPA_COLS*MAPPA_ROWS*2
-
-* L'ELENCO DEI BLOCCHI E I LORO COLLEGAMENTI SONO GENERATI, non scritti qui.
-* La fonte e' `risorse/mappe.txt`, dove si scrivono per NOME, e il generatore e'
-* `tools/mappe.py`. Il motivo non e' l'eleganza: i collegamenti portano dentro
-* un invariante che nessun assemblatore puo' controllare - **se la destra di A
-* e' B, la sinistra di B deve essere A** - e con i sedici blocchi che serviranno
-* a coprire il rettangolone dell'originale sono sessantaquattro numeri. Il
-* generatore si rifiuta di scrivere Mappe.i se la reciprocita' non torna, e
-* controlla anche che ogni .raw esista e sia della misura giusta.
-* Da Mappe.i arrivano: MAPPE_N, gli incbin MAPPAn con la loro guardia,
-* MappaBase (i puntatori) e MappaLink (VERSI_N word per blocco).
-* Dopo ogni modifica alla griglia:  py tools\mappe.py  e poi  py tools\porte.py
-	include	"Mappe.i"
-
-* LA MAPPA VIVA. E' l'unico posto che dice quale mappa si sta giocando: le
-* cinque routine che leggono le tile (DisegnaSfondo, IsTileBlocked, TrovaFalo,
-* TrovaPartenza, PathBBuildDark) partono da qui e non da un'etichetta fissa.
-; Il puntatore che leggono le cinque routine della mappa. Nasce a ZERO e non a
-; MAPPA1: il nome della prima mappa sta scritto in un posto solo, MappaBase, e
-; qui ci arriva ImpostaBlocco al boot leggendo MappaCorrente. Se qualcuno legge
-; la mappa prima di quella chiamata legge l'indirizzo 0 e si vede subito, che e'
-; meglio di due nomi da tenere in pari a mano.
-MappaPtr:		dc.l	0
-; Il blocco da cui si parte. E' l'unica fonte: MappaPtr ne discende.
-MappaCorrente:	dc.w	0
+	IFNE	(MAPPA_FINE-MAPPA)-MAPPA_ATTESA
+GUARDIA_MAPPA_RAW	EQU		1/0
+	ENDC
 
 
 * VARIABILI
@@ -9977,12 +8976,7 @@ CopperList:
 	; Sei piani: i due della parallasse sono passati agli sprite. Non e' solo
 	; risparmio, e' un requisito - il prelievo a 16 bit che apre i sei canali
 	; ne regge sei e basta in lores.
-	; L'etichetta serve alla tenda: MondoNascondi/MondoMostra scrivono QUI, nel
-	; dato della copperlist, invece di scrivere $100(A6) con la CPU. E' la
-	; stessa lezione di BPLCON1: un registro che il copper riscrive a ogni
-	; quadro, se lo tocca la CPU, dura fino al quadro dopo e non oltre.
-CL_Bplcon0:
-	dc.w	$0100,BPLCON0_GIOCO			; BPLCON0: 6 bitplane, color burst + ECSENA
+	dc.w	$0100,%0110001000000001		; BPLCON0: 6 bitplane, color burst + ECSENA
 	; (via anche il bit 7 UHRES che ci trascinavamo). L'EHB non c'entra:
 	; il dimezzamento notturno lo fanno i colori 32..63, e i piani 7-8
 	; portano il parallasse a 4 colori (vedi InitPalette8BPL).
@@ -10135,31 +9129,6 @@ GamePalLo:
 	dc.w 	$01b0,$0777,$01b2,$0888,$01b4,$0999,$01b6,$0aaa
 	dc.w 	$01b8,$0ccc,$01ba,$0ddd,$01bc,$0eee,$01be,$0fff
 
-	; ----- BANCO 1: i colori 32..63, LO SFONDO NOTTURNO -----
-	; Il valore di ogni voce e' il banco 0 dimezzato, e le voci le riempie
-	; BuildNotteCopper al boot: qui c'e' solo lo spazio, esattamente come fa
-	; SkyCopper piu' sotto. Le tre coppie di BPLCON3 invece sono letterali,
-	; perche' non dipendono dalla palette.
-	; Fino al 24 settembre 2026 questo banco lo scriveva la CPU una volta sola
-	; (InitPalette8BPL -> WriteAGABank32) e nei registri ci restava. Adesso lo
-	; riscrive il copper a ogni quadro come gli altri due banchi: 134 word,
-	; ~1,2 righe raster, ed e' quello che permette alla dissolvenza di
-	; raggiungere la notte (vedi NOTTE_VOCI).
-	dc.w	$0106,(1<<BPLCON3_BANK_SHIFT)|BPLCON3_LOCT0
-NotteHi:
-	ds.w	NOTTE_VOCI*2
-NotteHiFine:
-	IFNE	(NotteHiFine-NotteHi)/4-NOTTE_VOCI
-GUARDIA_NOTTE_HI	EQU		1/0
-	ENDC
-	dc.w	$0106,(1<<BPLCON3_BANK_SHIFT)|BPLCON3_LOCT1
-NotteLo:
-	ds.w	NOTTE_VOCI*2
-NotteLoFine:
-	IFNE	(NotteLoFine-NotteLo)/4-NOTTE_VOCI
-GUARDIA_NOTTE_LO	EQU		1/0
-	ENDC
-
 	; Ripristino BPLCON3 a default LOCT=0 (per il prossimo frame)
 	dc.w	$0106,BPLCON3_LOCT0
 
@@ -10186,31 +9155,15 @@ GUARDIA_NOTTE_LO	EQU		1/0
 								; che scrive ImpostaDisplayGioco: era un $0044
 								; ricopiato in due posti.
 	dc.w	$0106,(2<<BPLCON3_BANK_SHIFT)|BPLCON3_LOCT0
-	; Le due etichette servono alla dissolvenza: dodici coppie contigue da 4
-	; byte col valore a +2, esattamente come GamePalHi/GamePalLo. I numeri di
-	; registro NON sono consecutivi (le voci 64, 68, 72 e 76 restano all'arte)
-	; ma alla passeggiata del fade non interessa: legge le coppie, non i
-	; registri. L'ORDINE qui e' anche quello di AlberiPal24, e le due cose
-	; devono restare allineate.
-AlberiPalHi:
 	dc.w	$0182,ALB_V_OMBRA_HI,$0184,ALB_V_CORPO_HI,$0186,ALB_V_LUCE_HI
 	dc.w	$018a,ALB_V_OMBRA_HI,$018c,ALB_V_CORPO_HI,$018e,ALB_V_LUCE_HI
 	dc.w	$0192,ALB_L_OMBRA_HI,$0194,ALB_L_CORPO_HI,$0196,ALB_L_LUCE_HI
 	dc.w	$019a,ALB_L_OMBRA_HI,$019c,ALB_L_CORPO_HI,$019e,ALB_L_LUCE_HI
-AlberiPalHiFine:
-	IFNE	(AlberiPalHiFine-AlberiPalHi)/4-FADE_VOCI_ALBERI
-GUARDIA_ALBERI_HI	EQU		1/0
-	ENDC
 	dc.w	$0106,(2<<BPLCON3_BANK_SHIFT)|BPLCON3_LOCT1
-AlberiPalLo:
 	dc.w	$0182,ALB_V_OMBRA_LO,$0184,ALB_V_CORPO_LO,$0186,ALB_V_LUCE_LO
 	dc.w	$018a,ALB_V_OMBRA_LO,$018c,ALB_V_CORPO_LO,$018e,ALB_V_LUCE_LO
 	dc.w	$0192,ALB_L_OMBRA_LO,$0194,ALB_L_CORPO_LO,$0196,ALB_L_LUCE_LO
 	dc.w	$019a,ALB_L_OMBRA_LO,$019c,ALB_L_CORPO_LO,$019e,ALB_L_LUCE_LO
-AlberiPalLoFine:
-	IFNE	(AlberiPalLoFine-AlberiPalLo)/4-FADE_VOCI_ALBERI
-GUARDIA_ALBERI_LO	EQU		1/0
-	ENDC
 	dc.w	$0106,BPLCON3_LOCT0	; banca 0, LOCT 0: da qui in giu' tutto come prima
 
 ; Gradiente cielo: e' parte della copperlist perche' cambia COLOR00 riga per

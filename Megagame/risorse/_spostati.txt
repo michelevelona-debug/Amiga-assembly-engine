@@ -25,3 +25,12 @@ grafica/Tiles
 grafica/Tiles.info
 suono/EnemyDeath.raw
 suono/HitEnemy.raw
+#--- esecuzione 2026-09-30 12:44 8 file
+Alieno.png	risorse/grafica/Alieno.png
+Alieno.xcf	risorse/grafica/Alieno.xcf
+grafica/fette_parallasse.raw	risorse/grafica/fette_parallasse.raw
+grafica/indicatore_sep.raw	risorse/grafica/indicatore_sep.raw
+grafica/mappa.raw	risorse/grafica/mappa.raw
+grafica/parallasse.raw	risorse/grafica/parallasse.raw
+LICENSE	risorse/LICENSE
+ptplayer.readme	risorse/ptplayer.readme
