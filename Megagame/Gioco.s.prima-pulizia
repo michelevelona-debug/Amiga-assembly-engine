@@ -24,10 +24,10 @@
 ; darkplane e parallasse UNO ALLA VOLTA per capire quale dei due avesse
 ; fatto esplodere il costo al passo 2b (WORST da 193 a 392). La misura e'
 ; stata fatta, valeva 3 da allora, e con 3 i due blocchi che dirottavano i
-; piani ausiliari su un piano vuoto erano codice morto mentre il
+; piani ausiliari su PathBVuoto erano codice morto mentre il
 ; BSR SwapParBuffers stava dentro un condizionale attorno a una chiamata
-; che deve avvenire sempre. Oggi quella misura non si puo' piu' rifare cosi':
-; la parallasse non sta piu' nei bitplane e PAR_DISABLE non esiste.
+; che deve avvenire sempre. Per rifare quella misura oggi si usa
+; PAR_DISABLE, che e' l'interruttore rimasto e fa la stessa cosa.
 
 ; TITLE SCREEN - misure del file grafica/title.raw
 ; Stavano in title.i, generato da png2amiga.py, ed e' stato tolto: di otto
@@ -54,92 +54,12 @@ TITLE_PLANE_SIZE	EQU		TITLE_BYTES_PER_ROW*TITLE_H	; byte per bitplane
 ;   3 = una banda per piano       -> 8 bande da 32 righe, indici 1,2,4..128
 TITLE_TEST_FILL		EQU		0
 
-; ============================================================================
-; IL DROIDE CHE FLUTTUA SOPRA L'ARMATURA
-;
-; Un BOB a 8 piani disegnato dentro la schermata del titolo. Le cinque pose
-; fanno pulsare i due getti di reazione e lampeggiare le due luci rosse.
-;
-; PERCHE' UN BOB E NON UNO SPRITE, che sarebbe stato piu' semplice: il titolo
-; usa TUTTE E 256 le voci di palette (contate sui pixel di title.raw, non sulla
-; palette). Uno sprite attaccato pretende un blocco allineato di 16 voci tutto
-; suo, e per averlo bisognerebbe sovrascrivere 16 colori del titolo, cioe'
-; guastare l'immagine. Un BOB si disegna dentro gli stessi otto piani e usa i
-; colori che il titolo ha GIA': costa zero voci.
-;
-; LA GEOMETRIA E' QUELLA DI DisegnaBOB, non una nuova: slot da (larghezza/16+1)
-; word - il +1 e' lo sconfinamento dello shift - fotogrammi affiancati, piani
-; contigui. La scrive tools/genera-droide.py, che stampa questi stessi numeri.
-;
-; LA MASCHERA E' UN FILE, non l'OR dei piani. BuildBobMask ricava la maschera
-; dai piani, e quel trucco impone che nessun pixel dell'arte valga 0. La voce 0
-; di title.pal e' $f2f9fb, il bianco piu' acceso che il titolo possiede:
-; escluderlo vorrebbe dire rinunciarci proprio sui riflessi e sul nucleo della
-; fiamma. Con la maschera scritta a parte l'indice 0 torna disponibile e un
-; buco per distrazione non puo' capitare. Costa 720 byte.
-DROIDE_LARGH		EQU		32
-DROIDE_ALT			EQU		24				; il disegno e' 1,34:1, non quadrato
-DROIDE_POSE			EQU		5
-DROIDE_PIANI		EQU		TITLE_PIANI		; sta dentro i piani del titolo
-DROIDE_SLOT_W		EQU		DROIDE_LARGH/16+1	; 3 word: due di arte, una per lo shift
-DROIDE_SLOT			EQU		DROIDE_SLOT_W*2		; byte per cella
-DROIDE_PITCH		EQU		DROIDE_SLOT*DROIDE_POSE		; byte per riga dello sheet
-DROIDE_PIANO		EQU		DROIDE_PITCH*DROIDE_ALT		; byte per piano
-DROIDE_LEN_ATTESA	EQU		DROIDE_PIANO*DROIDE_PIANI	; guardia sul .raw
-DROIDE_MASK_ATTESA	EQU		DROIDE_PIANO				; la maschera e' 1 piano
-; BLTSIZE e i moduli, derivati come fa DisegnaBOB
-DROIDE_BLTSIZE		EQU		(DROIDE_ALT<<6)|DROIDE_SLOT_W
-DROIDE_MOD_ARTE		EQU		DROIDE_PITCH-DROIDE_SLOT		; salto nello sheet
-DROIDE_MOD_DEST		EQU		TITLE_BYTES_PER_ROW-DROIDE_SLOT	; salto nel titolo
-
-; DOVE FLUTTUA. L'armatura sta al centro, x 145..172 y 155..215; il logo
-; finisce verso y 120. Il droide vive in quei 35 righe di mezzo: HOME e'
-; l'angolo in alto a sinistra a meta' corsa, e le ampiezze sono scelte perche'
-; il fondo del droide (Y+DROIDE_ALT) resti sopra la testa dell'armatura anche
-; nel punto piu' basso dell'oscillazione.
-DROIDE_HOME_X		EQU		142				; centro 158 = centro dell'armatura
-DROIDE_HOME_Y		EQU		124
-DROIDE_AMPI_X		EQU		10
-DROIDE_AMPI_Y		EQU		5
-; Il percorso e' un otto: la stessa tabella di seno letta a due velocita'
-; diverse. Con PASSO 3 e gli scorrimenti qui sotto, la Y compie un giro in
-; ~3,4 s e la X in ~6,8 s: fluttua, non oscilla.
-DROIDE_FASE_PASSO	EQU		3
-DROIDE_FASE_SH_Y	EQU		3
-DROIDE_FASE_SH_X	EQU		4
-SENO_VOCI			EQU		64				; voci della tabella, potenza di 2
-SENO_SCALA			EQU		8				; il valore e' seno*256 -> ASR #8
-; Quanti quadri dura una posa. Cinque pose a 6 quadri fanno un giro in mezzo
-; secondo: piu' veloce diventa nervoso, piu' lento sembra un semaforo.
-DROIDE_RITMO		EQU		6
-
 	include	"Startup2.i"		; Startup completo AGA + VBR + cache clear
+; Con DMASET decidiamo quali canali DMA aprire e quali chiudere
 
-; ---- I BIT DI DMACON, per nome ----
-; Startup2 spegne TUTTI i DMA (`MOVE.W #$7FFF,$96`, riga 304), quindi da li' in
-; avanti ogni canale va riacceso di proposito. Scrivere quei bit in binario
-; nasconde proprio la domanda che conta, cioe' QUALE canale manca.
-; ATTENZIONE, e' costato un blocco: se si scrive BLTSIZE con BLITEN SPENTO il
-; blitter mette BBUSY e non lo toglie mai, perche' non ottiene i cicli DMA per
-; finire. AspettaBlitter allora gira all'infinito e il programma si pianta
-; senza dare nessun errore. Chi accende una scena che usa il blitter DEVE
-; accendere anche DMA_BLITTER.
-DMA_SET		EQU		$8000		; bit 15: i bit a 1 si ACCENDONO (a 0 si spengono)
-DMA_MASTER	EQU		$0200		; DMAEN, il rubinetto generale
-DMA_BPL		EQU		$0100		; BPLEN
-DMA_COPPER	EQU		$0080		; COPEN
-DMA_BLITTER	EQU		$0040		; BLITEN
-DMA_SPRITE	EQU		$0020		; SPREN
-
-; Il DMA del GIOCO: tutto acceso, sprite compresi (ci vive la parallasse).
 	;5432109876543210
-DMASET	EQU	DMA_SET|DMA_MASTER|DMA_BPL|DMA_COPPER|DMA_BLITTER|DMA_SPRITE
-
-; Il DMA del TITOLO. Gli sprite restano SPENTI di proposito: la
-; TitleCopperList non scrive gli SPRxPT, quindi accenderli mostrerebbe quello
-; che i puntatori si portano dietro. Il blitter invece serve, ed e' l'unica
-; differenza rispetto a quello che c'era prima del droide.
-TIT_DMASET	EQU	DMA_SET|DMA_MASTER|DMA_BPL|DMA_COPPER|DMA_BLITTER
+DMASET	EQU	%1000001111100000	; bltr, copper, bitplane, SPRITE ON
+;DMASET	EQU	%1000001111100000	; con SPRITE DMA
 
 * COSTANTI
 ; ---- BOB e spritesheet (OMINO / NEMICO) ----
@@ -376,105 +296,6 @@ SFONDO_ROW_SCORTA	EQU		8
 BPLCON3_BRDRBLNK	EQU		$20
 BPLCON3_LOCT0		EQU		$0C00|BPLCON3_BRDRBLNK
 BPLCON3_LOCT1		EQU		$0E00|BPLCON3_BRDRBLNK
-
-; ============================================================================
-; LO STATO DI DISPLAY DELLE DUE SCENE
-;
-; Il programma mostra due schermate con geometrie diverse: il TITOLO (8 piani,
-; prelievo a 64 bit, DDF $28..$a8) e il GIOCO (6 piani, prelievo a 16 bit,
-; DDF da ScrollHW.i). Ogni valore stava scritto DUE VOLTE - una nel blocco di
-; MOVE che la CPU esegue e una nella copperlist della scena - e le due copie si
-; sono gia' scollate due volte: BPLCON4 restava a $0011 dall'epoca del falo'
-; sprite, e FMODE mancava del tutto dal blocco CPU di ShowTitle mentre la
-; copperlist lo scriveva. Nessuno dei due errori poteva essere visto
-; dall'assemblatore.
-;
-; Da qui in avanti il valore e' UNO SOLO e lo leggono tutti e due. Il blocco
-; CPU serve ancora, e non e' ridondanza: fra l'accensione del DMA bitplane e
-; la prima passata del copper c'e' una finestra in cui vale quello che ha
-; lasciato chi c'era prima.
-;
-; CHI SCRIVE COSA, perche' le due scene NON sono simmetriche:
-;   titolo - la copperlist scrive tutto, e ImpostaDisplayTitolo ripete gli
-;            stessi dodici valori come cintura prima di accendere il DMA;
-;   gioco  - la copperlist scrive FMODE, BPLCON0/1/2, i moduli, DDF e DIW;
-;            BPLCON3 e BPLCON4 NON ci sono di proposito (il blocco PALETTE
-;            gestisce BPLCON3 con LOCT alternato), quindi quei due li scrive
-;            solo la CPU. ImpostaDisplayGioco e' percio' corta di dodici
-;            valori: non e' una dimenticanza, e' dove passa il confine.
-; ============================================================================
-TIT_FMODE		EQU		$0003			; BPL32+BPAGEM: prelievo bitplane a 64 bit
-TIT_BPLCON0		EQU		%0000001000010001	; BPU3=1 (8 piani) + COLOR + ECSENA
-TIT_BPLCON1		EQU		$0000
-TIT_BPLCON2		EQU		$0024			; PF2P=4, PF1P=4
-TIT_BPLCON3		EQU		BPLCON3_BRDRBLNK	; banco 0, LOCT=0, bordo nero
-TIT_BPLCON4		EQU		$0000			; sprite alle voci 16..31 (OCS standard)
-TIT_BPLMOD		EQU		$0000			; layout sequenziale: nessun modulo
-TIT_DDFSTRT		EQU		$0028			; 5 prelievi da 64 px = 320 px
-TIT_DDFSTOP		EQU		$00a8
-; La finestra del titolo e' SUA e non passa da DIW_H_START, che e' tarato sui
-; vincoli del gioco (guardia della parallasse e ritardo BPLCON1). Sostituendola
-; una volta per sbaglio la finestra era diventata di 289 px invece di 320.
-TIT_DIWSTRT		EQU		$2c81
-TIT_DIWSTOP		EQU		$2cc1
-; Il valore DEL GIOCO per BPLCON4: ESPRM=OSPRM=$4, cioe' gli sprite leggono le
-; voci 64..79, che e' dove InitParallasseSprite mette le tinte degli alberi.
-GIOCO_BPLCON4	EQU		$0044
-
-; ============================================================================
-; L'ALBA - prima videata dell'intro. Il codice sta in Intro.i.
-;
-; L'immagine non si muove mai: si muove la PALETTE, e la scrive il copper in
-; cima al quadro. La geometria di display e' quella del titolo (le TIT_* qui
-; sopra), quindi il passaggio titolo -> intro non tocca un registro.
-;
-; Le prime ALBA_VOCI_ARCO voci sono l'arco luminoso e si animano; le altre
-; sono il disco scuro del pianeta e lo spazio, che si vedono dal primo quadro
-; e non cambiano mai. L'ordine non e' un caso: lo impone il generatore, cosi'
-; "questa voce si anima?" a runtime non serve nemmeno chiederselo.
-; ============================================================================
-ALBA_LARG			EQU		320
-ALBA_ALT			EQU		256
-ALBA_PIANI			EQU		8			; come il titolo: 256 colori
-ALBA_BYTES_RIGA		EQU		ALBA_LARG/8
-ALBA_PLANE_SIZE		EQU		ALBA_BYTES_RIGA*ALBA_ALT
-ALBA_LEN_ATTESA		EQU		ALBA_PLANE_SIZE*ALBA_PIANI	; guardia sul .raw
-ALBA_VOCI			EQU		1<<ALBA_PIANI
-ALBA_VOCI_ARCO		EQU		180			; quante voci sono l'arco (le prime)
-
-; I LIVELLI DELLA RAMPA. Misurato: la voce che viaggia di piu' copre 87 L*,
-; quindi il gradino vale 87/ALBA_LIVELLI. Con 64 sarebbe 1,36 L*, con 128 e'
-; 0,68, sotto la soglia percettiva anche col metro SPAZIALE - che qui e' pure
-; troppo severo, perche' questo gradino sta nel TEMPO. Dimezzando i livelli si
-; dimezza la tabella: e' la manopola, e va rigenerata l'arte.
-ALBA_LIVELLI		EQU		128
-ALBA_LIV_SH			EQU		1			; quadri per livello = 2^ALBA_LIV_SH
-	IFLT	ALBA_LIV_SH-1
-ERRORE_ALBA_LIV_SH_SOTTO_1		EQU		1/0		; LSR immediato: 1..8
-	ENDC
-	IFGT	ALBA_LIV_SH-8
-ERRORE_ALBA_LIV_SH_SOPRA_8		EQU		1/0
-	ENDC
-ALBA_RAMPA_QUADRI	EQU		ALBA_LIVELLI<<ALBA_LIV_SH	; una rampa intera
-ALBA_SPREAD			EQU		192			; scarto fra la prima voce e l'ultima
-ALBA_QUADRI			EQU		ALBA_SPREAD+ALBA_RAMPA_QUADRI	; 448 = 8,96 s
-ALBA_RAMPA_VOCE		EQU		ALBA_LIVELLI*4				; byte per voce
-ALBA_RAMPE_ATTESA	EQU		ALBA_VOCI*ALBA_RAMPA_VOCE	; guardia sul .raw
-ALBA_INIZIO_ATTESA	EQU		ALBA_VOCI*2					; guardia sul .raw
-
-; IL BLOCCO COPPER. Per banco: una MOVE su BPLCON3 e ALBA_COP_SLOT MOVE sui
-; COLORxx, due volte - i nibble alti e i bassi, che e' come si scrive una
-; palette AGA a 24 bit. Tutto derivato, niente scritto a mano.
-ALBA_COP_SLOT		EQU		32							; COLOR00..COLOR31
-ALBA_COP_BANCHI		EQU		ALBA_VOCI/ALBA_COP_SLOT		; 8
-ALBA_COP_MOVE		EQU		(1+ALBA_COP_SLOT)*2			; MOVE per banco = 66
-ALBA_COP_BANCO		EQU		ALBA_COP_MOVE*4				; byte per banco = 264
-ALBA_COP_WORDS		EQU		ALBA_COP_BANCHI*ALBA_COP_MOVE*2	; 1056
-; Distanza fra la word dei nibble ALTI di una voce e quella dei BASSI: una
-; MOVE di BPLCON3 piu' i 32 COLOR della prima passata.
-ALBA_COP_LO_OFS		EQU		(1+ALBA_COP_SLOT)*4			; 132
-; Quanto saltare a fine banco per arrivare al primo valore del banco dopo.
-ALBA_COP_SALTO		EQU		ALBA_COP_BANCO-ALBA_COP_SLOT*4	; 136
 ; Il pitch deve contenere: guardia + origine del mondo + una riga intera di
 ; mappa, arrotondato al multiplo di 8 richiesto da FMODE=3. Era scritto a
 ; mano (64): con 56 l'ultima colonna sforava nella riga successiva, e con
@@ -689,20 +510,14 @@ ALB_L_LUCE_LO	EQU		((((ALBERI_L_LUCE_RGB>>16)&15)<<8)|(((ALBERI_L_LUCE_RGB>>8)&1
 ;   riga 0: dieci cifre, ognuna col suo rotolamento verso la successiva.
 ;           Il fotogramma 0 di ogni cifra e' la cifra FERMA: la cifra N sta
 ;           alla colonna N*ROTELLA_PASSI.
-;   riga 1: quattro fotogrammi di rotazione veloce, disegnati ma MAI USATI.
-;           Il 7 settembre 2026 Michele ha deciso che il rotolamento cosi'
-;           com'e' gli piace e che in questo gioco la rotazione veloce non
-;           serve. L'arte resta nella striscia: e' gia' disegnata, sta in fast
-;           RAM e toglierla vorrebbe dire rigenerare il .raw per 1280 byte.
+;   riga 1: i fotogrammi della rotazione veloce. Non indicano un numero, danno
+;           il senso della velocita' quando il punteggio fa un salto grosso.
 ROTELLA_W			EQU		8			; lato di un fotogramma (px)
 ROTELLA_H			EQU		8
 ROTELLA_PIANI		EQU		2
 ROTELLA_CIFRE		EQU		10
 ROTELLA_PASSI		EQU		4			; fotogrammi da una cifra alla successiva
-ROTELLA_VELOCI		EQU		4			; fotogrammi di rotazione veloce nella
-					; riga 1. Descrive l'arte e basta: nessuna EQU ci discende
-					; e nessuna routine la legge, perche' quella rotazione non
-					; si usa.
+ROTELLA_VELOCI		EQU		4			; fotogrammi della rotazione veloce
 ROTELLA_RIGHE		EQU		2			; righe di celle nella striscia
 ; Da qui in giu' e' tutto derivato: la striscia e' fatta cosi' perche' i
 ; fotogrammi sono quelli, non viceversa.
@@ -750,10 +565,8 @@ PUNTI_NEMICO		EQU		100
 ;   con 2 -> 25 punti/s, se ne vedono due su quattro
 ;   con 4 -> 50 punti/s ma la fase e' sempre 0: si torna allo scatto netto
 ; Sopra 1 il rotolamento perde fotogrammi, e con 3 li mostra pure fuori ordine
-; (0,3,2,1). QUINDI QUESTO VALORE RESTA 1: la velocita' non si alza di qui.
-; L'altra strada - la rotazione veloce della riga 1 dello sheet - e' stata
-; guardata e SCARTATA il 7 settembre 2026: il rotolamento a 12,5 punti al
-; secondo e' quello che si vuole vedere in questo gioco.
+; (0,3,2,1): se serve piu' velocita' la strada giusta e' la rotazione veloce
+; della riga 1 dello sheet, che e' disegnata apposta per i salti grossi.
 ; A 0 il punteggio non arriverebbe mai: non metterlo a 0.
 PUNTEGGIO_PASSO		EQU		1
 
@@ -1369,10 +1182,12 @@ DARK_MAX_WORDX		EQU		(DARK_ROW_BYTES/2)-LIGHT_MASK_W
 DARK_MAX_X			EQU		DARK_ROW_BYTES*8-1
 DARK_MAX_ROWS		EQU		SFONDO_HEIGHT
 
-; DARK_PAD_ROWS e DARK_ROWS stavano qui: righe di padding sotto le 256 visibili
-; del dark plane, contro l'over-fetch in fondo. Servivano solo a dimensionare
-; PathBVuoto, che non c'e' piu'. Il darkplane vero e' alto SFONDO_HEIGHT (368
-; righe) come i piani del mondo, quindi quel margine ce l'ha gia'.
+; Righe di "padding" extra sotto le 256 visibili nel dark plane: assorbono
+; un eventuale over-fetch di 1+ righe in fondo, evitando che la DMA legga
+; nel buffer adiacente (contenuto diverso tra A e B -> sfarfallio in basso).
+;DARK_PAD_ROWS		EQU		16
+DARK_PAD_ROWS		EQU		0
+DARK_ROWS			EQU		256+DARK_PAD_ROWS
 
 ; Righe di "padding" tra un piano e l'altro di BPSFONDO. Con FMODE=3 (fetch
 ; AGA a 64 bit) il prefetch in fondo allo schermo legge righe oltre 255 di
@@ -1682,13 +1497,7 @@ START:
 
 	; ----- Mostra title screen e attende input -----
 	BSR.W	ShowTitle				; setup 8 BPL AGA + palette + copper
-	BSR.W	WaitTitleInput			; il droide fluttua fino a SPACE o fire
-
-	; ----- Poi l'intro: l'alba sul lembo della Terra (Intro.i) -----
-	; Stessa geometria di display del titolo e stesso DMA, quindi qui in mezzo
-	; non c'e' niente da riconfigurare. La musica continua: la ferma il blocco
-	; qui sotto, quando parte il gioco.
-	BSR.W	IntroEsegui
+	BSR.W	WaitTitleInput			; busy-loop fino a SPACE o fire
 
 	; ----- Click: ferma la musica della title -----
 	MOVE.B	#0,_mt_Enable
@@ -1724,13 +1533,22 @@ START:
 	MOVE.L	#CopperList,$80(A6)		; Puntiamo la nostra COP
 	MOVE.W	D0,$88(A6)				; Facciamo partire la COP
 
-	; Rimette i registri di display DEL GIOCO: il titolo aveva i suoi, e questi
-	; tre la copperlist del gioco non li scrive (vedi ImpostaDisplayGioco).
-	BSR.W	ImpostaDisplayGioco
-	; Gli otto SPRxPT non si scrivono da qui: AggiornaCopperSPR li ha gia' messi
-	; a EmptySprite nella copperlist col DMA spento, e il copper li ricarica da
-	; li' a ogni quadro. Le otto MOVE.L che stavano qui erano un ripiego
-	; dell'epoca in cui la copperlist non li aggiornava.
+	; Ripristina FMODE/BPLCON3/BPLCON4 per il gioco (la title li aveva
+	; impostati ma per sicurezza li riscriviamo, in caso siano cambiati).
+	MOVE.W	#SCROLL_FMODE_VAL,$1fc(A6)	; FMODE: vedi SCROLL_FETCH_BIT
+	MOVE.W	#BPLCON3_LOCT0,$106(A6)	; BPLCON3 default
+	MOVE.W	#$0011,$10c(A6)			; BPLCON4: BPLAM=0, ESPRM=$1, OSPRM=$1 (entrambi sprite a COLOR17-19 arancione)
+	; ----- DEBUG: scrivi SPR0PT direttamente nei registri custom -----
+	; In caso la copperlist non riesca ad aggiornare i puntatori sprite,
+	; settiamo manualmente SPR0PT sul primo frame e SPR1..7 su EmptySprite.
+	MOVE.L	#EmptySprite,$120(A6)	; SPR0PT: il falo' e' un BOB, nessuno sprite acceso
+	MOVE.L	#EmptySprite,$124(A6)	; SPR1PT
+	MOVE.L	#EmptySprite,$128(A6)	; SPR2PT
+	MOVE.L	#EmptySprite,$12c(A6)	; SPR3PT
+	MOVE.L	#EmptySprite,$130(A6)	; SPR4PT
+	MOVE.L	#EmptySprite,$134(A6)	; SPR5PT
+	MOVE.L	#EmptySprite,$138(A6)	; SPR6PT
+	MOVE.L	#EmptySprite,$13c(A6)	; SPR7PT
 
 	BSR.W   InitPlayer				; <-- INIZIALIZZA IL PLAYER
 	BSR.W   InitEnemies				; <-- INIZIALIZZA I NEMICI
@@ -4300,244 +4118,10 @@ TitleTestFill:
 	RTS
 	ENDC
 
-* ImpostaDisplayTitolo / ImpostaDisplayGioco
-*   Lo stato di display di una scena, in un posto solo. IN: A6 = $DFF000.
-*
-* Il blocco della CPU non e' ridondante rispetto alla copperlist: il DMA
-* bitplane si accende PRIMA che COP1LC punti alla lista, quindi fra
-* l'accensione e la prima passata del copper il prelievo gira con quello che
-* ha lasciato la scena precedente. E' esattamente il buco in cui era caduto
-* FMODE, che dal blocco CPU mancava.
-*
-* I valori sono le EQU TIT_* e GIOCO_*, le stesse che leggono le copperlist:
-* qui non c'e' un solo numero scritto a mano, ed e' il punto della modifica.
-* NESSUN VALORE E' CAMBIATO: sono le stesse dodici MOVE di prima, nello stesso
-* ordine, con i letterali sostituiti dalle EQU che valgono lo stesso.
-*
-* ImpostaDisplayGioco ne scrive TRE e non e' una dimenticanza: la copperlist
-* del gioco scrive gia' FMODE, BPLCON0/1/2, i moduli, DDF e DIW a ogni quadro,
-* mentre BPLCON3 e BPLCON4 ne stanno fuori di proposito (li governa il blocco
-* PALETTE con LOCT alternato). Scriverli anche qui creerebbe la seconda copia
-* che questa modifica sta togliendo.
-ImpostaDisplayTitolo:
-	MOVE.W	#TIT_FMODE,$1FC(A6)		; PRIMA di tutto: decide la larghezza del prelievo
-	MOVE.W	#TIT_BPLCON0,$100(A6)	; 8 bitplane + COLOR + ECSENA
-	MOVE.W	#TIT_BPLCON1,$102(A6)
-	MOVE.W	#TIT_BPLCON2,$104(A6)
-	MOVE.W	#TIT_BPLCON3,$106(A6)	; banco 0, LOCT=0, bordo nero
-	MOVE.W	#TIT_BPLCON4,$10c(A6)
-	MOVE.W	#TIT_BPLMOD,$108(A6)	; BPL1MOD: layout sequenziale
-	MOVE.W	#TIT_BPLMOD,$10a(A6)	; BPL2MOD
-	; ($a8-$28)/32 = 4 -> cinque prelievi per riga, 5*64 px = 320 px
-	MOVE.W	#TIT_DDFSTRT,$92(A6)
-	MOVE.W	#TIT_DDFSTOP,$94(A6)
-	MOVE.W	#TIT_DIWSTRT,$8e(A6)
-	MOVE.W	#TIT_DIWSTOP,$90(A6)
-	RTS
-
-ImpostaDisplayGioco:
-	MOVE.W	#SCROLL_FMODE_VAL,$1fc(A6)	; prelievo del GIOCO, vedi SCROLL_FETCH_BIT
-	MOVE.W	#BPLCON3_LOCT0,$106(A6)
-	MOVE.W	#GIOCO_BPLCON4,$10c(A6)		; sprite alle voci 64..79
-	RTS
-
-* ============================================================================
-* IL DROIDE DELLA SCHERMATA DEL TITOLO
-*
-* Quattro routine: una di avvio, una per quadro, e due di servizio che fanno
-* il lavoro del blitter. La geometria e le ragioni stanno nelle EQU DROIDE_*
-* in testa al file.
-*
-* IL CICLO DI UN QUADRO e' lo stesso dei BOB del gioco, ridotto a un oggetto
-* solo: si ripulisce il rettangolo di IERI dal master, si calcola dove sta
-* oggi, si disegna. Il ripristino viene PRIMA del calcolo apposta: la posizione
-* nuova puo' sovrapporsi alla vecchia, e pulire dopo aver disegnato
-* cancellerebbe un pezzo del droide appena messo giu'.
-*
-* QUANDO GIRA, rispetto al pennello: AspettaVBL torna alla riga VBL_SYNC_LINE
-* (220), il droide vive fra le righe di display 119 e 153, cioe' raster 163..197.
-* Il pennello e' quindi GIA' passato sopra di lui quando si comincia a
-* disegnare, e ha 116 righe di margine prima di ripassarci. Non c'e' corsa.
-* ============================================================================
-
-* DroideInit - stato di partenza e copia del titolo nel buffer di lavoro
-*   Da chiamare PRIMA di puntare i bitplane, che devono guardare TitoloBuf.
-DroideInit:
-	MOVEM.L	D0/A0-A1,-(SP)
-	LEA		title_bpl,A0			; il master, l'incbin intatto
-	LEA		TitoloBuf,A1			; la copia che va a video
-	MOVE.W	#TITLE_PLANE_SIZE*TITLE_PIANI/4-1,D0
-.copia:
-	MOVE.L	(A0)+,(A1)+
-	DBRA	D0,.copia
-	CLR.W	DroideFase
-	CLR.W	DroidePosa
-	CLR.W	DroideCont
-	MOVE.W	#-1,DroidePrecX			; al primo giro non c'e' scia da togliere
-	MOVEM.L	(SP)+,D0/A0-A1
-	RTS
-
-* AnimaDroide - un quadro. IN: A6 = $DFF000
-AnimaDroide:
-	MOVEM.L	D0-D5/A0-A3,-(SP)
-
-	MOVE.W	DroidePrecX,D0			; -1 = non ha ancora disegnato niente
-	BMI.S	.nienteDaPulire
-	MOVE.W	DroidePrecY,D1
-	BSR.W	DroideRipristina
-.nienteDaPulire:
-
-	; ---- il percorso: la STESSA tabella letta a due velocita' ----
-	; Y avanza il doppio di X (uno scorrimento di differenza), quindi il
-	; tragitto e' un otto e non un segmento: fluttua invece di oscillare.
-	MOVE.W	DroideFase,D0
-	ADD.W	#DROIDE_FASE_PASSO,D0
-	MOVE.W	D0,DroideFase
-	LEA		TabSeno,A0
-
-	MOVE.W	D0,D1
-	LSR.W	#DROIDE_FASE_SH_X,D1
-	AND.W	#SENO_VOCI-1,D1			; l'indice con un AND: le voci sono 2^n
-	ADD.W	D1,D1
-	MOVE.W	(A0,D1.W),D1
-	MULS	#DROIDE_AMPI_X,D1		; MULS.W da un risultato LONG
-	ASR.L	#SENO_SCALA,D1			; la tabella e' seno*256
-	ADD.W	#DROIDE_HOME_X,D1
-	MOVE.W	D1,DroideX
-
-	MOVE.W	D0,D2
-	LSR.W	#DROIDE_FASE_SH_Y,D2
-	AND.W	#SENO_VOCI-1,D2
-	ADD.W	D2,D2
-	MOVE.W	(A0,D2.W),D2
-	MULS	#DROIDE_AMPI_Y,D2
-	ASR.L	#SENO_SCALA,D2
-	ADD.W	#DROIDE_HOME_Y,D2
-	MOVE.W	D2,DroideY
-
-	; ---- la posa ----
-	ADDQ.W	#1,DroideCont
-	CMP.W	#DROIDE_RITMO,DroideCont
-	BLT.S	.stessaPosa
-	CLR.W	DroideCont
-	ADDQ.W	#1,DroidePosa
-	CMP.W	#DROIDE_POSE,DroidePosa
-	BLT.S	.stessaPosa
-	CLR.W	DroidePosa
-.stessaPosa:
-
-	MOVE.W	DroideX,D0
-	MOVE.W	DroideY,D1
-	BSR.W	DroideDisegna
-	MOVE.W	D0,DroidePrecX			; il rettangolo da ripulire al giro dopo
-	MOVE.W	D1,DroidePrecY
-
-	MOVEM.L	(SP)+,D0-D5/A0-A3
-	RTS
-
-* DroideGeometria - da X,Y all'offset nel piano e allo shift
-*   IN:  D0.w = X (px), D1.w = Y (righe)
-*   OUT: D2.l = byte dall'inizio di un piano, D3.w = shift orizzontale 0..15
-*   Sporca D2/D3/D4, non tocca D0/D1.
-DroideGeometria:
-	MOVE.W	D0,D3
-	AND.W	#15,D3					; shift = X mod 16
-	MOVE.W	D1,D2
-	MULU.W	#TITLE_BYTES_PER_ROW,D2	; D2.l = riga * pitch del titolo
-	MOVE.W	D0,D4
-	LSR.W	#4,D4					; word
-	ADD.W	D4,D4					; -> byte, sempre pari
-	EXT.L	D4
-	ADD.L	D4,D2
-	RTS
-
-* DroideRipristina - rimette dal master il rettangolo dove stava il droide
-*   IN: D0.w = X, D1.w = Y, A6 = $DFF000
-*   Il rettangolo e' largo DROIDE_SLOT_W word, cioe' UNA IN PIU' dell'arte:
-*   deve coprire anche i pixel che lo shift ha spinto oltre le due word.
-DroideRipristina:
-	MOVEM.L	D0-D4/A0-A1,-(SP)
-	BSR.W	DroideGeometria			; D2 = offset (lo shift qui non serve)
-	LEA		title_bpl,A0
-	ADDA.L	D2,A0
-	LEA		TitoloBuf,A1
-	ADDA.L	D2,A1
-	BSR.W	AspettaBlitter
-	MOVE.W	#$09F0,$40(A6)			; BLTCON0: D = A, copia semplice
-	MOVE.W	#$0000,$42(A6)			; BLTCON1: nessuno shift
-	MOVE.L	#$ffffffff,$44(A6)		; BLTAFWM/BLTALWM aperte
-	MOVE.W	#DROIDE_MOD_DEST,$64(A6)	; BLTAMOD
-	MOVE.W	#DROIDE_MOD_DEST,$66(A6)	; BLTDMOD
-	MOVEQ	#DROIDE_PIANI-1,D0
-.piano:
-	BSR.W	AspettaBlitter
-	MOVE.L	A0,$50(A6)				; BLTAPT = master
-	MOVE.L	A1,$54(A6)				; BLTDPT = copia di lavoro
-	MOVE.W	#DROIDE_BLTSIZE,$58(A6)	; avvia
-	ADDA.L	#TITLE_PLANE_SIZE,A0
-	ADDA.L	#TITLE_PLANE_SIZE,A1
-	DBRA	D0,.piano
-	MOVEM.L	(SP)+,D0-D4/A0-A1
-	RTS
-
-* DroideDisegna - cookie cut delle otto piani con la maschera
-*   IN: D0.w = X, D1.w = Y, A6 = $DFF000
-*   A = maschera (una sola, non avanza fra i piani), B = arte, C = sfondo.
-*   Minterm $CA = (A AND B) OR (NOT A AND C): dove la maschera e' 1 passa
-*   l'arte, dove e' 0 resta il titolo.
-DroideDisegna:
-	MOVEM.L	D0-D5/A0-A3,-(SP)
-	BSR.W	DroideGeometria			; D2 = offset, D3 = shift
-
-	MOVE.W	DroidePosa,D4
-	MULU.W	#DROIDE_SLOT,D4			; la cella della posa dentro la riga
-	LEA		Droide,A2
-	ADDA.L	D4,A2					; arte, primo piano
-	LEA		DroideMask,A3
-	ADDA.L	D4,A3					; maschera, unica per tutti i piani
-	LEA		TitoloBuf,A1
-	ADDA.L	D2,A1					; sfondo e destinazione, primo piano
-
-	MOVE.W	D3,D5
-	LSL.W	#8,D5
-	LSL.W	#4,D5					; shift << 12
-	MOVE.W	D5,D4					; BLTCON1 = BSH << 12 (shift sull'arte)
-	OR.W	#$0FCA,D5				; BLTCON0 = ASH<<12 | USEA-D | cookie cut
-
-	BSR.W	AspettaBlitter
-	MOVE.L	#$ffffffff,$44(A6)		; BLTAFWM/BLTALWM aperte: la word di
-									; riempimento in coda alla cella fa gia'
-									; entrare zeri nella prima word della riga
-									; dopo, che e' il motivo per cui c'e'
-	MOVE.W	D5,$40(A6)				; BLTCON0
-	MOVE.W	D4,$42(A6)				; BLTCON1
-	MOVE.W	#DROIDE_MOD_ARTE,$64(A6)	; BLTAMOD = maschera
-	MOVE.W	#DROIDE_MOD_ARTE,$62(A6)	; BLTBMOD = arte
-	MOVE.W	#DROIDE_MOD_DEST,$60(A6)	; BLTCMOD = sfondo
-	MOVE.W	#DROIDE_MOD_DEST,$66(A6)	; BLTDMOD = destinazione
-
-	MOVEQ	#DROIDE_PIANI-1,D0
-.piano:
-	BSR.W	AspettaBlitter
-	MOVE.L	A3,$50(A6)				; BLTAPT = maschera (la stessa ogni piano)
-	MOVE.L	A2,$4C(A6)				; BLTBPT = arte di QUESTO piano
-	MOVE.L	A1,$48(A6)				; BLTCPT = sfondo
-	MOVE.L	A1,$54(A6)				; BLTDPT = destinazione
-	MOVE.W	#DROIDE_BLTSIZE,$58(A6)	; avvia
-	ADDA.L	#DROIDE_PIANO,A2
-	ADDA.L	#TITLE_PLANE_SIZE,A1
-	DBRA	D0,.piano
-	MOVEM.L	(SP)+,D0-D5/A0-A3
-	RTS
-
 * ShowTitle
-*   1) Imposta lo stato di display del titolo.
-*   2) Copia title_bpl in TitoloBuf (DroideInit) e patcha i puntatori
-*      BPL1..8PT, quelli della CPU e quelli della TitleCopperList, su
-*      TITOLOBUF: a video va la copia di lavoro, non l'incbin, perche' il
-*      droide ci disegna sopra e il master serve intatto per il ripristino.
-*   3) Carica la palette AGA 256 colori via CPU da title_pal.
-*   4) Punta il copper a TitleCopperList e abilita BPL+COPPER DMA.
+*   1) Patcha i puntatori BPL1..8PT della TitleCopperList su title_bpl.
+*   2) Carica la palette AGA 256 colori via CPU da title_pal.
+*   3) Punta il copper a TitleCopperList e abilita BPL+COPPER DMA.
 ShowTitle:
 	MOVEM.L	D0-D1/A1/A6,-(SP)
 	IFNE	TITLE_TEST_FILL
@@ -4545,27 +4129,44 @@ ShowTitle:
 	ENDC
 	LEA		$DFF000,A6
 
-	BSR.W	ImpostaDisplayTitolo
-
-	; Copia il titolo nel buffer di lavoro. DEVE stare qui, prima che i
-	; puntatori guardino TitoloBuf: il DMA non deve mai leggere un buffer
-	; ancora vuoto. Da qui in poi title_bpl e' il MASTER e non va a video.
-	BSR.W	DroideInit
+	; --- Setup display via CPU (ridondante con la copperlist ma garantisce
+	;     valori corretti gia' al primo frame, anche se il copper non parte). ---
+	; FMODE MANCAVA da questo blocco, ed era l'unico registro di display a non
+	; esserci. Non e' pignoleria: piu' sotto il DMA bitplane viene acceso PRIMA
+	; che COP1LC punti alla TitleCopperList, quindi fra l'accensione e la prima
+	; esecuzione della lista il fetch gira con l'FMODE lasciato da chi c'era
+	; prima. La copperlist lo scrive comunque in testa: questa e' la cintura, e
+	; il commento della copperlist dice proprio che FMODE va messo PRIMA di
+	; abilitare il DMA bitplane.
+	MOVE.W	#$0003,$1FC(A6)			; FMODE = BPL32+BPAGEM (fetch a 64 bit)
+	MOVE.W	#$0211,$100(A6)			; BPLCON0: BPU3=1 (=8 BPL) + COLOR + ECSENA (no UHRES)
+	MOVE.W	#$0000,$102(A6)			; BPLCON1
+	MOVE.W	#$0024,$104(A6)			; BPLCON2: PF2P=4, PF1P=4 (come gioco)
+	MOVE.W	#BPLCON3_BRDRBLNK,$106(A6)	; BPLCON3: banca 0, LOCT=0, bordo NERO
+	MOVE.W	#$0000,$10c(A6)			; BPLCON4
+	MOVE.W	#$0000,$108(A6)			; BPL1MOD (sequential layout)
+	MOVE.W	#$0000,$10a(A6)			; BPL2MOD
+	; AGA 8 BPL lores FMODE=3: DDFSTRT/STOP allineati al fetch interval di 32cc.
+	; ($A8 - $28) / 32 = 4 -> esattamente 5 fetch per riga, 5*64px = 320px.
+	MOVE.W	#$0028,$92(A6)			; DDFSTRT
+	MOVE.W	#$00a8,$94(A6)			; DDFSTOP (5 fetch FMODE=3 allineati)
+	MOVE.W	#$2c81,$8e(A6)			; DIWSTRT
+	MOVE.W	#$2cc1,$90(A6)			; DIWSTOP
 
 	; --- Setup BPL pointers via CPU (8 plane SEQUENTIAL, 10240 byte/plane) ---
-	MOVE.L	#TitoloBuf,$E0(A6)								; BPL1PT
-	MOVE.L	#TitoloBuf+TITLE_PLANE_SIZE,$E4(A6)				; BPL2PT
-	MOVE.L	#TitoloBuf+TITLE_PLANE_SIZE*2,$E8(A6)			; BPL3PT
-	MOVE.L	#TitoloBuf+TITLE_PLANE_SIZE*3,$EC(A6)			; BPL4PT
-	MOVE.L	#TitoloBuf+TITLE_PLANE_SIZE*4,$F0(A6)			; BPL5PT
-	MOVE.L	#TitoloBuf+TITLE_PLANE_SIZE*5,$F4(A6)			; BPL6PT
-	MOVE.L	#TitoloBuf+TITLE_PLANE_SIZE*6,$F8(A6)			; BPL7PT
-	MOVE.L	#TitoloBuf+TITLE_PLANE_SIZE*7,$FC(A6)			; BPL8PT
+	MOVE.L	#title_bpl,$E0(A6)								; BPL1PT
+	MOVE.L	#title_bpl+TITLE_PLANE_SIZE,$E4(A6)				; BPL2PT
+	MOVE.L	#title_bpl+TITLE_PLANE_SIZE*2,$E8(A6)			; BPL3PT
+	MOVE.L	#title_bpl+TITLE_PLANE_SIZE*3,$EC(A6)			; BPL4PT
+	MOVE.L	#title_bpl+TITLE_PLANE_SIZE*4,$F0(A6)			; BPL5PT
+	MOVE.L	#title_bpl+TITLE_PLANE_SIZE*5,$F4(A6)			; BPL6PT
+	MOVE.L	#title_bpl+TITLE_PLANE_SIZE*6,$F8(A6)			; BPL7PT
+	MOVE.L	#title_bpl+TITLE_PLANE_SIZE*7,$FC(A6)			; BPL8PT
 
 	; --- Patch BPL pointers anche nella TitleCopperList (per i frame
 	;     successivi al primo: il copper li resetta a ogni vertical blank). ---
 	LEA		TitleBPL_0,A1
-	MOVE.L	#TitoloBuf,D0
+	MOVE.L	#title_bpl,D0
 	MOVEQ	#8-1,D1
 .bpl_loop:
 	MOVE.W	D0,6(A1)				; word bassa
@@ -4580,12 +4181,7 @@ ShowTitle:
 	BSR.W	LoadAGAPalette256
 
 	; --- Ordine identico al setup del gioco: DMA on, COP1LC, strobe ---
-	; SET + DMAEN + BPLEN + COPEN + BLITEN. Il BLITTER e' l'aggiunta rispetto
-	; al $8380 che c'era qui: senza, AnimaDroide scrive BLTSIZE con BLITEN
-	; spento, BBUSY resta alto per sempre e AspettaBlitter gira all'infinito.
-	; Il gioco non se ne accorgeva perche' fino al droide nessuno blittava
-	; prima di DMASET, che arriva solo DOPO il titolo.
- 	MOVE.W	#TIT_DMASET,$96(A6)
+ 	MOVE.W	#$8380,$96(A6)				; SET + DMAEN + BPLEN + COPEN
 	MOVE.L	#TitleCopperList,$80(A6)	; COP1LCH
 	MOVE.W	D0,$88(A6)					; COPJMP1 strobe
 
@@ -4597,11 +4193,9 @@ ShowTitle:
 *   Aspetta poi il rilascio di entrambi prima di tornare, in modo che il
 *   gioco non veda subito un evento di sparo o un edge "spurio".
 WaitTitleInput:
-	MOVEM.L	D0/A6,-(SP)
-	LEA		$DFF000,A6					; AnimaDroide vuole A6 sul chipset
+	MOVEM.L	D0,-(SP)
 .wait_press:
 	BSR.W	AspettaVBL
-	BSR.W	AnimaDroide					; il droide fluttua finche' si aspetta
 	BSR.W	LeggiTastiera				; aggiorna key_space
 	TST.B	key_space
 	BNE.S	.pressed
@@ -4612,8 +4206,6 @@ WaitTitleInput:
 .pressed:
 .wait_release:
 	BSR.W	AspettaVBL
-	BSR.W	AnimaDroide					; anche col tasto premuto: fermarlo
-										; qui lo farebbe scattare al rilascio
 	BSR.W	LeggiTastiera
 	TST.B	key_space
 	BNE.S	.wait_release
@@ -4625,8 +4217,7 @@ WaitTitleInput:
 	; Reset stato fire per il gioco
 	MOVE.W	#0,FirePrev
 	MOVE.B	#0,key_space
-	MOVEM.L	(SP)+,D0/A6					; A6 e' entrato nella lista quando il
-										; droide ha avuto bisogno del chipset
+	MOVEM.L	(SP)+,D0
 	RTS
 
 * PlaySfx
@@ -6211,14 +5802,7 @@ DisegnaBOB:
 	; ----------------- BLTCON0 = (shift << 12) | $0FCA -----------------
 	; bit 15-12: ASH (shift sorgente A)
 	; bit 11-8:  USEA|USEB|USEC|USED = $F
-	; bit  7-0:  LF = $CA (cookie cut: D = (A AND B) OR (NOT A AND C))
-	;            Qui c'era scritto "(C AND NOT B)", che e' un'altra funzione.
-	;            $CA = %11001010, e i bit sono indicizzati da (A,B,C): valgono 1
-	;            il 7 e il 6 (A=1,B=1, qualunque C) e il 3 e l'1 (A=0,C=1).
-	;            Cioe' comanda A, che infatti e' la MASCHERA: dove vale 1 passa
-	;            il BOB (B), dove vale 0 resta lo sfondo (C). Con "NOT B" il
-	;            ruolo di maschera toccherebbe all'arte, e i registri qui sotto
-	;            sono assegnati al contrario.
+	; bit  7-0:  LF = $CA (cookie cut: D = (A AND B) OR (C AND NOT B))
 	MOVE.W	D7,D5
 	LSL.W	#8,D5
 	LSL.W	#4,D5					; D5 = shift << 12
@@ -7301,13 +6885,7 @@ ScrollPathBApply:
 ; (dirty_Width), perche' i bob hanno geometrie diverse (omino/nemico 32 px,
 ; pietra 16). Le barre vita, che erano l'altro cliente a 2 word, non
 ; esistono piu' nel codice.
-; Quanti rettangoli entrano nel set. DERIVATO dai clienti veri, non ricopiato:
-; un bob per ciascuno (BOB_TOTALI, oggi 7 col falo') piu' UNO per il testo del
-; profiler, che dal 2026-09-08 registra il proprio blocco come un bob. Il
-; margine di 8 e' quello che c'era gia': il valore resta 16 come prima, ma ora
-; sale da solo quando si aggiunge un bob. Se il set si riempie il rettangolo in
-; piu' viene ignorato (vedi .pieno): una scia, non una scrittura fuori array.
-PATHB_DIRTY_MAX EQU     BOB_TOTALI+1+8
+PATHB_DIRTY_MAX EQU     16              ; BOB_TOTALI (oggi 6, 7 col falo') + margine
 
 ; PathBRegistraDirty - annota un rettangolo da ripulire al prossimo frame
 ; IN: A1 = indirizzo nel world buffer (piano 1), D4.w = righe,
@@ -7539,12 +7117,6 @@ PathBInit:
 PROF_VALUES     EQU     PROF_SLOTS+6    ; 11 fasi + WorstLines + DropCount + DDFSTRT + swap + ritardo + offset
 PROF_COLS       EQU     4               ; voci per riga (4 x 80px = 320)
 PROF_ROWS_N     EQU     (PROF_VALUES+PROF_COLS-1)/PROF_COLS
-; Il rettangolo che il testo sporca, per registrarlo come fa ogni BOB. E'
-; DERIVATO dalla griglia: cambiando PROF_COLS, il numero di cifre o il font
-; non c'e' un secondo valore da aggiornare a mano.
-PROF_CAR_VOCE   EQU     5               ; due lettere di etichetta piu' tre cifre
-PROF_DIRTY_W    EQU     (PROF_COLS*PROF_CAR_VOCE*FONT_CW+1)/2   ; larghezza in WORD
-PROF_DIRTY_ROWS EQU     PROF_ROWS_N*FONT_H
 ; Il testo va posizionato in coordinate DISPLAY. In Path B tutto cio' che
 ; viene disegnato passa per BG_ORIGIN_OFS, che lo sposta di BG_ORIGIN_Y
 ; righe piu' in basso rispetto a dove comincia il display (che parte da
@@ -7562,10 +7134,9 @@ MostraProfilo:
         ; Path B: il buffer visualizzato e' SFONDOGRANDE, non CurrentDraw.
         ; I numeri vanno scritti alla posizione della CAMERA, altrimenti
         ; scorrono via col mondo. X arrotondata a word per l'allineamento.
-        ; Il testo resta impresso nel world buffer, quindi scorrendo lascerebbe
-        ; una scia: prima di uscire si registra il suo rettangolo con
-        ; PathBRegistraDirty, esattamente come fa ogni BOB, e PathBRestoreAll
-        ; lo ripristina dal master al prossimo giro di QUESTO buffer.
+        ; NB: restano impressi sul world buffer (non c'e' piu' CopiaVideo a
+        ; ripulire), quindi muovendosi si sovrappongono. Va bene per leggere
+        ; un numero, non per giocarci.
         MOVEA.L WorldDraw,A4            ; il monitor va nel buffer in disegno
         ADDA.L  #DELTA_MAPPAVERA+BG_ORIGIN_OFS,A4
         MOVE.W  PathBCamY,D0                    ; la camera che usa il DISPLAY
@@ -7576,9 +7147,6 @@ MostraProfilo:
         LSR.W   #4,D0                           ; -> word
         ADD.W   D0,D0
         ADDA.W  D0,A4
-        MOVEA.L A4,A0                   ; l'INIZIO del blocco: A4 da qui in poi
-                                        ; avanza di riga in riga, A0 no.
-                                        ; TestoChar e TestoNumero preservano A0.
         MOVE.W  #SFONDO_PITCH,D0
         MOVE.L  #SFONDO_PLANE_SIZE,D2
 
@@ -7627,15 +7195,6 @@ MostraProfilo:
 .prossimo:
         DBRA    D7,.valore
 
-        ; Un rettangolo solo copre tutto il blocco: le righe di testo sono
-        ; impilate a FONT_H di distanza e cominciano tutte alla stessa X.
-        ; Ripulire qualche pixel in piu' non costa niente - il master e' la
-        ; mappa pulita - mentre lasciare una scia si vede.
-        MOVEA.L A0,A1
-        MOVE.W  #PROF_DIRTY_ROWS,D4
-        MOVE.W  #PROF_DIRTY_W,D5
-        BSR.W   PathBRegistraDirty
-
         MOVEM.L (SP)+,D0-D7/A0-A4
         RTS
 
@@ -7646,52 +7205,7 @@ ProfLabels:
         even
 	ENDC
 
-; L'intro. Come tutti gli include di questo progetto contiene SOLO codice: le
-; sezioni le dichiara Gioco.s, e i suoi dati - l'immagine, il blocco copper, le
-; due tabelle - stanno nelle sezioni qui sotto insieme a tutti gli altri.
-	include	"Intro.i"
-
         SECTION DATI,DATA       ; variabili CPU-only -> fast RAM
-
-; ---- Il droide della schermata del titolo ----
-; Sta qui e non in chip per il criterio del progetto: **conta chi legge**. Il
-; blitter legge l'arte (Droide/DroideMask, che infatti stanno in ChipStuff) e
-; il buffer di lavoro; questi sono numeri che tocca solo la CPU.
-DroideX:		dc.w	0		; angolo alto-sinistra, coordinate schermo
-DroideY:		dc.w	0
-; La posizione del quadro PRECEDENTE, cioe' il rettangolo da ripulire. Vale
-; -1 finche' non si e' disegnato niente: al primo giro non c'e' scia da
-; togliere, e ripulire un rettangolo mai sporcato copierebbe comunque 24 righe
-; per otto piani da un punto qualsiasi.
-DroidePrecX:	dc.w	-1
-DroidePrecY:	dc.w	0
-DroideFase:		dc.w	0		; accumulatore del percorso, vedi DROIDE_FASE_*
-DroidePosa:		dc.w	0		; 0..DROIDE_POSE-1
-DroideCont:		dc.w	0		; quadri passati sulla posa corrente
-
-; ---- L'alba dell'intro (il codice sta in Intro.i) ----
-; Un numero solo: a che punto e' l'alba. Sopra ALBA_QUADRI-1 si ferma e resta
-; sul giorno pieno, cosi' chi tiene premuto il tasto non blocca l'immagine su
-; una posa intermedia.
-AlbaQuadro:		dc.w	0
-	EVEN
-; Tabella di seno, SENO_VOCI voci, valore = seno*256 (quindi -256..+256).
-; Si usa cosi': MULS ampiezza, poi ASR #SENO_SCALA. Le voci sono una potenza di
-; due perche' l'indice si prende con un AND invece che con una divisione, che
-; sul 68000 costa 140 cicli e qui non servirebbe a niente.
-TabSeno:
-	dc.w	0,25,50,74,98,121,142,162
-	dc.w	181,198,213,226,237,245,251,255
-	dc.w	256,255,251,245,237,226,213,198
-	dc.w	181,162,142,121,98,74,50,25
-	dc.w	0,-25,-50,-74,-98,-121,-142,-162
-	dc.w	-181,-198,-213,-226,-237,-245,-251,-255
-	dc.w	-256,-255,-251,-245,-237,-226,-213,-198
-	dc.w	-181,-162,-142,-121,-98,-74,-50,-25
-TabSenoFine:
-	IFNE	(TabSenoFine-TabSeno)/2-SENO_VOCI
-ERRORE_TABSENO_VOCI_DIVERSE_DALLA_EQU	EQU		1/0
-	ENDC
 
 ; ---- Variabili del profiling harness (vedi EQU PROFILING in testa) ----
 ; Sempre presenti anche con PROFILING=0: 8 byte, e cosi' restano
@@ -8369,30 +7883,32 @@ ScrittaMessaggio:
 
 ; TITLE COPPERLIST - 8 bitplane AGA, lores 320x256, palette caricata via CPU.
 ; I puntatori BPL1..8PT (etichette TitleBPL_*) vengono patchati a runtime
-; in ShowTitle a partire da TitoloBuf (10240 byte per plane, layout SEQUENTIAL).
-; NON da title_bpl: quello e' il master da cui si ripristina il rettangolo
-; dietro al droide, e non deve mai andare a video.
+; in ShowTitle a partire da title_bpl (10240 byte per plane, layout SEQUENTIAL).
 	cnop	0,4
 TitleCopperList:
 	; Forza FMODE = $03 (BPL32+BPAGEM) all'inizio del frame, in caso qualcuno
 	; (PT Player IRQ, OS, ecc.) lo abbia resettato. FMODE va impostato PRIMA
 	; di abilitare BPL DMA per garantire il fetch a 64-bit allineato.
-	; I valori sono le EQU TIT_*, le STESSE che scrive ImpostaDisplayTitolo:
-	; erano dodici numeri scritti due volte in due punti lontani del file.
-	dc.w	$01fc,TIT_FMODE		; FMODE = BPL32 + BPAGEM (64-bit fetch)
-	dc.w	$0100,TIT_BPLCON0	; BPU3=1 (8 BPL) + COLOR + ECSENA (no UHRES)
-	dc.w	$0102,TIT_BPLCON1
-	dc.w	$0104,TIT_BPLCON2	; PF2P=4, PF1P=4 (come gioco)
+	dc.w	$01fc,$0003			; FMODE = BPL32 + BPAGEM (64-bit fetch)
+	dc.w	$0100,%0000001000010001 	; BPLCON0: BPU3=1 (8 BPL) + COLOR + ECSENA (no UHRES)
+	dc.w	$0102,$0000			; BPLCON1
+	dc.w	$0104,$0024			; BPLCON2: PF2P=4, PF1P=4 (come gioco)
 	; BRDRBLNK acceso anche qui: senza, l'area fuori dalla finestra mostra
 	; COLOR00 e il titolo appare dentro una cornice chiara.
-	dc.w	$0106,TIT_BPLCON3	; banca 0, LOCT=0, bordo NERO
-	dc.w	$010c,TIT_BPLCON4	; sprite a colori OCS standard 16-31
-	dc.w	$0108,TIT_BPLMOD	; BPL1MOD (sequential layout)
-	dc.w	$010a,TIT_BPLMOD	; BPL2MOD
-	dc.w	$0092,TIT_DDFSTRT	; lores 8 BPL AGA FMODE=3
-	dc.w	$0094,TIT_DDFSTOP	; 5 fetch FMODE=3 allineati
-	dc.w	$008e,TIT_DIWSTRT	; finestra propria del titolo, vedi le EQU
-	dc.w	$0090,TIT_DIWSTOP
+	dc.w	$0106,BPLCON3_BRDRBLNK	; BPLCON3: banca 0, LOCT=0, bordo NERO
+	dc.w	$010c,$0000			; BPLCON4 = 0 (sprite a colori OCS standard 16-31)
+	dc.w	$0108,$0000			; BPL1MOD (sequential layout)
+	dc.w	$010a,$0000			; BPL2MOD
+	dc.w	$0092,$0028			; DDFSTRT lores 8 BPL AGA FMODE=3
+	dc.w	$0094,$00a8			; DDFSTOP (5 fetch FMODE=3 allineati)
+; La schermata del titolo ha una geometria PROPRIA: DDFSTRT $28 / DDFSTOP $a8,
+; cioe' 5 fetch = 320 px, e non ha ne' parallasse ne' scroll fine. Non deve
+; quindi usare DIW_H_START, che e' tarato sui vincoli del GIOCO (guardia del
+; parallasse e ritardo BPLCON1). Quando ho introdotto quella EQU l'avevo
+; sostituita anche qui per sbaglio, e siccome il DIWSTOP sotto e' cablato la
+; finestra del titolo diventava 160..449 = 289 px invece di 320.
+	dc.w	$008e,$2c81				; DIWSTRT (valore proprio del titolo)
+	dc.w	$0090,$2cc1			; DIWSTOP
 TitleBPL_0:	dc.w	$00e0,$0000,$00e2,$0000	; BPL1PT (high, low)
 TitleBPL_1:	dc.w	$00e4,$0000,$00e6,$0000	; BPL2PT
 TitleBPL_2:	dc.w	$00e8,$0000,$00ea,$0000	; BPL3PT
@@ -8407,59 +7923,10 @@ TitleBPL_7:	dc.w	$00fc,$0000,$00fe,$0000	; BPL8PT
 	dc.w	$0100,%0000001000000001			; BPLCON0 = 0 BPL + ECSENA
 	dc.w	$FFFF,$FFFE			; FINE COPPERLIST
 
-; ---------------------------------------------------------------------------
-; COPPERLIST DELL'INTRO. Stessa geometria della title - le stesse EQU TIT_* -
-; piu' il blocco che riscrive TUTTA la palette a ogni quadro. Il blocco sta in
-; testa, prima che il display cominci: il pennello non vede mai una palette a
-; meta'. Il codice che lo riempie e' in Intro.i.
-; ---------------------------------------------------------------------------
-	cnop	0,4
-IntroCopperList:
-	dc.w	$01fc,TIT_FMODE
-	dc.w	$0100,TIT_BPLCON0
-	dc.w	$0102,TIT_BPLCON1
-	dc.w	$0104,TIT_BPLCON2
-	dc.w	$0106,TIT_BPLCON3
-	dc.w	$010c,TIT_BPLCON4
-	dc.w	$0108,TIT_BPLMOD
-	dc.w	$010a,TIT_BPLMOD
-	dc.w	$0092,TIT_DDFSTRT
-	dc.w	$0094,TIT_DDFSTOP
-	dc.w	$008e,TIT_DIWSTRT
-	dc.w	$0090,TIT_DIWSTOP
-IntroBPL_0:	dc.w	$00e0,$0000,$00e2,$0000	; BPL1PT (patchati da IntroEsegui)
-IntroBPL_1:	dc.w	$00e4,$0000,$00e6,$0000
-IntroBPL_2:	dc.w	$00e8,$0000,$00ea,$0000
-IntroBPL_3:	dc.w	$00ec,$0000,$00ee,$0000
-IntroBPL_4:	dc.w	$00f0,$0000,$00f2,$0000
-IntroBPL_5:	dc.w	$00f4,$0000,$00f6,$0000
-IntroBPL_6:	dc.w	$00f8,$0000,$00fa,$0000
-IntroBPL_7:	dc.w	$00fc,$0000,$00fe,$0000
-; La palette: ALBA_COP_BANCHI banchi, e per ognuno una MOVE su BPLCON3 piu'
-; ALBA_COP_SLOT MOVE sui COLORxx, due volte (nibble alti e bassi). Nasce a
-; ZERO, cioe' MOVE su BLTDDAT, che e' innocuo ma inutile: AlbaCostruisciCopper
-; ci scrive i registri e AlbaPalette i valori, tutti e due PRIMA che il copper
-; venga puntato qui.
-	cnop	0,4
-AlbaCopper:
-	ds.w	ALBA_COP_WORDS
-; Il blocco lascia BPLCON3 sul banco 7 con LOCT=1. Al display non importa -
-; banco e LOCT decidono solo dove finiscono le SCRITTURE sui colori, non cosa
-; legge il pennello - ma lasciare un registro in uno stato qualsiasi e' il
-; modo in cui in questo sorgente sono gia' nati due difetti. Costa una MOVE.
-	dc.w	$0106,BPLCON3_LOCT0
-	dc.w	$FFDF,$FFFE			; arma i WAIT oltre la riga 255
-	dc.w	$2C01,$FF00
-	dc.w	$0100,%0000001000000001			; BPLCON0 = 0 BPL + ECSENA
-	dc.w	$FFFF,$FFFE			; FINE COPPERLIST
-
 CopperList:
-	; Il gioco gira a SEI bitplane lores: 1-5 = sfondo, 6 = darkplane. La
-	; parallasse non e' piu' sui piani 7-8, sta sugli sprite dal 5 settembre, e
-	; il prelievo e' a 16 bit (SCROLL_FETCH_BIT), non a 64: e' proprio il
-	; prelievo stretto che apre i sette canali sprite. Qui c'era scritto
-	; "8 bitplane, fetch a 64 bit, piani 7-8 = parallasse", vero fino ad agosto.
-	; Il "fetch-ahead" in fondo
+	; Il gioco gira a 8 bitplane lores con fetch AGA a 64 bit (FMODE=$0003):
+	; piani 1-5 = sfondo, 6 = dark plane, 7-8 = parallasse (4 colori).
+	; lasciare piu' banda DMA a blitter/CPU. Il "fetch-ahead" a 64 bit in fondo
 	; allo schermo legge oltre i piani: per renderlo innocuo i 5 piani di
 	; BPSFONDO sono distanziati da BG_PLANE_BANDA (con righe di padding vuote
 	; tra un piano e l'altro), cosi' il prefetch pesca righe blank invece dei
@@ -8643,9 +8110,7 @@ GamePalLo:
 	; palette sprite che stavano fermi: ogni albero usava un colore su tre.
 	; Il generatore si rifiuta di produrre l'arte se la mappa canale->livello
 	; non e' 1,1,1,1,3,3,3, perche' da qui in poi quella mappa e' portante.
-	dc.w	$010c,GIOCO_BPLCON4	; ESPRM=OSPRM=$4, sprite a 64..79. Stessa EQU
-								; che scrive ImpostaDisplayGioco: era un $0044
-								; ricopiato in due posti.
+	dc.w	$010c,$0044			; BPLCON4: ESPRM=OSPRM=$4, sprite a 64..79
 	dc.w	$0106,(2<<BPLCON3_BANK_SHIFT)|BPLCON3_LOCT0
 	dc.w	$0182,ALB_V_OMBRA_HI,$0184,ALB_V_CORPO_HI,$0186,ALB_V_LUCE_HI
 	dc.w	$018a,ALB_V_OMBRA_HI,$018c,ALB_V_CORPO_HI,$018e,ALB_V_LUCE_HI
@@ -8843,11 +8308,9 @@ PIETRA:
 ; in SECTION AssetCPU, in fondo a questo blocco. In chip resta la copia gia'
 ; espansa a 5 piani, FaloSheet, che e' quella che il blitter disegna.
 
-; grafica/parallasse.raw NON si incbinna piu' (erano 40 KB di chip): e' l'arte
-; della VECCHIA parallasse a bitplane, tenuta come riferimento. Non e' la
-; sorgente di niente - se serve si rigenera con tools/genera-parallasse.py -
-; e le "fette" che se ne ricavavano sono state tolte l'8 settembre insieme al
-; loro script: gli alberi a sprite le hanno sostituite.
+; grafica/parallasse.raw NON si incbinna piu' (erano 40 KB di chip): adesso e'
+; solo la SORGENTE da cui tools/genera-fette-parallasse.py ricava le fette. Il
+; file resta sul disco, e va tenuto: senza, le fette non si possono rigenerare.
 
 ; Gli ALBERI della parallasse, gia' in formato sprite a 64 bit. DEVE stare in
 ; CHIP RAM: li legge il DMA sprite. Il cnop vale per il primo; gli altri sono
@@ -8907,50 +8370,9 @@ pannello:
 
 ; Title screen image: 8 bitplane AGA, 320x256, sequential layout.
 ; DEVE essere in CHIP RAM per la display DMA.
-; DA QUANDO C'E' IL DROIDE QUESTO FILE NON VA PIU' A VIDEO: e' il MASTER, la
-; copia pulita da cui si ripristina il rettangolo dietro al droide. A video ci
-; va TitoloBuf, che ne e' la copia di lavoro. Stessa idea di PathBMaster per i
-; BOB del gioco, e per lo stesso motivo: senza una copia pulita un oggetto che
-; si muove lascia la scia.
 	cnop	0,8					; allineamento AGA FMODE=3
 title_bpl:
 	incbin	"grafica/title.raw"
-title_bpl_fine:
-	IFNE	(title_bpl_fine-title_bpl)-TITLE_PLANE_SIZE*TITLE_PIANI
-ERRORE_TITLE_TAGLIA_DIVERSA_DALLE_EQU	EQU		1/0
-	ENDC
-
-; L'arte del droide. In CHIP perche' la legge il BLITTER.
-; Le due guardie confrontano la lunghezza vera dei file con quella che le EQU
-; implicano: se si rigenera l'arte con un numero di pose o un'altezza diversi e
-; non si aggiornano le EQU, l'assemblaggio si ferma qui invece di far leggere
-; al blitter byte che non gli appartengono.
-	cnop	0,8
-Droide:
-	incbin	"grafica/droide.raw"
-DroideFine:
-	IFNE	(DroideFine-Droide)-DROIDE_LEN_ATTESA
-ERRORE_DROIDE_TAGLIA_DIVERSA_DALLE_EQU	EQU		1/0
-	ENDC
-	cnop	0,8
-DroideMask:
-	incbin	"grafica/droide_mask.raw"
-DroideMaskFine:
-	IFNE	(DroideMaskFine-DroideMask)-DROIDE_MASK_ATTESA
-ERRORE_DROIDE_MASCHERA_TAGLIA_DIVERSA	EQU		1/0
-	ENDC
-
-; L'immagine dell'intro: 320x256 a 8 piani, layout sequenziale come la title.
-; DEVE stare in CHIP: la legge il display. E' l'immagine di ARRIVO - il giorno
-; pieno - e l'alba e' la palette che ci arriva sopra, quindi qui non serve
-; nessun buffer di lavoro: sopra questi piani non disegna nessuno.
-	cnop	0,8
-AlbaImg:
-	incbin	"grafica/alba.raw"
-AlbaImgFine:
-	IFNE	(AlbaImgFine-AlbaImg)-ALBA_LEN_ATTESA
-ERRORE_ALBA_TAGLIA_DIVERSA_DALLE_EQU	EQU		1/0
-	ENDC
 
 * AssetCPU - dati che NON vede nessun DMA
 *   La chip RAM serve a chi non puo' farne a meno: display, blitter, copper,
@@ -8979,33 +8401,6 @@ ERRORE_ALBA_TAGLIA_DIVERSA_DALLE_EQU	EQU		1/0
 ; Caricata via CPU in LoadAGAPalette256 prima di mostrare la title.
 title_pal:
 	incbin	"grafica/title.pal"
-
-; ---- Le due tabelle dell'alba. Qui e non in chip: le legge SOLO la CPU. ----
-; Il copper legge il blocco AlbaCopper, che sta in ChipStuff; queste sono la
-; sorgente da cui la CPU lo riempie, e nessun DMA le tocca mai.
-	cnop	0,4
-; Per ogni voce, ALBA_LIVELLI colori gia' impacchettati nelle DUE word che il
-; copper scrive su un COLORxx: prima i nibble alti, poi i bassi. Impacchettarli
-; qui invece che a runtime e' quello che riduce il lavoro per voce a due MOVE.
-AlbaRampe:
-	incbin	"grafica/alba_rampe.raw"
-AlbaRampeFine:
-	IFNE	(AlbaRampeFine-AlbaRampe)-ALBA_RAMPE_ATTESA
-ERRORE_ALBA_RAMPE_TAGLIA_DIVERSA	EQU		1/0
-	ENDC
-
-	cnop	0,2
-; Per ogni voce, il quadro in cui comincia la sua rampa. Le voci piu' luminose
-; partono per prime, ed e' cosi' che la luce CRESCE invece di accendersi tutta
-; insieme. Il ritardo segue la luminosita' e non la posizione apposta: il
-; dithering mescola voci vicine di COLORE, quindi voci che si mescolano devono
-; essere vicine di FASE, se no la mescolanza sfarfalla.
-AlbaInizio:
-	incbin	"grafica/alba_inizio.raw"
-AlbaInizioFine:
-	IFNE	(AlbaInizioFine-AlbaInizio)-ALBA_INIZIO_ATTESA
-ERRORE_ALBA_INIZIO_TAGLIA_DIVERSA	EQU		1/0
-	ENDC
 
 	cnop	0,4
 ; Striscia dell'arte del falo', COSI' COME ESCE DALL'EDITOR: 512x16, 2 piani
@@ -9072,20 +8467,13 @@ GUARDIA_QUADRANTE_RAW	EQU		1/0
 	SECTION	PLANEVUOTO,BSS_C
 
 	cnop	0,8
-; QUI STAVA PathBVuoto, un piano vuoto da 14336 byte di chip (pitch 56 x 256).
-; Serviva a PAR_DISABLE per dirottarci i piani 7-8 e misurare il costo della
-; parallasse a bitplane. Quell'interruttore e' sparito col trasloco agli sprite
-; il 5 settembre, il buffer e' rimasto: nessuna riga di codice lo nominava piu'.
-	cnop	0,8
-; COPIA DI LAVORO DELLA SCHERMATA DEL TITOLO. E' questa che va a video, non
-; l'incbin: title_bpl fa da MASTER e non si tocca mai, cosi' il rettangolo
-; dietro al droide si ripristina da una copia pulita invece di doverlo salvare
-; prima di ogni disegno. Stessa struttura di PathBMaster/SFONDOGRANDE qui
-; sotto, e per la stessa ragione.
-; Costa 80 KB di chip. Il bilancio dice ~730 KB usati su 2048: si puo'.
-TitoloBuf:
-	ds.b	TITLE_PLANE_SIZE*TITLE_PIANI
-
+; Piano vuoto col pitch dei piani 1-5. Unico cliente rimasto: PAR_DISABLE,
+; che ci punta i piani 7-8 per misurare il costo della parallasse.
+; ATTENZIONE: e' alto DARK_ROWS (256) e non SFONDO_HEIGHT (368) come i piani
+; veri. Con PAR_DISABLE=1 e la camera in fondo alla mappa il display leggerebbe
+; oltre la fine: va bene per una prova, non come buffer permanente.
+PathBVuoto:
+	ds.b	AUX_PITCH*DARK_ROWS
 	cnop	0,8
 ; Copia pulita della mappa, sorgente del restore dietro ai BOB.
 PathBMaster:

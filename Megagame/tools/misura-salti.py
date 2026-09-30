@@ -26,10 +26,46 @@
 # pieno, era .k_gravity -> .k_prof in LeggiTastiera: 202 byte stimati, ed era il
 # 2029 di Devpac.
 # ============================================================================
-import io, re, sys
+import io, os, re, sys
 
 LIMITE = 127
-righe = io.open('Gioco.s', encoding='utf-8').read().split('\n')
+
+# GLI INCLUDE VANNO ESPANSI. Fino al 9 settembre 2026 questo strumento leggeva
+# il solo Gioco.s: il giorno in cui e' nato Intro.i ha continuato a stampare
+# "350 salti esaminati", cioe' esattamente il numero di prima. **Un conteggio
+# identico dopo una patch e' un fallimento, non un silenzio.** I salti di un
+# include sono salti del programma assemblato come tutti gli altri, e per giunta
+# un blocco nuovo in un include allunga anche quelli che gli stanno intorno.
+# ptplayer.i si salta: e' di terze parti e nessuno lo modifica.
+SALTA = {'ptplayer.i'}
+
+
+def espandi(path, visti=None):
+    """(testo, file, riga) per ogni riga, con gli include dentro."""
+    if visti is None:
+        visti = set()
+    ap = os.path.abspath(path)
+    if ap in visti:
+        return []
+    visti.add(ap)
+    # latin-1 e non utf-8: Startup2.i non e' UTF-8 e decodificarlo lo romperebbe
+    testo = io.open(path, encoding='latin-1').read().split('\n')
+    nome = os.path.basename(path)
+    fuori = []
+    for n, l in enumerate(testo, 1):
+        m = re.match(r'^\s*include\s+"([^"]+)"', l.split(';')[0], re.I)
+        if m and os.path.basename(m.group(1)) not in SALTA:
+            q = os.path.join(os.path.dirname(ap), m.group(1))
+            if os.path.isfile(q):
+                fuori.extend(espandi(q, visti))
+                continue
+        fuori.append((l, nome, n))
+    return fuori
+
+
+_espanso = espandi('Gioco.s')
+righe = [r[0] for r in _espanso]
+dove = [(r[1], r[2]) for r in _espanso]
 
 def pulisci(r):
     # via i commenti: ';' ovunque, '*' solo a inizio riga
@@ -113,7 +149,7 @@ for i, r in enumerate(righe):
     dest = m.group(2).strip()
     k = (ambito, dest) if dest.startswith('.') else ('', dest)
     if k not in etichette: 
-        problemi.append((i+1, dest, None, 'etichetta non trovata')); continue
+        problemi.append((i, dest, None, 'etichetta non trovata')); continue
     j = etichette[k]
     if j > i:
         d = sum(dimensione(righe[x]) for x in range(i+1, j))
@@ -121,12 +157,14 @@ for i, r in enumerate(righe):
     else:
         d = -sum(dimensione(righe[x]) for x in range(j, i+1))
         stato = 'DA GUARDARE' if d < -128 else ('al limite' if d < -100 else '')
-    if stato: problemi.append((i+1, dest, d, stato))
+    if stato: problemi.append((i, dest, d, stato))
 
 print('salti corti esaminati: %d' % esaminati)
 if not problemi:
     print('Nessun salto corto oltre i 100 byte stimati.')
 else:
-    for ln, dest, d, st in problemi:
-        print('   riga %-6d %-22s %s byte   <-- %s' % (ln, dest, d if d is not None else '?', st))
+    for i, dest, d, st in problemi:
+        f, ln = dove[i]
+        print('   %-12s riga %-6d %-22s %s byte   <-- %s'
+              % (f, ln, dest, d if d is not None else '?', st))
 sys.exit(1 if any(p[3] == 'DA GUARDARE' for p in problemi) else 0)

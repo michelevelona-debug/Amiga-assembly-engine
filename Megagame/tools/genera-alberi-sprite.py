@@ -8,7 +8,10 @@
 # USO (dalla cartella Megagame):  python3 tools/genera-alberi-sprite.py
 #
 # PERCHE' NON LE FETTE
-# Con le fette (genera-fette-parallasse.py) tutta la parallasse e' una striscia
+# Le fette erano l'approccio precedente: genera-fette-parallasse.py tagliava
+# grafica/parallasse.raw in strisce da 64 px. Tolto l'8 settembre 2026 insieme
+# ai suoi file; resta qui il MOTIVO, che e' quello che serve sapere.
+# Con le fette tutta la parallasse e' una striscia
 # sola: sei canali affiancati che si muovono insieme, quindi UNA velocita'. Due
 # livelli a velocita' diverse vorrebbero due sprite sulla stessa riga dello
 # stesso canale, e un canale ne mostra uno solo.

@@ -44,9 +44,41 @@ def _numero(espr, tab):
     return eval(e.replace('/', '//'))
 
 
+# ptplayer.i porta una direttiva `end` e un mucchio di simboli suoi: si salta,
+# come fa gia' controlla-forward.py.
+SALTA = {'ptplayer.i'}
+
+
+def _espandi(path, visti=None):
+    """Le righe del sorgente CON gli include espansi, come le vede
+    l'assemblatore. Senza questo il modulo e' cieco su meta' delle EQU: FONT_H
+    e FONT_CW stanno in Testo.i, e chi le usa qui risultava 'non risolta'."""
+    if visti is None:
+        visti = set()
+    ap = os.path.abspath(path)
+    if ap in visti:
+        return []
+    visti.add(ap)
+    # latin-1 e non utf-8: Startup2.i non e' UTF-8 e decodificarlo lo romperebbe
+    righe = open(path, encoding='latin-1').read().split('\n')
+    fuori = []
+    for l in righe:
+        m = re.match(r'^\s*include\s+"([^"]+)"', l.split(';')[0], re.I)
+        if m:
+            nome = m.group(1)
+            if os.path.basename(nome) in SALTA:
+                continue
+            q = os.path.join(os.path.dirname(ap), nome)
+            if os.path.isfile(q):
+                fuori.extend(_espandi(q, visti))
+                continue
+        fuori.append(l)
+    return fuori
+
+
 def leggi(path=SORGENTE):
-    """Le EQU con il valore del ramo VIVO. Ritorna un dizionario."""
-    righe = open(path, encoding='utf-8').read().split('\n')
+    """Le EQU con il valore del ramo VIVO, include compresi."""
+    righe = _espandi(path)
     tab = {}
     for _ in range(8):                       # finche' scopre roba nuova
         pila = [True]
@@ -121,10 +153,15 @@ def chip(tab):
         m = re.match(r'^([A-Za-z_]\w*):', c)
         if m:
             ultima_etichetta = m.group(1)
-        m = re.search(r'\bds\.b\s+(.+)$', c)
+        # ds.b, ds.w e ds.l: contava solo i .b, e il 9 settembre il blocco
+        # copper dell'alba - 1056 word di chip - non compariva nell'inventario.
+        # Uno strumento che misura la memoria non puo' conoscere una sola delle
+        # tre direttive che la riservano.
+        m = re.search(r'\bds\.([bwl])\s+(.+)$', c, re.I)
         if m and sez in ('BSS_C', 'DATA_C'):
+            larg = {'b': 1, 'w': 2, 'l': 4}[m.group(1).lower()]
             try:
-                voci.append((ultima_etichetta, _numero(m.group(1).strip(), tab)))
+                voci.append((ultima_etichetta, _numero(m.group(2).strip(), tab) * larg))
             except Exception:
                 voci.append((ultima_etichetta, None))
         m = re.match(r'^\s*incbin\s+"([^"]+)"', c, re.I)
