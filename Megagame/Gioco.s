@@ -1402,7 +1402,7 @@ PLAYER_SPAWN_Y  	EQU		48
 ; parecchio. L'unico modo di appiattire l'arco e' una terza manopola che qui
 ; non c'e': una velocita' orizzontale IN ARIA diversa da quella a terra
 ; (oggi sono la stessa cosa, `bob_Speed` = 1 px/quadro).
-GRAVITA_88		EQU		86		; 0,336 px/quadro^2 in 8.8
+GRAVITA_88		EQU		80		; 0,312 px/quadro^2 in 8.8
 MAX_FALL_88		EQU		8*256	; 8 px/quadro di caduta massima (invariata)
 JUMP_VEL_88		EQU		-1920	; 7,5 px/quadro verso l'alto (negativa = su)
 ; PRIMO TETTO: il movimento verticale si applica in UN passo solo, e
@@ -9292,17 +9292,33 @@ TileFlags:
 ; giusto, ma LA FASCIA DEI MARCATORI NON ESISTE PIU': un marcatore nuovo va
 ; messo dove l'arte non arrivera' mai, non in coda a quella che c'e'.
 ;   tile:  64  65  66  67  68  69  70  71  72  73  74  75  76  77  78  79
-	dc.b	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0
+	dc.b	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	1,	1
 ; 80..92 sono il pezzo di mappa del 22 settembre (il blocco 3x5 in cima alle
 ; colonne 41..43). Tutte a zero perche' nessuno ha ancora deciso quali sono
 ; muro: come le 51..63, si alzano una alla volta guardando la sagoma.
 ;   tile:  80  81  82  83  84  85  86  87  88  89  90  91  92  93  94  95
-	dc.b	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0
-; E il resto del foglio, libero finche' non lo si disegna. Non e' spreco di 224
+	dc.b	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1
+; 96..111 scritte in chiaro il 3 ottobre 2026. NON cambia niente per
+; IsTileBlocked - stavano gia' nel dcb.b qui sotto, a zero, e la tabella e' lunga
+; quanto il foglio da sempre. Sono qui perche' mappa2, mappa3 e mappa4 usano
+; 93..104 e un valore si alza solo se lo si vede: dentro il dcb.b non c'e' una
+; riga da modificare. Tutte a zero, cioe' CALPESTABILI, che e' la posizione da
+; cui si parte - si alzano una alla volta guardando la sagoma, come le 51..63 e
+; le 80..92. Chi sono le piu' frequenti NON si scrive qui: invecchia a ogni
+; modifica delle mappe, e un commento vecchio in questo sorgente e' gia' costato
+; giorni. Lo dice `py tools\mappa.py --mappa N`, che per ogni mappa stampa
+; quante volte compare ogni tile.
+;   tile:  96  97  98  99 100 101 102 103 104 105 106 107 108 109 110 111
+	dc.b	1,	1,	1,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	1
+; 112..127 scritte in chiaro il 4 ottobre 2026, stesso motivo delle 96..111:
+; mappa2 arriva alla 119 e mappa3 alla 118. Tutte a zero, cioe' calpestabili.
+;   tile: 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127
+	dc.b	1,	1,	1,	1,	1,	1,	1,	1,	0,	0,	0,	0,	0,	0,	0,	0
+; E il resto del foglio, libero finche' non lo si disegna. Non e' spreco di 192
 ; byte di fast: e' la CHIUSURA DELLA CLASSE. Con la tabella lunga quanto il
 ; foglio, disegnare una tile nuova non puo' piu' far leggere IsTileBlocked
 ; oltre la fine, e non c'e' piu' niente da ricordarsi di allungare.
-	dcb.b	FOGLIO_TILE_N-96,0
+	dcb.b	FOGLIO_TILE_N-128,0
 TileFlagsFine:
 	IFNE	(TileFlagsFine-TileFlags)-FOGLIO_TILE_N
 GUARDIA_TILEFLAGS	EQU		1/0

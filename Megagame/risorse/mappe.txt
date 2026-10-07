@@ -18,5 +18,7 @@
 ; Dopo ogni modifica:  py tools\mappe.py  e poi  py tools\porte.py
 ;
 ;nome      sinistra  destra    sopra     sotto
-mappa1     -         mappa2    -         -
-mappa2     mappa1    -         -         -
+mappa1     mappa4    mappa2    -         -
+mappa2     mappa1    mappa3    -         -
+mappa3     mappa2    mappa4    -         -
+mappa4     mappa3    mappa1    -         -

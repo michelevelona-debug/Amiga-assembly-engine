@@ -14,7 +14,7 @@
 ; questa tabella non si scrive a mano.
 ; ============================================================================
 
-MAPPE_N				EQU		2
+MAPPE_N				EQU		4
 
 	cnop	0,2
 MAPPA1:
@@ -30,10 +30,26 @@ MAPPA2_FINE:
 	IFNE	(MAPPA2_FINE-MAPPA2)-MAPPA_ATTESA
 GUARDIA_MAPPA2_RAW	EQU		1/0
 	ENDC
+	cnop	0,2
+MAPPA3:
+	incbin	"grafica/mappa3.raw"
+MAPPA3_FINE:
+	IFNE	(MAPPA3_FINE-MAPPA3)-MAPPA_ATTESA
+GUARDIA_MAPPA3_RAW	EQU		1/0
+	ENDC
+	cnop	0,2
+MAPPA4:
+	incbin	"grafica/mappa4.raw"
+MAPPA4_FINE:
+	IFNE	(MAPPA4_FINE-MAPPA4)-MAPPA_ATTESA
+GUARDIA_MAPPA4_RAW	EQU		1/0
+	ENDC
 	cnop	0,4
 MappaBase:
 	dc.l	MAPPA1			; 0 = mappa1
 	dc.l	MAPPA2			; 1 = mappa2
+	dc.l	MAPPA3			; 2 = mappa3
+	dc.l	MAPPA4			; 3 = mappa4
 MappaBaseFine:
 	IFNE	(MappaBaseFine-MappaBase)/4-MAPPE_N
 GUARDIA_MAPPA_BASE	EQU		1/0
@@ -42,8 +58,10 @@ GUARDIA_MAPPA_BASE	EQU		1/0
 ; Una voce per blocco, VERSI_N word: l'indice del vicino o -1.
 	cnop	0,2
 MappaLink:
-	dc.w	 -1,  1, -1, -1	; mappa1
-	dc.w	  0, -1, -1, -1	; mappa2
+	dc.w	  3,  1, -1, -1	; mappa1
+	dc.w	  0,  2, -1, -1	; mappa2
+	dc.w	  1,  3, -1, -1	; mappa3
+	dc.w	  2,  0, -1, -1	; mappa4
 MappaLinkFine:
 	IFNE	(MappaLinkFine-MappaLink)/(VERSI_N*2)-MAPPE_N
 GUARDIA_MAPPA_LINK	EQU		1/0
