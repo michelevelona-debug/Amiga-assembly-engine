@@ -36,6 +36,7 @@
 # forte, e prima di crederci conviene una grep di conferma.
 # ============================================================================
 import os, re, sys
+import valori
 
 SORGENTI = ('.s', '.i')
 ESCLUSI = ('ptplayer.i',)     # terze parti: ha i suoi registri audio
@@ -71,7 +72,7 @@ def sorgenti(radice):
             and os.path.isfile(os.path.join(radice, n))]
 
 
-def scritture(path):
+def scritture(path, righe=None):
     """(riga, registro, come) per ogni scrittura a un registro custom."""
     out = []
     # CPU:  MOVE.x <qualcosa>,$NNN(A6)   oppure   ...,$dffNNN
@@ -101,7 +102,9 @@ def scritture(path):
     # fuori dallo spazio dei registri (es. $FFDF), mentre un registro custom
     # e' sempre pari e sotto $200.
     rx_cop = re.compile(r'^\s*dc\.w\s+(.+)$', re.I)
-    for i, l in enumerate(open(path, encoding='latin-1').read().split('\n'), 1):
+    if righe is None:
+        righe = open(path, encoding='latin-1').read().split('\n')
+    for i, l in enumerate(righe, 1):
         code = re.sub(r';.*$', '', l)
         for m in rx_a6.finditer(code):
             cpu(i, m, out)
@@ -123,9 +126,8 @@ def scritture(path):
     return out
 
 
-def blocchi(path, marcatori):
+def blocchi(r, marcatori):
     """Righe di inizio dei blocchi che ci interessano, in ordine."""
-    r = open(path, encoding='latin-1').read().split('\n')
     trovati = {}
     for i, l in enumerate(r, 1):
         for nome, prefisso in marcatori:
@@ -159,9 +161,11 @@ def main():
                  ('TitleCopperList', 'TitleCopperList:'),
                  ('CopperList', 'CopperList:'),
                  ('START', 'START:')]
-    inizi, nrighe = blocchi(principale, marcatori)
+    # Gioco.s e' scomposto in moduli: i percorsi si cercano sul sorgente con
+    # gli include espansi, quindi i numeri di riga sono di quel testo unico.
+    r = valori._espandi(principale)
+    inizi, nrighe = blocchi(r, marcatori)
     # confine di ogni blocco = prossimo marcatore o etichetta a colonna 0
-    r = open(principale, encoding='latin-1').read().split('\n')
 
     def fine_blocco(da, copperlist=False):
         """Fine del blocco. Per una COPPERLIST non ci si puo' fermare alla prima
@@ -179,7 +183,7 @@ def main():
                 return i
         return len(r)
 
-    scritte_gioco = scritture(principale)
+    scritte_gioco = scritture(principale, r)
     print('REGISTRI CUSTOM SCRITTI, per percorso')
     print('=' * 70)
     percorsi = {}

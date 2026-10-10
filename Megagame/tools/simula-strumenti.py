@@ -28,9 +28,11 @@
 # Scrive sim2_partenza.png, sim2_acceso.png, z2_destra.png, z2_scritta.png e
 # sim2_pannello.gif.
 # ============================================================================
-import io, re
+import io, re, os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import valori
 from PIL import Image
-src = io.open('Gioco.s', encoding='utf-8').read() + '\n' + io.open('Testo.i', encoding='utf-8').read()
+src = '\n'.join(valori._espandi('Gioco.s'))
 EQU={}
 def val(e):
     e=e.strip()

@@ -30,6 +30,7 @@
 # I primi 8 caratteri bastano per parlarne; il confronto accetta un prefisso.
 # ============================================================================
 import hashlib
+import re
 import os
 import sys
 
@@ -41,8 +42,20 @@ RADICE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # I file che si portano sull'Amiga e che quindi contano. ptplayer.i non c'e':
 # e' di terze parti e non lo si tocca, quindi un suo cambiamento sarebbe una
 # notizia diversa da quella che questo strumento cerca.
-SORGENTI = ['Gioco.s', 'ScrollHW.i', 'Testo.i', 'CieloGrad.i', 'Intro.i',
-            'Startup2.i', 'Pannello.cop']
+# Dal 9 ottobre 2026 Gioco.s e' scomposto in moduli: l'elenco si legge dagli
+# include, cosi' un modulo nuovo entra da solo.
+def _inclusi(nome, visti):
+    if nome in visti or nome == 'ptplayer.i' or not os.path.isfile(os.path.join(RADICE, nome)):
+        return
+    visti.append(nome)
+    for l in open(os.path.join(RADICE, nome), encoding='latin-1'):
+        m = re.match(r'^\s*include\s+"([^"]+)"', l.split(';')[0], re.I)
+        if m:
+            _inclusi(m.group(1), visti)
+
+
+SORGENTI = []
+_inclusi('Gioco.s', SORGENTI)
 
 
 def impronta(path):

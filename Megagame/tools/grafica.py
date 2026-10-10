@@ -66,7 +66,8 @@ def equ(nome, sorgente='Gioco.s'):
     if nome not in tab:
         raise KeyError('EQU %s non risolta in %s' % (nome, sorgente))
     v = tab[nome]
-    t = open(os.path.join(_radice(), sorgente), encoding='utf-8').read()
+    import valori
+    t = '\n'.join(valori._espandi(os.path.join(_radice(), sorgente)))
     righe = re.findall(r'^%s\s+EQU\s+(.+)$' % re.escape(nome), t, re.M)
     if len(righe) == 1:
         m = re.fullmatch(r'\$?([0-9a-fA-F]+)\s*(?:;.*)?', righe[0].strip())

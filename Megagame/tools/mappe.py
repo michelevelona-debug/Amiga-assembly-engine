@@ -88,7 +88,7 @@ GUARDIA_MAPPA_LINK	EQU		1/0
 
 def ordine_versi():
     """L'ordine dei versi come lo dicono le EQU VERSO_* di Gioco.s."""
-    src = open(os.path.join(RADICE, 'Gioco.s'), encoding='utf-8').read()
+    src = '\n'.join(valori._espandi(valori.SORGENTE))
     fuori = {}
     for m in re.finditer(r'^VERSO_(\w+)\s+EQU\s+(\d+)', src, re.M):
         fuori[int(m.group(2))] = m.group(1).lower()
