@@ -1,0 +1,61 @@
+# Fine riga del repository MegaGame.
+#
+# PERCHE' ESISTE. Il checkout dell'11 ottobre 2026 e' arrivato con CRLF su
+# TUTTI e 48 i file di testo, zero LF: e' `core.autocrlf` di Windows. La regola
+# del progetto e' l'opposto (claude/convenzioni.md: "Fine riga: LF, sempre, e
+# l'ultima riga vuole il suo a capo"), e non e' una preferenza estetica:
+#
+#   - `tools/terminatori.py --correggi` normalizza a LF, quindi riscriverebbe
+#     tutti i file e produrrebbe un commit enorme fatto di niente;
+#   - `tools/mappa.py` riscrive i `.txt` delle mappe con newline='\n' a ogni
+#     rigenerazione, quindi ogni mappa toccata tornerebbe LF da sola;
+#   - con due persone che lavorano in parallelo, i due effetti si incrociano e
+#     ogni diff diventa illeggibile.
+#
+# vasm e Devpac il CRLF lo tollerano, quindi oggi non si rompe niente: il danno
+# e' sulla collaborazione, non sul build.
+
+# Tutto cio' che git riconosce come testo: LF nel repo E nella copia di lavoro.
+* text=auto eol=lf
+
+# I sorgenti e gli strumenti, dichiarati a mano: questi vanno anche sull'Amiga.
+*.s     text eol=lf
+*.i     text eol=lf
+*.asm   text eol=lf
+*.cop   text eol=lf
+*.py    text eol=lf
+*.md    text eol=lf
+*.txt   text eol=lf
+*.json  text eol=lf
+
+# I BINARI NON SI TOCCANO. `text=auto` di solito li riconosce da solo, ma la sua
+# euristica e' "c'e' un byte zero nei primi 8000": un campione audio corto puo'
+# non averne (suono/Sparo.raw e' 16 byte), e un .raw normalizzato e' arte rotta
+# in silenzio. Quindi si dichiarano.
+*.raw   binary
+*.iff   binary
+*.ilbm  binary
+*.lbm   binary
+*.png   binary
+*.xcf   binary
+*.psd   binary
+*.gif   binary
+*.jpg   binary
+*.jpeg  binary
+*.bmp   binary
+*.pal   binary
+*.fnt   binary
+*.mod   binary
+*.wav   binary
+*.8svx  binary
+*.info  binary
+*.o     binary
+
+# backup/ sono copie BYTE PER BYTE, con suffissi arbitrari che nessuna regola
+# per estensione puo' coprire (Gioco.s.prima-porta, parallasse.raw.alberi-secchi,
+# Tiles.raw.prima-93-111). Se git le normalizza smettono di essere copie, ed e'
+# l'unico modo che il progetto ha di tornare indietro.
+backup/**   binary
+
+# L'eseguibile costruito, se mai venisse committato.
+uae/dh0/Gioco   binary
