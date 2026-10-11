@@ -51,6 +51,12 @@
 *.info  binary
 *.o     binary
 
+# risorse/grafica/ e' tutto materiale da guardare, e dentro ci sono file Amiga
+# SENZA ESTENSIONE (Fuoco, Nemico32, Omino32, parallasse, Pietra, Tiles: icone e
+# drawer). Nessuna regola per estensione li prende, e resterebbero appesi
+# all'euristica. Se un giorno ci finisce un file di testo, va dichiarato a mano.
+risorse/grafica/**  binary
+
 # backup/ sono copie BYTE PER BYTE, con suffissi arbitrari che nessuna regola
 # per estensione puo' coprire (Gioco.s.prima-porta, parallasse.raw.alberi-secchi,
 # Tiles.raw.prima-93-111). Se git le normalizza smettono di essere copie, ed e'
