@@ -258,6 +258,10 @@ def main():
                '         cd "...\\Megagame"  e poi  py tools\\sposta-risorse.py'
                % '/'.join(ESTENSIONI_SORGENTE))
     usati, dettaglio = riferimenti(srcs)
+    fogli = fogli_a_runtime(radice)
+    for f in sorted(fogli):
+        dettaglio.append(('risorse/mappe.txt', f + '  (letto a runtime)'))
+    usati |= fogli
     if len(usati) < RIFERIMENTI_MINIMI:
         errore('trovati solo %d fra incbin e include in %d sorgenti: troppo\n'
                '       pochi, qualcosa non torna. Mi fermo invece di spostare\n'

@@ -12,9 +12,12 @@
 ; collegamento A -> B esiste il ritorno B -> A sul verso opposto. Non e' un
 ; invariante che l'assemblatore possa verificare, ed e' il motivo per cui
 ; questa tabella non si scrive a mano.
+;
+; I FOGLI DI TILE dichiarati nella fonte, nell'ordine (l'indice e' la
+; posizione): 0=Tiles1, 1=Tiles2
+; Ogni foglio vuole la sua TileFlags in Variabili.i, e la guardia
+; GUARDIA_TAB_FOGLIO_FLAGS confronta il conto con FOGLI_N.
 ; ============================================================================
-
-MAPPE_N				EQU		4
 
 	cnop	0,2
 MAPPA1:
@@ -66,3 +69,33 @@ MappaLinkFine:
 	IFNE	(MappaLinkFine-MappaLink)/(VERSI_N*2)-MAPPE_N
 GUARDIA_MAPPA_LINK	EQU		1/0
 	ENDC
+
+; Il FOGLIO DI TILE di ogni blocco: una word per blocco, l'indice nella lista
+; dei fogli qui sopra. Lo legge ImpostaBlocco, che da li' ricava la TileFlags
+; del foglio passando per TabFoglioFlags.
+	cnop	0,2
+MappaFoglio:
+	dc.w	  0			; mappa1 -> Tiles1
+	dc.w	  0			; mappa2 -> Tiles1
+	dc.w	  0			; mappa3 -> Tiles1
+	dc.w	  0			; mappa4 -> Tiles1
+MappaFoglioFine:
+	IFNE	(MappaFoglioFine-MappaFoglio)/2-MAPPE_N
+GUARDIA_MAPPA_FOGLIO	EQU		1/0
+	ENDC
+
+; I NOMI DEI FILE DEI FOGLI, come li apre CaricaFogli (Arte.i) a runtime. Sono
+; percorsi RELATIVI alla cartella da cui parte il gioco: i .raw devono stare
+; in <li'>/grafica/, che non e' la stessa cosa della cartella grafica/ del
+; sorgente. Ce li porta  py tools\porta-su-dh0.py .
+	cnop	0,4
+FogliNomi:
+	dc.l	FoglioNome0
+	dc.l	FoglioNome1
+FogliNomiFine:
+	IFNE	(FogliNomiFine-FogliNomi)/4-FOGLI_N
+GUARDIA_FOGLI_NOMI	EQU		1/0
+	ENDC
+FoglioNome0:	dc.b	"grafica/Tiles1.raw",0
+FoglioNome1:	dc.b	"grafica/Tiles2.raw",0
+	even

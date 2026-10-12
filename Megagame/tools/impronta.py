@@ -26,7 +26,7 @@
 #
 # L'impronta e' il md5 dei byte del file, non una data e non la dimensione: due
 # versioni diverse possono avere gli stessi byte di lunghezza (e' successo con
-# `Tiles.raw`, che e' sempre 51200), mentre byte identici sono lo stesso file.
+# il foglio delle tile, che e' sempre 51200), mentre byte identici sono lo stesso file.
 # I primi 8 caratteri bastano per parlarne; il confronto accetta un prefisso.
 # ============================================================================
 import hashlib

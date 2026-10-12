@@ -508,15 +508,26 @@ IndicBassoLo:
 * Qui sono memorizzate le tiles dello sfondo e tutti gli oggetti che ci si
 * muovono sopra: OMINO, NEMICO, ecc. Tutti i dati sono in formato bitplane
 
+; IL FOGLIO DI TILE STA QUI SOLO CON L'INTERRUTTORE A ZERO.
+; Con FOGLIO_DA_FILE = 1 i fogli li legge CaricaFogli (Arte.i) all'avvio e il
+; buffer in chip e' FoglioTile, in BufferChip.i. Un incbin qui sarebbe un
+; secondo foglio pagato in chip e mai letto.
+; E ATTENZIONE A COSA SI PERDE SPEGNENDO L'INCBIN: GUARDIA_TILES_RAW legava la
+; lunghezza VERA del file alla forma dichiarata, al tempo di assemblaggio.
+; Senza incbin quel confronto non esiste piu' e lo rifa' CaricaFogli a runtime,
+; sui byte che ha letto davvero.
+	IFEQ	FOGLIO_DA_FILE
 TILES:
-	incbin	"grafica/Tiles.raw"
+	incbin	"grafica/Tiles1.raw"
 TILES_FINE:
 ; Sesta della famiglia GUARDIA_*_RAW. Lega la FORMA dichiarata del foglio
-; (FOGLIO_TILE_COLS, FOGLIO_TILE_RIGHE, FOGLIO_TILE_BYTE, in testa a TileFlags) alla lunghezza
-; VERA del file: riesportare Tiles.raw con un'altra geometria fermerebbe
-; l'assemblaggio invece di far leggere a DisegnaSfondo la tile sbagliata.
-	IFNE	(TILES_FINE-TILES)-FOGLIO_TILE_N*FOGLIO_TILE_BYTE
+; (FOGLIO_TILE_COLS, FOGLIO_TILE_RIGHE, FOGLIO_TILE_BYTE, in CostArte.i) alla
+; lunghezza VERA del file: riesportare il foglio con un'altra geometria
+; fermerebbe l'assemblaggio invece di far leggere a DisegnaSfondo la tile
+; sbagliata.
+	IFNE	(TILES_FINE-TILES)-FOGLIO_BYTE
 GUARDIA_TILES_RAW	EQU		1/0
+	ENDC
 	ENDC
 
 OMINO:

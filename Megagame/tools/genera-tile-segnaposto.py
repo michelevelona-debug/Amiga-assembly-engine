@@ -18,7 +18,7 @@
 # non esiste ancora, ed e' il motivo per cui la mappa e' un file di testo. Ma
 # fino a qui quelle caselle erano buchi: il gioco ci mostrava il cielo e
 # l'anteprima un quadrato magenta. Con un segnaposto disegnato DAVVERO dentro
-# Tiles.raw il livello si puo' provare sull'Amiga con la sua geometria giusta,
+# dentro il foglio il livello si puo' provare sull'Amiga con la geometria giusta,
 # e l'arte vera arriva dopo, uno slot alla volta.
 #
 # I COLORI NON SI RICOPIANO: si leggono dai blocchi GamePalHi/GamePalLo di
@@ -32,9 +32,9 @@
 # stesso, che durante lo sviluppo e' comodo: si vede dove sono. Ricordarsi di
 # toglierle con `--togli` prima di considerare finita la grafica.
 #
-# REGOLA 15: il Tiles.raw di prima viene messo da parte, mai sovrascritto e
+# REGOLA 15: il foglio di prima viene messo da parte, mai sovrascritto e
 # basta. REGOLA 14: si scrive con `salva` di tools/grafica.py, che produce
-# ANCHE l'.iff in risorse/grafica/ - che per Tiles.raw non era mai esistito.
+# ANCHE l'.iff in risorse/grafica/ - che per il foglio non era mai esistito.
 # ============================================================================
 import importlib.util, os, sys
 
@@ -55,7 +55,7 @@ mappa = _modulo('mappa', 'mappa.py')
 grafica = _modulo('grafica', 'grafica.py')
 
 RADICE = valori.RADICE
-TILES = os.path.join(RADICE, 'grafica', 'Tiles.raw')
+TILES = os.path.join(RADICE, 'grafica', mappa.FOGLIO_FILE)
 TILE = mappa.TILE
 COLS = mappa.FOGLIO_COLS
 PITCH = mappa.FOGLIO_PITCH
@@ -180,8 +180,8 @@ def main():
 
     n_raw, n_iff, p_iff = grafica.salva(
         TILES, celle_dal_foglio(tile), COLS * TILE, RIGHE, PIANI, pal)
-    print('scritti: grafica/Tiles.raw (%d byte) e %s (%d byte)'
-          % (n_raw, os.path.relpath(p_iff, RADICE), n_iff))
+    print('scritti: grafica/%s (%d byte) e %s (%d byte)'
+          % (mappa.FOGLIO_FILE, n_raw, os.path.relpath(p_iff, RADICE), n_iff))
     print('adesso rilancia  py tools\\mappa.py  per rifare l\'anteprima.')
     return 0
 

@@ -7,6 +7,19 @@
 ; Serviva a PAR_DISABLE per dirottarci i piani 7-8 e misurare il costo della
 ; parallasse a bitplane. Quell'interruttore e' sparito col trasloco agli sprite
 ; il 5 settembre, il buffer e' rimasto: nessuna riga di codice lo nominava piu'.
+	IFNE	FOGLIO_DA_FILE
+	cnop	0,8
+; IL FOGLIO DI TILE, in chip perche' lo legge il BLITTER: DisegnaSfondo mette
+; questo indirizzo in BLTAPT. E' UNO SOLO anche quando i fogli sono tre: dentro
+; ci sta quello del blocco corrente, e ce lo copia AssicuraFoglioTile dalla
+; copia in fast. Con l'incbin (FOGLIO_DA_FILE = 0) questo buffer non esiste e
+; al suo posto c'e' TILES in Chip.i: la chip occupata e' la stessa.
+; In BSS_C non occupa un byte nell'eseguibile, solo chip RAM a runtime - anzi
+; l'eseguibile DIMAGRISCE di FOGLIO_BYTE, che prima erano dati iniziali.
+FoglioTile:
+	ds.b	FOGLIO_BYTE
+	ENDC
+
 	cnop	0,8
 ; COPIA DI LAVORO DELLA SCHERMATA DEL TITOLO. E' questa che va a video, non
 ; l'incbin: title_bpl fa da MASTER e non si tocca mai, cosi' il rettangolo

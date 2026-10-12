@@ -241,7 +241,7 @@ def main():
     arg = sys.argv[1:]
     t, k = costanti()
     mp = leggi_mappa()
-    tiles = open(os.path.join(RADICE, 'grafica', 'Tiles.raw'), 'rb').read()
+    tiles = open(os.path.join(RADICE, 'grafica', mappa.FOGLIO_FILE), 'rb').read()
     pal = mappa.palette_gioco(t)
 
     print('pitch %d, piano %d byte, prelievo %d byte/riga, BPLMOD %d'

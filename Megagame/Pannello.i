@@ -1,7 +1,86 @@
-; Pannello.i - Strumenti del pannello, AspettaBlitter, scritta scorrevole
+; Pannello.i - Costruzione e strumenti del pannello, AspettaBlitter, scritta scorrevole
 ; Incluso da Gioco.s: contiene solo codice/dati, la SECTION la dichiara Gioco.s.
 
 
+* 		ROUTINE DI DISEGNO DEL PANNELLO
+DisegnaPannello:
+	; Copia i 4 piani dell'arte dentro PannelloBuf, che ha il pitch del MONDO.
+	; L'arte finisce a DELTA_MAPPAVERA byte dall'inizio di ogni riga, cioe' dove
+	; comincia la mappa nel world buffer: cosi' il pannello appare esattamente
+	; come apparirebbe il mondo a CameraX=0, e il display non va ritarato.
+	; Il resto della riga resta a zero: e' fuori dalla finestra visibile.
+	MOVEM.L	D0-D4/A0-A2,-(SP)
+
+	LEA		PannelloBuf,A1
+	ADDA.W	#PANNELLO_ART_BYTE_OFS,A1		; l'arte parte dove parte la mappa
+	LEA		pannello,A2				; sorgente: 4 piani contigui, 40 byte per riga
+
+	MOVEQ	#PANNELLO_BITPLANES-1,D4
+	IFNE	PANNELLO_TEST_FILL
+	; PROVA: invece dell'arte scrive costanti note, un valore per piano.
+	; piano 0 = $FFFF, piano 1 = $0000, piano 2 = $FFFF, piano 3 = $0000
+	; -> indice colore 1+4 = 5 su TUTTA la fascia, cioe' un colore solo e piatto.
+	;   fascia UNIFORME del colore 5 -> buffer, puntatori e display sono sani, e
+	;     il difetto sta nel blit dell'arte o nel file .raw
+	;   fascia di ALTRO colore uniforme -> arrivano solo alcuni piani: si guarda
+	;     quali bit mancano e si risale al puntatore sbagliato
+	;   fascia NON uniforme -> il percorso di display e' rotto a monte
+	LEA		PannelloBuf,A1
+	ADDA.W	#PANNELLO_ART_BYTE_OFS,A1
+	MOVEQ	#PANNELLO_BITPLANES-1,D4
+.FillPianoPannello:
+	MOVE.L	A1,A0
+	MOVEQ	#0,D2
+	; TUTTI i piani pieni: la fascia deve venire di UN SOLO colore, l'indice 15.
+	; Qualunque zona di colore diverso dice esattamente quali piani NON arrivano
+	; li': i bit accesi dell'indice sono i piani presenti. Nero = nessun piano.
+	MOVE.W	#$FFFF,D2
+.FillValore:
+	MOVE.W	#PANNELLO_HEIGHT-1,D0
+.FillRigaPannello:
+	MOVE.W	#PANNELLO_BYTES_PER_ROW/2-1,D1
+.FillWordPannello:
+	MOVE.W	D2,(A0)+
+	DBRA	D1,.FillWordPannello
+	ADDA.W	#PANNELLO_BUF_PITCH-PANNELLO_BYTES_PER_ROW,A0
+	DBRA	D0,.FillRigaPannello
+	ADDA.L	#PANNELLO_BUF_PLANE,A1
+	DBRA	D4,.FillPianoPannello
+	ENDC
+
+	IFEQ	PANNELLO_TEST_FILL
+.BlittaLoopPannello:
+	BSR.W	AspettaBlitter
+	MOVE.L	#$ffffffff,$44(A6)		; BLTAFWM/BLTALWM: nessuna maschera
+	MOVE.L	#$09F00000,$40(A6)		; BLTCON0/1: USEA+USED, minterm $F0 (D = A)
+	MOVE.W	#0,$64(A6)				; BLTAMOD: sorgente contigua
+	MOVE.W	#PANNELLO_BUF_PITCH-PANNELLO_BYTES_PER_ROW,$66(A6)	; BLTDMOD
+	MOVE.L	A2,$50(A6)				; BLTAPT
+	MOVE.L	A1,$54(A6)				; BLTDPT
+	MOVE.W	#(PANNELLO_HEIGHT<<6)|(PANNELLO_BYTES_PER_ROW/2),$58(A6)	; BLTSIZE
+	ADD.L	#PANNELLO_BUF_PLANE,A1	; piano successivo nella destinazione
+	ADD.L	#PANNELLO_PLANE_SIZE,A2	; piano successivo nella sorgente
+	DBRA	D4,.BlittaLoopPannello
+	ENDC
+
+	; --- puntatori del pannello nella copperlist, una volta sola: e' fisso ---
+	; Niente compensazione della corsa col DMA: le righe di separazione girano
+	; a bitplane spenti, quindi non c'e' auto-incremento e i puntatori restano
+	; dove li mettiamo. Vedi il blocco su PANNELLO_SEP_ROWS.
+	LEA		PannelloBuf,A1
+	LEA		BitplanePannello,A2
+	MOVEQ	#PANNELLO_BITPLANES-1,D4
+.PuntaLoopPannello:
+	MOVE.L	A1,D0
+	MOVE.W	D0,6(A2)				; word bassa
+	SWAP	D0
+	MOVE.W	D0,2(A2)				; word alta
+	ADDA.L	#PANNELLO_BUF_PLANE,A1
+	ADDQ.W	#8,A2
+	DBRA	D4,.PuntaLoopPannello
+
+	MOVEM.L	(SP)+,D0-D4/A0-A2
+	RTS
 * DisegnaPunteggio - le cinque cifre nel riquadro del pannello
 *   Due lavori, in quest'ordine: il numero MOSTRATO insegue quello vero di
 *   PUNTEGGIO_PASSO per quadro, e il pannello si riscrive solo se il mostrato e'

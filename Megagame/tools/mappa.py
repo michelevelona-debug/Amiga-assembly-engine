@@ -32,7 +32,7 @@
 # diventa da sola l'elenco del lavoro di grafica da fare.
 #
 # COSA SI PUO' SCRIVERE IN UNA CASELLA:
-#   un numero          0..319, lo slot nel foglio Tiles.raw
+#   un numero          0..319, lo slot nel foglio delle tile
 #   un nome            una EQU TILE_* di Gioco.s, col prefisso o senza:
 #                      `LUCE` e `TILE_LUCE` sono tutti e due la tile 50.
 #                      I segnaposto non hanno arte, quindi in mezzo ai numeri
@@ -80,11 +80,42 @@ def percorsi(nome):
 percorsi('mappa1')
 
 TILE = 16
-FOGLIO_COLS = 20          # tile per riga in Tiles.raw: lo dice la DIVU #20 di
+FOGLIO_COLS = 20          # tile per riga nel foglio: lo dice la DIVU #20 di
 FOGLIO_PITCH = 40         # DisegnaSfondo, non un commento
 FOGLIO_RIGHE = 256
 FOGLIO_SLOT = FOGLIO_COLS * (FOGLIO_RIGHE // TILE)      # 320
 PIANI = 5
+# Il foglio di DIFETTO, per chi chiede un foglio senza dire di quale mappa.
+# Quale foglio usa una mappa lo dice risorse/mappe.txt, e lo legge foglio_di():
+# il nome non si ricopia da nessuna parte, se no la seconda copia diverge al
+# primo rinominamento.
+FOGLIO_FILE = 'Tiles1.raw'
+
+
+def foglio_di(nome_mappa):
+    """Il .raw del foglio che usa quella mappa, e il NUMERO del foglio
+    (1-based, cioe' quello che compare in TileFlags<n> di Variabili.i).
+
+    La fonte e' risorse/mappe.txt, la stessa che genera Mappe.i: qui non si
+    rifa' il ragionamento, si rilegge. Una mappa non elencata la' - un .txt
+    appena disegnato e non ancora messo nella griglia - ricade sul foglio di
+    difetto, e lo dice."""
+    fonte = os.path.join(RADICE, 'risorse', 'mappe.txt')
+    if not os.path.isfile(fonte):
+        return FOGLIO_FILE, 1
+    fogli, righe = [], {}
+    for l in open(fonte, encoding='utf-8'):
+        c = l.split(';')[0].split()
+        if not c:
+            continue
+        if c[0] == 'foglio' and len(c) == 2:
+            fogli.append(c[1])
+        elif len(c) >= 2:
+            righe[c[0]] = c[-1]
+    nome = righe.get(nome_mappa)
+    if nome is None or nome not in fogli:
+        return FOGLIO_FILE, 1
+    return nome + '.raw', fogli.index(nome) + 1
 
 # La stanza dell'originale C64, MISURATA sullo screenshot (autocorrelazione sul
 # suolo e sulle piattaforme, scala dai 200 px di altezza del quadro): area di
@@ -157,12 +188,13 @@ def palette_gioco(tab):
     return pal
 
 
-def foglio_tile():
+def foglio_tile(nome_file=None):
     """Ogni slot del foglio come 16x16 indici di palette."""
-    dati = open(os.path.join(RADICE, 'grafica', 'Tiles.raw'), 'rb').read()
+    nome_file = nome_file or FOGLIO_FILE
+    dati = open(os.path.join(RADICE, 'grafica', nome_file), 'rb').read()
     atteso = FOGLIO_PITCH * FOGLIO_RIGHE * PIANI
     if len(dati) != atteso:
-        raise SystemExit('Tiles.raw e\' %d byte, ne servono %d' % (len(dati), atteso))
+        raise SystemExit('%s e\' %d byte, ne servono %d' % (nome_file, len(dati), atteso))
     piano = FOGLIO_PITCH * FOGLIO_RIGHE
     out = []
     for tr in range(FOGLIO_RIGHE // TILE):
@@ -189,17 +221,35 @@ def segnaposto(tab):
             if k.startswith('TILE_') and isinstance(v, int) and 0 <= v < FOGLIO_SLOT}
 
 
-def leggi_tileflags():
-    """I byte di TileFlags, per sapere fin dove arriva."""
+def leggi_tileflags(numero=1):
+    """I byte della TileFlags di un foglio, per sapere fin dove arriva.
+
+    Una tabella per foglio: la tile 93 di Tiles1 e la 93 di Tiles2 sono due
+    disegni diversi, quindi due solidita' diverse."""
+    etichetta = 'TileFlags%d:' % numero
     testo = valori._espandi(valori.SORGENTE)
-    i = next(k for k, l in enumerate(testo) if l.startswith('TileFlags:'))
+    try:
+        i = next(k for k, l in enumerate(testo) if l.startswith(etichetta))
+    except StopIteration:
+        raise SystemExit('in Variabili.i non c\'e\' %s. Ogni foglio dichiarato '
+                         'in risorse/mappe.txt vuole la sua tabella.' % etichetta)
+    # SI FERMA ALL'ETICHETTA DI FINE, non alla prima riga che non e' un dc.b.
+    # La vecchia condizione ("esci appena hai qualcosa e incontri altro")
+    # funzionava solo finche' la tabella cominciava con dei dc.b: su una
+    # tabella fatta di solo `dcb.b`, come quella di un foglio ancora tutto
+    # libero, `out` restava vuota, il ciclo non usciva mai e andava a
+    # raccogliere i dc.b del BLOCCO SUCCESSIVO. Provato su TileFlags2: tornava
+    # 15 voci prese da un'altra tabella, cioe' muri inventati.
+    # Il `dcb.b` di coda non si espande: le voci che non sono scritte in chiaro
+    # sono zero, e chi legge questa lista tratta "oltre la fine" come libera.
+    fine = etichetta[:-1] + 'Fine:'
     out = []
     for l in testo[i + 1:]:
+        if l.startswith(fine):
+            break
         c = l.split(';')[0].rstrip()
         m = re.search(r'\bdc\.b\s+(.+)$', c, re.I)
         if not m:
-            if out and c.strip():
-                break
             continue
         out += [int(v.strip()) for v in m.group(1).split(',')]
     return out
@@ -276,7 +326,7 @@ def scrivi_txt(path, righe, segni, intestazione=None):
     out = []
     out += intestazione or [
         '; Mappa di MegaGame. UNA CASELLA = UNA TILE.',
-        '; Il numero e\' lo slot nel foglio grafica/Tiles.raw; la tavola con',
+        '; Il numero e\' lo slot nel foglio delle tile; la tavola con',
         '; numero e disegno di ogni tile e\' nella tavola accanto a questo file.',
         '; Si puo\' scrivere anche il NOME di una EQU TILE_* (LUCE = 50).',
         '; Dopo ogni modifica:  py tools\\mappa.py',
@@ -408,9 +458,11 @@ def main():
     tab = valori.leggi()
     VIS_C, VIS_R = tab['VIS_COLS'], tab['BG_VIS_ROWS'] // 16
     pal = palette_gioco(tab)
-    tile = foglio_tile()
+    foglio_raw, foglio_n = foglio_di(NOME)
+    print('%s usa il foglio %s (TileFlags%d)' % (NOME, foglio_raw, foglio_n))
+    tile = foglio_tile(foglio_raw)
     segni = segnaposto(tab)
-    flags = leggi_tileflags()
+    flags = leggi_tileflags(foglio_n)
     senza_arte = {n for n in range(len(tile))
                   if all(v == 0 for r in tile[n] for v in r) and n != 0}
 

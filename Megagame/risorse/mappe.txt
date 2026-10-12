@@ -1,6 +1,21 @@
-; La GRIGLIA dei blocchi. UNA RIGA PER BLOCCO:
+; La GRIGLIA dei blocchi. Due tipi di riga.
 ;
-;   nome     sinistra  destra   sopra   sotto
+; 1) I FOGLI DI TILE, dichiarati PRIMA dei blocchi, uno per riga:
+;
+;      foglio  <nome>
+;
+;    L'indice di un foglio e' la sua posizione in questa lista, ed e' quello
+;    che finisce in MappaFoglio. Il file e' grafica/<nome>.raw e deve esistere
+;    ed essere lungo quanto dicono le EQU FOGLIO_TILE_N e FOGLIO_TILE_BYTE:
+;    due fogli di forma diversa non sono scambiabili, e lo script lo controlla.
+;    **Ogni foglio dichiarato vuole la SUA TileFlags in Variabili.i**, perche'
+;    la stessa tile e' un disegno diverso su ogni foglio, quindi una solidita'
+;    diversa. La guardia GUARDIA_TAB_FOGLIO_FLAGS ferma l'assemblaggio se il
+;    numero di tabelle non corrisponde al numero di fogli dichiarati qui.
+;
+; 2) I BLOCCHI, una riga per blocco:
+;
+;   nome     sinistra  destra   sopra   sotto   foglio
 ;
 ; Il nome e' quello dei file del blocco: risorse/<nome>.txt e' la fonte,
 ; grafica/<nome>.raw e' il prodotto (py tools\mappa.py --mappa N).
@@ -17,8 +32,11 @@
 ;
 ; Dopo ogni modifica:  py tools\mappe.py  e poi  py tools\porte.py
 ;
-;nome      sinistra  destra    sopra     sotto
-mappa1     mappa4    mappa2    -         -
-mappa2     mappa1    mappa3    -         -
-mappa3     mappa2    mappa4    -         -
-mappa4     mappa3    mappa1    -         -
+foglio     Tiles1
+foglio     Tiles2
+;
+;nome      sinistra  destra    sopra     sotto     foglio
+mappa1     mappa4    mappa2    -         -         Tiles1
+mappa2     mappa1    mappa3    -         -         Tiles1
+mappa3     mappa2    mappa4    -         -         Tiles1
+mappa4     mappa3    mappa1    -         -         Tiles1

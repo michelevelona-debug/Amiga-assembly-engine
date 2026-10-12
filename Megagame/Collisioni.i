@@ -1,4 +1,4 @@
-; Collisioni.i - Centro camera, collisioni con tile e BOB, movimento nemici
+; Collisioni.i - Centro camera, collisioni con tile e BOB
 ; Incluso da Gioco.s: contiene solo codice/dati, la SECTION la dichiara Gioco.s.
 
 
@@ -46,7 +46,7 @@ RettangoloScrollNelCentro:
 *   Controlla se la tile a (worldX, worldY) e' bloccata.
 *   Input:  D0 = worldX (pixel)
 *           D1 = worldY (pixel)
-*   Output: D2.b = TileFlags della tile (0 = libera, !=0 = bloccata)
+*   Output: D2.b = la TileFlags del foglio in uso (0 = libera, !=0 = bloccata)
 *           Z flag aggiornato (BEQ = libera, BNE = bloccata)
 *   Modifica: D0, D1, D2
 *   Tile fuori dai bounds della mappa sono considerate bloccate.
@@ -76,8 +76,11 @@ IsTileBlocked:
 	MOVEA.L	MappaPtr,A1			; la mappa viva
 	MOVE.W	(A1,D1.W),D2			; D2 = numero della tile
 
-	; Lookup nel TileFlags (indicizzato come byte)
-	LEA		TileFlags,A1
+	; Lookup nella TileFlags DEL FOGLIO IN USO (indicizzata come byte).
+	; Non e' piu' una LEA su un'etichetta fissa: con piu' fogli la tabella
+	; dipende dal blocco, e il puntatore lo tiene in pari ImpostaBlocco, che
+	; e' l'unico posto che cambia blocco. Stessa lunghezza della LEA.
+	MOVEA.L	FlagsPtr,A1
 	MOVE.B	(A1,D2.W),D2			; D2.b = flag (0 = libera)
 	; Z aggiornato dal MOVE
 	RTS
@@ -250,42 +253,4 @@ IsEnemyBlocked:
 	RTS
 .blocked:
 	MOVEQ	#1,D2
-	RTS
-
-* AggiornaNemici
-*   Per ogni nemico attivo, aggiorna la sua posizione in base a bob_AI:
-*     0 = fermo
-*     1 = ronda su/giù
-*     2 = ronda dx/sx
-*     3 = caccia il player
-AggiornaNemici:
-	MOVEM.L	D0/A0,-(SP)
-
-	LEA		Enemies,A0
-	MOVEQ	#ENEMY_COUNT-1,D0
-.loop:
-	; Skip nemico inattivo
-	TST.W	bob_Active(A0)
-	BEQ.S	.next
-
-	; Switch su bob_AI
-	MOVE.W	bob_AI(A0),D1
-	BEQ.S	.next					; AI=0 -> fermo
-	CMP.W	#1,D1
-	BEQ.S	.do_patrol
-	CMP.W	#2,D1
-	BEQ.S	.do_hunt
-	BRA.S	.next					; AI sconosciuta -> skip
-
-.do_patrol:
-	BSR.W	AI_Patrol
-	BRA.S	.next
-.do_hunt:
-	BSR.W	AI_Hunt
-
-.next:
-	LEA		bob_Length(A0),A0		; prossimo nemico
-	DBRA	D0,.loop
-
-	MOVEM.L	(SP)+,D0/A0
 	RTS

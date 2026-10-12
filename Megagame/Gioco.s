@@ -28,14 +28,17 @@
 ; BSR SwapParBuffers stava dentro un condizionale attorno a una chiamata
 ; che deve avvenire sempre. Oggi quella misura non si puo' piu' rifare cosi':
 ; la parallasse non sta piu' nei bitplane e PAR_DISABLE non esiste.
+	include	"CostArte.i"		; Costanti: forma del foglio tile + FOGLIO_DA_FILE
 	include	"CostTitolo.i"		; Costanti: schermata del titolo e droide
 
+	include	"Avvio.i"		; IL PUNTO D'INGRESSO: deve stare prima di Startup2
 	include	"Startup2.i"		; Startup completo AGA + VBR + cache clear
 
 	include	"CostDisplay.i"		; Costanti: DMA, mappa, scroll, display, fade, alba, sfondo, cielo, alberi
 	include	"CostPannello.i"		; Costanti: strumenti del pannello
 	include	"CostGioco.i"		; Costanti: pietra, player, fisica, tasti, luce, falo', suoni
 	include	"CostProfilo.i"		; Costanti e macro PROFMARK del profiler
+	include	"CostMappe.i"		; GENERATO: MAPPE_N e FOGLI_N (li vuole Arte.i)
 
 WaitDisk 		EQU 30 ; 50-150 al salvataggio (secondo i casi)
 START:
@@ -510,23 +513,25 @@ AggiornaCopperSPR:
 
 	MOVEM.L	(SP)+,D0-D1/A0-A1
 	RTS
+	include	"Arte.i"		; Lettura dei fogli di tile da file, all'avvio
 	include	"Sheet.i"		; Fogli costruiti al boot: falo', rotella, indicatori
 	include	"Misura.i"		; Misura del quadro: LeggiRiga, FineLavoro
 	include	"Input.i"		; Joystick e tastiera
 	include	"Mondo.i"		; Camera, bordi, porte fra i blocchi, ricostruzione del mondo
 	include	"Sfondo.i"		; Disegno dello sfondo, copper del cielo, skyline
 	include	"Parallasse.i"		; Parallasse degli alberi sugli sprite
-	include	"Init.i"		; Inizializzazioni: pannello, player, nemici, pietra, maschere BOB
-	include	"Collisioni.i"		; Centro camera, collisioni con tile e BOB, movimento nemici
+	include	"Init.i"		; Inizializzazioni: player, nemici, pietra, maschere BOB
+	include	"Collisioni.i"		; Centro camera, collisioni con tile e BOB
 	include	"Palette.i"		; Palette AGA, notte, dissolvenza, transizioni
+	include	"Display.i"		; Stato di display di una scena: titolo e gioco
 	include	"Titolo.i"		; Schermata del titolo e droide
 	include	"Suoni.i"		; Effetti sonori
 	include	"Combattimento.i"		; Pietra, combattimento, uccisioni
 	include	"Luce.i"		; Falo', partenza dalla mappa, cerchio di luce
-	include	"Nemici.i"		; Intelligenza dei nemici
+	include	"Nemici.i"		; Intelligenza e movimento dei nemici
 	include	"Player.i"		; Fisica e posizione del player
 	include	"Bob.i"		; Disegno dei BOB
-	include	"Pannello.i"		; Strumenti del pannello, AspettaBlitter, scritta scorrevole
+	include	"Pannello.i"		; Costruzione e strumenti del pannello, AspettaBlitter, scritta scorrevole
 	include	"PathB.i"		; Scroll hardware, rettangoli sporchi, master, darkplane
 	include	"Profilo.i"		; Monitor delle prestazioni
 ; L'intro. Come tutti gli include di questo progetto contiene SOLO codice: le
@@ -602,6 +607,19 @@ QuadSheet:
 ; SCRITTA_H righe, piu' la coda che chiude il giro.
 ScrittaBuf:
 	ds.b	SCRITTA_BUF_SZ
+
+	IFNE	FOGLIO_DA_FILE
+	cnop	0,4
+; TUTTI I FOGLI DI TILE, come li ha letti CaricaFogli. Sta in LavoroCPU, che e'
+; BSS senza `_C`: su una macchina con fast ci finisce, e li' nessuno contende
+; il bus al display. Da qui AssicuraFoglioTile copia in chip il foglio che
+; serve, uno alla volta.
+; SU UN A1200 LISCIO (niente fast) AmigaOS lo mette in CHIP, e sono
+; FOGLI_N x FOGLIO_BYTE. E' il prezzo di avere piu' di un foglio, ed e' scritto
+; qui perche' non sia una sorpresa.
+FogliArte:
+	ds.b	FOGLI_N*FOGLIO_BYTE
+	ENDC
 
 	SECTION	SpritesData,DATA_C
 	cnop	0,8				; allineamento sprite

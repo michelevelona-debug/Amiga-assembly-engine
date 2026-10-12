@@ -157,7 +157,7 @@ ControllaBordi ·················· Mondo.i
 ScrollPathB ····················· PathB.i
 AggiornaParallasseSprite ········ Parallasse.i
 AnimaFalo ······················· Luce.i
-AggiornaNemici ·················· Collisioni.i
+AggiornaNemici ·················· Nemici.i
 Combattimento / Proiettile ······ Combattimento.i
 SuonoPassi ······················ Suoni.i
 PathBRestoreAll ················· PathB.i
@@ -171,14 +171,32 @@ MostraProfilo ··················· Profilo.i
 
 ## Dove il nome del modulo inganna
 
-Tre casi verificati, e sono quelli che fanno perdere dieci minuti:
+Ne era rimasto uno, dopo gli spostamenti dell'11 ottobre (vedi sotto):
 
-- **`DisegnaPannello` sta in `Init.i`**, non in `Pannello.i`: e' una
-  costruzione di boot, non uno strumento.
-- **`AggiornaNemici` sta in `Collisioni.i`**; `Nemici.i` contiene solo
-  `AI_Patrol` e `AI_Hunt`, cioe' la DECISIONE, non il movimento.
-- **`ImpostaDisplayGioco` sta in `Titolo.i`**, accanto alla gemella del titolo
-  con cui condivide le EQU.
+- **`ImpostaDisplayGioco` sta in `Titolo.i`** (riga 99), accanto alla gemella
+  `ImpostaDisplayTitolo` (riga 83), con cui condivide le EQU.
 
 E quattro routine sono rimaste NELLA REGIA, non in un modulo: `AspettaVBL`,
 `GestisciMusica`, `AggiornaCopperBPL` e `AggiornaCopperSPR`.
+
+## Spostamenti dopo la scomposizione
+
+La tabella dei moduli in testa a questo file descrive il **9-10 ottobre**, cioe'
+com'era al taglio. Non si aggiorna: ha una data e serve a chi deve riportare a
+mano una modifica fatta prima di quel commit. Dove sta una routine ADESSO lo
+dicono le due mappe qui sopra, e questo elenco:
+
+| Data | Routine | Da | A | Perche' |
+|---|---|---|---|---|
+| 11 ott | `DisegnaPannello` | `Init.i` | `Pannello.i` | il nome prometteva Pannello.i e la gente la cercava la' |
+| 11 ott | `AggiornaNemici` | `Collisioni.i` | `Nemici.i` | movimento e decisione dei nemici nello stesso file |
+
+Effetto sulle descrizioni della tabella del 9-10 ottobre: per `Init.i`,
+`Collisioni.i`, `Nemici.i` e `Pannello.i` non valgono piu'. `Init.i` non
+costruisce piu' il pannello; `Collisioni.i` non muove piu' i nemici; `Nemici.i`
+ha decisione **e** movimento; `Pannello.i` ha anche la costruzione di boot.
+
+Lo spostamento e' stato un no-op dimostrato: il sorgente espanso ha le stesse
+12.161 righe, lo stesso multiset, e `tools/misura-salti.py` conta 410 salti
+corti prima e 410 dopo, nessuno allungato. Il codice e' stato tagliato e
+incollato, non riscritto.

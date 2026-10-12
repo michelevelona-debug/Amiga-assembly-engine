@@ -2,8 +2,63 @@
 ; Incluso da Gioco.s: contiene solo codice/dati, la SECTION la dichiara Gioco.s.
 
 
+	IFNE	FOGLIO_DA_FILE
+* AssicuraFoglioTile - in chip ci sia il foglio del blocco corrente.
+*   DISTRUGGE: nulla. Non tocca il blitter.
+*
+*   STA QUI, attaccata all'unica routine che il foglio lo LEGGE, e si chiama
+*   da li': cosi' non c'e' un posto da cui ci si possa dimenticare di passare.
+*   NON sta in ImpostaBlocco, che pure e' l'unico posto che cambia blocco:
+*   EseguiPassaggio lo chiama DUE volte quando l'arrivo non e' valido
+*   (`.rinuncia` rimette il blocco di prima), e una copia da FOGLIO_BYTE fatta
+*   due volte per un passaggio che non avviene e' lavoro buttato nel quadro
+*   piu' caro che c'e'.
+*
+*   LA COPIA LA FA LA CPU, non il blitter: BLTAPT non puo' puntare la fast, e
+*   la sorgente sta in fast. Sono FOGLIO_BYTE/4 MOVE.L. Quanto costi si misura
+*   col tasto P: se risultasse caro la strada e' la MOVEM a blocchi, non una
+*   stima diversa.
+	IFNE	FOGLIO_BYTE-(FOGLIO_BYTE/4)*4
+ERRORE_FOGLIO_NON_MULTIPLO_4	EQU		1/0
+	ENDC
+AssicuraFoglioTile:
+	; Il MOVEM viene PRIMA del confronto, anche se sulla strada corta - quella
+	; in cui non c'e' niente da copiare - e' lavoro inutile: con il confronto
+	; prima, D0 si sporcava anche li', e "DISTRUGGE: nulla" sarebbe stato
+	; falso. Gira una volta per ridisegno del mondo, non per quadro.
+	MOVEM.L	D0-D1/A0-A1,-(SP)
+	MOVE.W	FoglioCorrente,D0
+	CMP.W	FoglioInChip,D0
+	BEQ.S	.gia
+	MOVE.W	D0,FoglioInChip
+	; L'OFFSET DEL FOGLIO DENTRO FogliArte, SOMMANDO invece che moltiplicando.
+	; Un `MULU #FOGLIO_BYTE,D0` farebbe lo stesso in una riga, ma 51200 come
+	; immediato a word sta in 16 bit solo se letto SENZA segno, e non ho modo
+	; di assemblarlo per esserne sicuro: qui si usano solo forme che nel
+	; sorgente ci sono gia'. I fogli sono pochi e questo gira al cambio di
+	; blocco, non per quadro.
+	LEA		FogliArte,A0
+	MOVE.W	D0,D1
+	BRA.S	.prova
+.avanti:
+	ADD.L	#FOGLIO_BYTE,A0
+.prova:
+	DBRA	D1,.avanti
+	LEA		FoglioTile,A1
+	MOVE.W	#FOGLIO_BYTE/4-1,D1
+.copia:
+	MOVE.L	(A0)+,(A1)+
+	DBRA	D1,.copia
+.gia:
+	MOVEM.L	(SP)+,D0-D1/A0-A1
+	RTS
+	ENDC
+
 DisegnaSfondo:
 	MOVEM.L	D0-D6/A0-A2,-(SP)
+	IFNE	FOGLIO_DA_FILE
+	BSR.W	AssicuraFoglioTile		; l'arte giusta in chip, se gia' non c'e'
+	ENDC
 
 	MOVEA.L	MappaPtr,A0			; la mappa VIVA, non un'etichetta fissa
 	; QUI C'ERA un `MOVE.W TileX,D0 / ADD.W D0,D0 / ADDA.W D0,A0` che saltava
@@ -34,7 +89,11 @@ DisegnaSfondo:
 	MOVE.L	D6,A2
 	ADD.L	D7,A2
 
-	ADD.L	#TILES,A2			; TROVA LA TILE DESIDERATA
+	IFNE	FOGLIO_DA_FILE
+	ADD.L	#FoglioTile,A2		; TROVA LA TILE DESIDERATA (buffer in chip)
+	ELSE
+	ADD.L	#TILES,A2			; TROVA LA TILE DESIDERATA (l'incbin)
+	ENDC
 
 	MOVE.L	PuntaSfondoGr,A1	; destinazione in a1
 	ADDQ.L	#2,PuntaSfondoGr 	; avanziamo di 16 bit (PROSSIMA TILE)

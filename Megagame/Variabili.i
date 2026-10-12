@@ -196,12 +196,13 @@ TF_BLOCK        EQU     1
 ; tools/mappa.py), quindi una costante chiamata TILE_RIGHE si sarebbe
 ; trasformata nel marcatore della tile 16 - che nella mappa di oggi compare 27
 ; volte. Provato e visto: vanno chiamate FOGLIO_*.
-FOGLIO_TILE_COLS    EQU     20              ; tile per riga nel foglio
-FOGLIO_TILE_RIGHE   EQU     16              ; righe di tile nel foglio
-FOGLIO_TILE_N       EQU     FOGLIO_TILE_COLS*FOGLIO_TILE_RIGHE
-FOGLIO_TILE_BYTE    EQU     16*2*5          ; una tile: 16 righe x 1 word x 5 piani
+; LE EQU FOGLIO_TILE_* NON STANNO PIU' QUI: sono salite in CostArte.i.
+; Le servono `Avvio.i` e `Arte.i`, inclusi PRIMA di questo file; Devpac valuta
+; una EQU dove la incontra, quindi lasciandole qui quei due moduli vedevano dei
+; simboli non definiti. Le tabelle qui sotto le usano lo stesso: CostArte.i e'
+; la prima include di tutte.
 
-TileFlags:
+TileFlags1:
 ;   tile:   0   1   2   3   4   5   6   7   8   9  10  11  12  13  14  15
 	dc.b	0,	0,	1,	1,	1,	1,	1,	1,	1,	1,	1,	1,	0,	0,	0,	0
 ;   tile:  16  17  18  19  20  21  22  23  24  25  26  27  28  29  30  31
@@ -245,9 +246,27 @@ TileFlags:
 ; foglio, disegnare una tile nuova non puo' piu' far leggere IsTileBlocked
 ; oltre la fine, e non c'e' piu' niente da ricordarsi di allungare.
 	dcb.b	FOGLIO_TILE_N-128,0
-TileFlagsFine:
-	IFNE	(TileFlagsFine-TileFlags)-FOGLIO_TILE_N
-GUARDIA_TILEFLAGS	EQU		1/0
+TileFlags1Fine:
+	IFNE	(TileFlags1Fine-TileFlags1)-FOGLIO_TILE_N
+GUARDIA_TILEFLAGS1	EQU		1/0
+	ENDC
+
+* TileFlags2 - la solidita' del SECONDO foglio.
+* UNA TABELLA PER FOGLIO, e non e' simmetria decorativa: la tile 93 di Tiles1
+* e la 93 di Tiles2 sono due disegni diversi, quindi sono due solidita'
+* diverse. Con una tabella sola i due fogli dovrebbero concordare su quali
+* numeri sono muro, cioe' non sarebbero due fogli: sarebbero lo stesso foglio
+* ridipinto.
+* NASCE TUTTA A ZERO, come nasce libera ogni tile nuova: i muri si alzano uno
+* alla volta guardando la sagoma (risorse/mappa-sagoma.txt), non si indovinano.
+* Finche' Tiles2 e' il foglio numerato di tools/genera-foglio-numerato.py non
+* c'e' niente da alzare, e uno zero qui vuol dire "non ancora deciso", non
+* "deciso libero".
+TileFlags2:
+	dcb.b	FOGLIO_TILE_N,0
+TileFlags2Fine:
+	IFNE	(TileFlags2Fine-TileFlags2)-FOGLIO_TILE_N
+GUARDIA_TILEFLAGS2	EQU		1/0
 	ENDC
 
 	even	; padding per allineamento word
@@ -282,6 +301,25 @@ MAPPA_ATTESA		EQU		MAPPA_COLS*MAPPA_ROWS*2
 * Dopo ogni modifica alla griglia:  py tools\mappe.py  e poi  py tools\porte.py
 	include	"Mappe.i"
 
+* DALL'INDICE DEL FOGLIO ALLA SUA TABELLA DI SOLIDITA'.
+* Quale foglio usa un blocco lo dice `MappaFoglio`, che e' GENERATO dalla
+* colonna `foglio` di risorse/mappe.txt. Questa tabella fa l'altro mezzo passo,
+* quello che l'assemblatore puo' fare da solo: dall'indice del foglio alla sua
+* TileFlags. Si scrive a mano perche' le tabelle si scrivono a mano.
+* LA GUARDIA LEGA LE DUE META'. FOGLI_N lo conta il generatore leggendo la
+* fonte; le voci qui sotto le conta l'assemblatore. Chi dichiara un foglio in
+* mappe.txt e si dimentica la sua TileFlags NON ASSEMBLA, invece di leggere in
+* silenzio la tabella del foglio sbagliato - che e' un difetto che si presenta
+* come "ogni tanto il player attraversa un muro".
+	cnop	0,4
+TabFoglioFlags:
+	dc.l	TileFlags1			; foglio 0
+	dc.l	TileFlags2			; foglio 1
+TabFoglioFlagsFine:
+	IFNE	(TabFoglioFlagsFine-TabFoglioFlags)/4-FOGLI_N
+GUARDIA_TAB_FOGLIO_FLAGS	EQU		1/0
+	ENDC
+
 * LA MAPPA VIVA. E' l'unico posto che dice quale mappa si sta giocando: le
 * cinque routine che leggono le tile (DisegnaSfondo, IsTileBlocked, TrovaFalo,
 * TrovaPartenza, PathBBuildDark) partono da qui e non da un'etichetta fissa.
@@ -293,6 +331,21 @@ MAPPA_ATTESA		EQU		MAPPA_COLS*MAPPA_ROWS*2
 MappaPtr:		dc.l	0
 ; Il blocco da cui si parte. E' l'unica fonte: MappaPtr ne discende.
 MappaCorrente:	dc.w	0
+; La tabella di solidita' del foglio in uso. Sta accanto a MappaPtr perche' e'
+; lo stesso tipo di fatto: un puntatore che ImpostaBlocco tiene in pari con
+; l'indice, cosi' IsTileBlocked non rifa' il giro a ogni sonda del box. Nasce a
+; ZERO per lo stesso motivo di MappaPtr: chi sonda prima di ImpostaBlocco legge
+; l'indirizzo 0 e si vede subito.
+FlagsPtr:		dc.l	0
+; Il foglio del blocco corrente, come indice. E' lo stesso fatto di FlagsPtr
+; detto in numeri, e lo scrive lo stesso unico posto. Serve a sapere SE l'arte
+; in chip e' gia' quella giusta senza confrontare FOGLIO_BYTE byte.
+FoglioCorrente:	dc.w	0
+; Il foglio che in chip c'e' DAVVERO. Nasce a -1, che non e' un indice valido:
+; cosi' la prima DisegnaSfondo copia sempre, e non c'e' un caso speciale "al
+; boot" da ricordarsi. Lo scrive solo AssicuraFoglioTile, che e' anche l'unica
+; che lo legge: e' il suo promemoria, non uno stato del mondo.
+FoglioInChip:	dc.w	-1
 
 
 * VARIABILI

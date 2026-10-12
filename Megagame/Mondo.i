@@ -396,6 +396,10 @@ EseguiPassaggio:
 * ImpostaBlocco - il blocco corrente, indice e puntatore nello stesso posto
 *   D0.W = indice del blocco. DISTRUGGE: nulla.
 *
+*   Tiene in pari QUATTRO variabili che sono due fatti: il blocco
+*   (`MappaCorrente` + `MappaPtr`) e il suo foglio di tile (`FoglioCorrente` +
+*   `FlagsPtr`). Vale per tutte e quattro il discorso qui sotto.
+*
 *   `MappaCorrente` (l'indice) e `MappaPtr` (il puntatore) sono lo STESSO fatto
 *   detto in due modi: il puntatore esiste solo perche' le cinque routine che
 *   leggono la mappa lo vogliono pronto - IsTileBlocked lo rilegge a ogni sonda
@@ -406,12 +410,33 @@ EseguiPassaggio:
 *   prima mappa sta scritto in un posto solo, `MappaBase`, e al boot ci arriva
 *   questa routine leggendo `MappaCorrente`.
 ImpostaBlocco:
-	MOVEM.L	D0/A0,-(SP)
+	MOVEM.L	D0-D1/A0,-(SP)
 	MOVE.W	D0,MappaCorrente
+
+	; ----- il FOGLIO di tile del blocco, e la sua tabella di solidita' -----
+	; Sta qui e non in EseguiPassaggio perche' la validazione dell'arrivo
+	; (CercaXLibera / CercaYLibera) sonda la mappa NUOVA con IsBoxBlocked
+	; SUBITO DOPO questa chiamata: se la tabella restasse indietro di un
+	; blocco, l'arrivo verrebbe validato contro la solidita' dell'altro
+	; foglio. E vale anche per il ritorno di `.rinuncia`, che rimette il
+	; blocco di prima e deve rimettere anche la sua tabella.
+	; Qui si spostano solo puntatori. L'ARTE non si copia da qui: `.rinuncia`
+	; chiama questa routine una seconda volta, e una copia da 51200 byte fatta
+	; due volte per un passaggio che poi non avviene e' lavoro buttato. Chi
+	; copia l'arte e' DisegnaSfondo, che e' l'unico che la legge.
+	MOVE.W	D0,D1
+	ADD.W	D1,D1					; una voce di MappaFoglio e' una word
+	LEA		MappaFoglio,A0
+	MOVE.W	(A0,D1.W),D1			; D1 = indice del foglio
+	MOVE.W	D1,FoglioCorrente
+	LSL.W	#2,D1					; una voce di TabFoglioFlags e' un long
+	LEA		TabFoglioFlags,A0
+	MOVE.L	(A0,D1.W),FlagsPtr
+
 	LSL.W	#2,D0					; una voce di MappaBase e' un long
 	LEA		MappaBase,A0
 	MOVE.L	(A0,D0.W),MappaPtr
-	MOVEM.L	(SP)+,D0/A0
+	MOVEM.L	(SP)+,D0-D1/A0
 	RTS
 
 * CercaYLibera - la quota piu' vicina a D1 in cui il box del player non collide

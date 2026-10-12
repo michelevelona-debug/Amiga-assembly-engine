@@ -1,5 +1,43 @@
-; Nemici.i - Intelligenza dei nemici
+; Nemici.i - Intelligenza e movimento dei nemici
 ; Incluso da Gioco.s: contiene solo codice/dati, la SECTION la dichiara Gioco.s.
+
+* AggiornaNemici
+*   Per ogni nemico attivo, aggiorna la sua posizione in base a bob_AI:
+*     0 = fermo
+*     1 = ronda su/giù
+*     2 = ronda dx/sx
+*     3 = caccia il player
+AggiornaNemici:
+	MOVEM.L	D0/A0,-(SP)
+
+	LEA		Enemies,A0
+	MOVEQ	#ENEMY_COUNT-1,D0
+.loop:
+	; Skip nemico inattivo
+	TST.W	bob_Active(A0)
+	BEQ.S	.next
+
+	; Switch su bob_AI
+	MOVE.W	bob_AI(A0),D1
+	BEQ.S	.next					; AI=0 -> fermo
+	CMP.W	#1,D1
+	BEQ.S	.do_patrol
+	CMP.W	#2,D1
+	BEQ.S	.do_hunt
+	BRA.S	.next					; AI sconosciuta -> skip
+
+.do_patrol:
+	BSR.W	AI_Patrol
+	BRA.S	.next
+.do_hunt:
+	BSR.W	AI_Hunt
+
+.next:
+	LEA		bob_Length(A0),A0		; prossimo nemico
+	DBRA	D0,.loop
+
+	MOVEM.L	(SP)+,D0/A0
+	RTS
 
 * AI_Patrol
 *   Ronda generica a 8 direzioni: usa DirectionDeltas per calcolare il

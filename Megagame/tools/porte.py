@@ -248,10 +248,19 @@ def main():
     # Il box in TILE: si deriva dalle EQU, non si scrive 2.
     boxc = tab['BOB_COLL_W'] // 16
     boxr = tab['BOB_COLL_H'] // 16
-    flags = mappamod.leggi_tileflags()
     versi, nomi, link = legami(tab)
-    print('mappe %dx%d tile, box del player %dx%d tile, TileFlags %d voci'
-          % (cols, righe, boxc, boxr, len(flags)))
+    # UNA TABELLA PER MAPPA, perche' una mappa sta su un foglio: la stessa tile
+    # e' un disegno diverso su fogli diversi, quindi una solidita' diversa.
+    # Prendere una tabella sola e usarla per tutte direbbe che una porta e'
+    # giocabile guardando i muri di un foglio che quella mappa non usa.
+    flags_di = {}
+    for k, nome in enumerate(nomi, 1):
+        foglio_raw, foglio_n = mappamod.foglio_di(nome)
+        flags_di[k] = mappamod.leggi_tileflags(foglio_n)
+        print('  mappa %d %-10s foglio %-12s TileFlags%d, %d voci'
+              % (k, nome, foglio_raw, foglio_n, len(flags_di[k])))
+    print('mappe %dx%d tile, box del player %dx%d tile'
+          % (cols, righe, boxc, boxr))
     print('colonne di bordo: sinistra 0..%d, destra %d..%d'
           % (boxc - 1, cols - boxc, cols - 1))
 
@@ -269,8 +278,8 @@ def main():
     for da, a, verso in coppie:
         gda = leggi_raw(da, cols, righe)
         ga = leggi_raw(a, cols, righe)
-        _, lib_da, app_da = analizza('', gda, flags, cols, righe, boxc, boxr)
-        _, lib_a, app_a = analizza('', ga, flags, cols, righe, boxc, boxr)
+        _, lib_da, app_da = analizza('', gda, flags_di[da], cols, righe, boxc, boxr)
+        _, lib_a, app_a = analizza('', ga, flags_di[a], cols, righe, boxc, boxr)
         if verso in ORIZZ:
             guai += orizzontale(da, a, verso, lib_da, app_da, lib_a, app_a,
                                 cols, righe, boxc, boxr)
