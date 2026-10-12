@@ -84,3 +84,101 @@ include (`valori._espandi`), cosi' vedono lo stesso testo di prima:
 Se hai modifiche a `Gioco.s` fatte prima di questo commit, non si fondono
 automaticamente: il codice ora sta nei moduli. Le modifiche vanno riportate a
 mano nel `.i` corrispondente (vedi la tabella).
+
+---
+
+# Come e' organizzato il codice (11 ottobre 2026)
+
+*Questa parte e' RICAVATA DAL CODICE, non dalla tabella qui sopra: l'ordine
+degli `include` e le SECTION sono stati letti da `Gioco.s`, e ogni routine
+nominata e' stata cercata con la sua etichetta nel modulo che la definisce.*
+
+## La forma di Gioco.s (688 righe di regia)
+
+```
+SECTION MegaGame,CODE  ─────────── tutto il codice sta qui dentro
+│
+├─ CostTitolo.i                    le COSTANTI aprono il file
+├─ Startup2.i                      startup AGA + VBR + cache  (latin-1!)
+├─ CostDisplay.i  CostPannello.i  CostGioco.i  CostProfilo.i
+│
+├─ START:  ~470 righe              boot: titolo -> intro -> init -> mainloop
+│   └─ .mainloop:                  il quadro (resta nella regia)
+│
+├─ Sheet  Misura  Input  Mondo  Sfondo  Parallasse  Init  Collisioni
+├─ Palette  Titolo  Suoni  Combattimento  Luce  Nemici  Player  Bob
+├─ Pannello.i ──include──> Testo.i
+├─ PathB.i    ──include──> ScrollHW.i + CieloGrad.i
+├─ Profilo.i
+└─ Intro.i
+
+SECTION DATI,DATA        fast   Variabili.i ──include──> Mappe.i
+SECTION ChipStuff,DATA_C CHIP   Chip.i ──include──> Pannello.cop (due volte)
+SECTION AssetCPU,DATA    fast   AssetCPU.i
+SECTION PLANEVUOTO,BSS_C CHIP   BufferChip.i
+SECTION LavoroCPU,BSS    fast   (nella regia)
+SECTION SpritesData,DATA_C CHIP (nella regia)
+SECTION Entities,BSS     fast   (nella regia)
+SECTION PTPlayerCode,CODE       ptplayer.i  <- l'`end` VERO e' qui dentro
+end                             <- gia' codice morto
+```
+
+Quattro cose che la tabella dei moduli non dice:
+
+- **I moduli non sono unita' di link: sono tagli di un file unico.** Un solo
+  `SECTION CODE`, nell'ordine del vecchio `Gioco.s`. Non c'e' incapsulamento,
+  ogni etichetta resta globale: spostare una routine in un altro `.i` non
+  cambia niente per l'assemblatore, cambia solo chi la trova.
+- **Le costanti stanno in testa, e non per estetica.** Devpac valuta una EQU
+  dove la incontra: una EQU nuova usata da un modulo va in un `Cost*.i`, non
+  accanto al codice che la usa.
+- **Quattro include sono ANNIDATI dentro altri moduli**, non nella regia:
+  `Testo.i` dentro `Pannello.i`, `ScrollHW.i` e `CieloGrad.i` dentro `PathB.i`,
+  `Mappe.i` dentro `Variabili.i`. Chi cerca "dove e' incluso X" guardando solo
+  `Gioco.s` non li trova.
+- **I dati sono divisi per CHI LI LEGGE, non per cosa sono.** In chip quello
+  che leggono blitter, copper, display e Paula; in fast quello che legge solo
+  la CPU. E `PTPlayerCode` deve restare l'ULTIMA SECTION: un modulo nuovo va
+  prima, se no finisce sotto l'`end` di ptplayer e non esiste.
+
+## Il quadro, e in quale modulo vive ogni pezzo
+
+```
+AspettaVBL  ····················· Gioco.s (regia)
+GestisciMusica ·················· Gioco.s (regia)
+AggiornaTransizione ············· Palette.i      la dissolvenza fra blocchi
+LeggiTastiera / LeggiJoystick ··· Input.i
+RettangoloScrollNelCentro ······· Collisioni.i
+AggiornaFisicaPlayer ············ Player.i       gravita' e salto -> IntentY
+AggPosizioneGlobalePlayer ······· Player.i
+ControllaPassaggio ·············· Mondo.i        le PORTE fra i blocchi
+CalcolaInseguimentoCameraY ······ Mondo.i
+ControllaBordi ·················· Mondo.i
+ScrollPathB ····················· PathB.i
+AggiornaParallasseSprite ········ Parallasse.i
+AnimaFalo ······················· Luce.i
+AggiornaNemici ·················· Collisioni.i
+Combattimento / Proiettile ······ Combattimento.i
+SuonoPassi ······················ Suoni.i
+PathBRestoreAll ················· PathB.i
+DisegnaBOBs ····················· Bob.i
+AspettaBlitter ·················· Pannello.i
+ScrollPathBApply ················ PathB.i        scambio dei buffer
+Disegna* (i 7 strumenti) ········ Pannello.i
+FineLavoro ······················ Misura.i
+MostraProfilo ··················· Profilo.i
+```
+
+## Dove il nome del modulo inganna
+
+Tre casi verificati, e sono quelli che fanno perdere dieci minuti:
+
+- **`DisegnaPannello` sta in `Init.i`**, non in `Pannello.i`: e' una
+  costruzione di boot, non uno strumento.
+- **`AggiornaNemici` sta in `Collisioni.i`**; `Nemici.i` contiene solo
+  `AI_Patrol` e `AI_Hunt`, cioe' la DECISIONE, non il movimento.
+- **`ImpostaDisplayGioco` sta in `Titolo.i`**, accanto alla gemella del titolo
+  con cui condivide le EQU.
+
+E quattro routine sono rimaste NELLA REGIA, non in un modulo: `AspettaVBL`,
+`GestisciMusica`, `AggiornaCopperBPL` e `AggiornaCopperSPR`.
